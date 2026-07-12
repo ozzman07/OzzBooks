@@ -17,7 +17,10 @@ interface PlayerState {
   book: Book | null
   chapter: Chapter | null
   isPlaying: boolean
+  /** Seconds elapsed within the current chapter (not the underlying file). */
   currentTime: number
+  /** Current chapter's own duration (not the underlying file's, which may
+   * span several chapters for M4B books). */
   duration: number
   playbackRate: number
   skipSilenceEnabled: boolean
@@ -29,7 +32,7 @@ interface PlayerContextValue extends PlayerState {
   play: () => void
   pause: () => void
   togglePlay: () => void
-  seek: (time: number) => void
+  seek: (chapterRelativeTime: number) => void
   skip: (deltaSeconds: number) => void
   nextChapter: () => void
   prevChapter: () => void
@@ -42,11 +45,16 @@ const PlayerContext = createContext<PlayerContextValue | null>(null)
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement>(null)
+  // Which chapter's audioUrl is actually loaded into the <audio> element —
+  // distinct from `chapter`, which tracks which chapter is *playing right
+  // now* and can move to a same-file sibling without a reload (see the
+  // timeupdate handler below).
+  const loadedSourceFileIdRef = useRef<string | null>(null)
+
   const [book, setBook] = useState<Book | null>(null)
   const [chapter, setChapter] = useState<Chapter | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(0)
+  const [fileTime, setFileTime] = useState(0) // audio.currentTime, file-absolute
   const [playbackRate, setPlaybackRateState] = useState(1)
   const [skipSilenceEnabled, setSkipSilenceEnabled] = useState(false)
   const [sleepTimer, setSleepTimer] = useState<SleepTimer | null>(null)
@@ -58,24 +66,35 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return book.chapters.findIndex((c) => c.id === chapter.id)
   }, [book, chapter])
 
-  const loadBook = useCallback((nextBook: Book, chapterId?: string) => {
-    const target =
-      nextBook.chapters.find((c) => c.id === chapterId) ??
-      nextBook.chapters.find((c) => c.id === nextBook.progress?.chapterId) ??
-      nextBook.chapters[0]
-    setBook(nextBook)
-    setChapter(target ?? null)
-    if (target && audioRef.current) {
-      audioRef.current.src = target.audioUrl
-      audioRef.current.playbackRate = playbackRate
-      if (
-        nextBook.progress?.chapterId === target.id &&
-        nextBook.progress.position.type === 'timestamp'
-      ) {
-        audioRef.current.currentTime = nextBook.progress.position.value - target.startTime
-      }
+  const currentTime = chapter ? Math.max(0, fileTime - chapter.startTime) : 0
+  const duration = chapter?.duration ?? 0
+
+  /** Loads a chapter's stream into the audio element and seeks to a
+   * chapter-relative offset, waiting for metadata if needed. */
+  const loadIntoAudio = useCallback((target: Chapter, chapterRelativeOffset: number, autoplay: boolean) => {
+    const audio = audioRef.current
+    if (!audio) return
+    loadedSourceFileIdRef.current = target.sourceFileId
+    audio.src = target.audioUrl
+    const applyStart = () => {
+      audio.currentTime = target.startTime + chapterRelativeOffset
+      if (autoplay) audio.play()
     }
-  }, [playbackRate])
+    audio.addEventListener('loadedmetadata', applyStart, { once: true })
+  }, [])
+
+  const loadBook = useCallback(
+    (nextBook: Book, chapterId?: string) => {
+      const target = nextBook.chapters.find((c) => c.id === chapterId) ?? nextBook.chapters[0]
+      setBook(nextBook)
+      setChapter(target ?? null)
+      if (target && audioRef.current) {
+        audioRef.current.playbackRate = playbackRate
+        loadIntoAudio(target, 0, false)
+      }
+    },
+    [playbackRate, loadIntoAudio],
+  )
 
   const play = useCallback(() => {
     audioRef.current?.play()
@@ -90,55 +109,67 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     else play()
   }, [isPlaying, play, pause])
 
-  const seek = useCallback((time: number) => {
-    if (audioRef.current) audioRef.current.currentTime = time
-  }, [])
+  const seek = useCallback(
+    (chapterRelativeTime: number) => {
+      const audio = audioRef.current
+      if (!audio || !chapter) return
+      const clamped = Math.max(0, Math.min(chapterRelativeTime, chapter.duration))
+      audio.currentTime = chapter.startTime + clamped
+    },
+    [chapter],
+  )
 
-  const goToChapter = useCallback(
-    (index: number, autoplayFromStart: boolean, startAt?: number) => {
+  /** Moves to a chapter at `index`, starting `chapterRelativeOffset` seconds
+   * into it. Reuses the already-loaded stream (no reload/re-buffer) when
+   * the target chapter shares the current audio source. */
+  const moveToChapter = useCallback(
+    (index: number, chapterRelativeOffset: number, autoplayIfPaused: boolean) => {
       if (!book) return
       const target = book.chapters[index]
-      if (!target || !audioRef.current) return
+      const audio = audioRef.current
+      if (!target || !audio) return
+
       const wasPlaying = isPlaying
       setChapter(target)
-      audioRef.current.src = target.audioUrl
-      const applyStart = () => {
-        if (startAt !== undefined && audioRef.current) {
-          audioRef.current.currentTime = startAt
-        }
-        if (wasPlaying || autoplayFromStart) audioRef.current?.play()
+
+      if (loadedSourceFileIdRef.current === target.sourceFileId) {
+        audio.currentTime = target.startTime + chapterRelativeOffset
+        if (wasPlaying || autoplayIfPaused) audio.play()
+      } else {
+        loadIntoAudio(target, chapterRelativeOffset, wasPlaying || autoplayIfPaused)
       }
-      audioRef.current.addEventListener('loadedmetadata', applyStart, { once: true })
     },
-    [book, isPlaying],
+    [book, isPlaying, loadIntoAudio],
   )
 
   const nextChapter = useCallback(() => {
     if (chapterIndex < 0) return
-    goToChapter(chapterIndex + 1, true)
-  }, [chapterIndex, goToChapter])
+    moveToChapter(chapterIndex + 1, 0, true)
+  }, [chapterIndex, moveToChapter])
 
   const prevChapter = useCallback(() => {
     if (chapterIndex < 0) return
-    goToChapter(chapterIndex - 1, true)
-  }, [chapterIndex, goToChapter])
+    moveToChapter(chapterIndex - 1, 0, true)
+  }, [chapterIndex, moveToChapter])
 
   const skip = useCallback(
     (deltaSeconds: number) => {
       const audio = audioRef.current
-      if (!audio || !chapter) return
-      const target = audio.currentTime + deltaSeconds
+      if (!audio || !chapter || !book) return
+      const target = currentTime + deltaSeconds
+
       if (target < 0 && chapterIndex > 0) {
-        goToChapter(chapterIndex - 1, true, Math.max(0, chapter.duration + target))
+        const prev = book.chapters[chapterIndex - 1]
+        moveToChapter(chapterIndex - 1, Math.max(0, prev.duration + target), true)
         return
       }
-      if (target > chapter.duration && book && chapterIndex < book.chapters.length - 1) {
-        goToChapter(chapterIndex + 1, true, target - chapter.duration)
+      if (target > chapter.duration && chapterIndex < book.chapters.length - 1) {
+        moveToChapter(chapterIndex + 1, target - chapter.duration, true)
         return
       }
-      audio.currentTime = Math.max(0, Math.min(target, chapter.duration))
+      seek(Math.max(0, Math.min(target, chapter.duration)))
     },
-    [chapter, chapterIndex, book, goToChapter],
+    [chapter, chapterIndex, book, currentTime, moveToChapter, seek],
   )
 
   const setPlaybackRate = useCallback((rate: number) => {
@@ -175,30 +206,49 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
-    const onTimeUpdate = () => setCurrentTime(audio.currentTime)
-    const onLoadedMetadata = () => setDuration(audio.duration)
     const onEnded = () => {
       if (sleepTimer?.kind === 'end-of-chapter') {
         setSleepTimer(null)
         return
       }
+      // The loaded stream itself finished (true for mp3-folder chapters,
+      // and for the last chapter of an M4B). Same-file M4B chapters ahead
+      // of this one are handled by onTimeUpdate below without ever
+      // reaching this event.
       nextChapter()
     }
 
     audio.addEventListener('play', onPlay)
     audio.addEventListener('pause', onPause)
-    audio.addEventListener('timeupdate', onTimeUpdate)
-    audio.addEventListener('loadedmetadata', onLoadedMetadata)
     audio.addEventListener('ended', onEnded)
     return () => {
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
-      audio.removeEventListener('timeupdate', onTimeUpdate)
-      audio.removeEventListener('loadedmetadata', onLoadedMetadata)
       audio.removeEventListener('ended', onEnded)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sleepTimer, nextChapter])
+
+  // Tracks file-absolute playback position, and — for M4B books where
+  // several chapters share one continuously-playing file — advances the
+  // displayed "current chapter" as playback crosses each chapter's
+  // start_time boundary, with no src reload or seek involved.
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const onTimeUpdate = () => {
+      setFileTime(audio.currentTime)
+      if (!book || !chapter) return
+      const next = book.chapters[chapterIndex + 1]
+      if (next && next.sourceFileId === chapter.sourceFileId && audio.currentTime >= next.startTime) {
+        setChapter(next)
+      }
+    }
+
+    audio.addEventListener('timeupdate', onTimeUpdate)
+    return () => audio.removeEventListener('timeupdate', onTimeUpdate)
+  }, [book, chapter, chapterIndex])
 
   // Media Session API integration
   useEffect(() => {

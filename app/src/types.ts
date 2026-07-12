@@ -3,9 +3,17 @@ export interface Chapter {
   bookId: string
   index: number
   title: string
+  /** Offset in seconds within audioUrl's stream where this chapter starts. */
   startTime: number
   duration: number
   audioUrl: string
+  /**
+   * Identifies the underlying source file. M4B chapters share one file
+   * (and one audioUrl target file, even though each chapter has its own
+   * URL) — the player uses this to avoid reloading/re-buffering audio
+   * when moving between chapters that are really the same stream.
+   */
+  sourceFileId: string
 }
 
 export type Position =

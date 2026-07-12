@@ -28,6 +28,10 @@ export interface BookRow {
   updated_at: string
 }
 
+export interface BookListRow extends BookRow {
+  total_duration: number
+}
+
 export interface ChapterRow {
   id: string
   book_id: string

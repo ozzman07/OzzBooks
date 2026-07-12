@@ -3,19 +3,17 @@
 PWA frontend. See `../Claude.md` for the full project spec, architecture, and
 roadmap.
 
-Currently running against mock in-memory data (`src/data/mockBooks.ts`) —
-no backend yet.
+Talks to the real file-serving API in `../server` — no more mock data.
+Copy `.env.example` to `.env.local` and point it at a running server
+instance for local dev (`npm run dev` in `../server`).
 
 ## Develop
 
 ```bash
 npm install
-node scripts/gen-demo-audio.mjs   # one-time: generate placeholder audio for local playback testing
 npm run dev
 ```
 
-`public/audio/` (placeholder demo audio) is gitignored/generated —
-regenerate it after a fresh clone if you want working local playback.
 `public/icons/` (placeholder app icons, via `scripts/gen-icons.mjs`) is
 committed since the manifest needs them to resolve at build time; rerun
 that script if you replace them with real artwork.
@@ -25,3 +23,9 @@ that script if you replace them with real artwork.
 ```bash
 npm run build
 ```
+
+In production, the API token is baked into the build via `VITE_API_TOKEN`
+at build time (see `.env.example`) — anyone who can reach the built PWA
+can read it out of the bundle, so it's only defense-in-depth alongside
+Tailscale network gating, same as on the server side. Don't reuse it as a
+secret anywhere else.

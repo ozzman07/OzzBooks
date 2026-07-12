@@ -41,6 +41,16 @@ Env vars (see `src/config.ts`):
 - `GET /api/chapters/:id/stream` — audio bytes, supports HTTP Range
 - `GET /api/books/:id/artwork/:size` — `thumb` or `full`, 404 if none extracted
 
+Auth token can also be passed as `?token=` (needed for `<audio>`/`<img>`
+elements, which can't set custom headers) — see `src/api/auth.ts`.
+
+## Serving the frontend
+
+If `../app/dist` exists (i.e. you've run `npm run build` in `../app`),
+this server serves it directly as static files with an SPA fallback, so
+the whole thing is one origin/one Tailscale Serve endpoint in production.
+No `dist` there yet → this is skipped, useful for backend-only dev.
+
 ## Test
 
 ```bash

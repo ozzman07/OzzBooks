@@ -5,7 +5,15 @@ import type { BookRow, ChapterRow } from '../../types.js'
 export const booksRouter = Router()
 
 booksRouter.get('/', (_req, res) => {
-  const rows = getDb().prepare('SELECT * FROM books ORDER BY title').all()
+  const rows = getDb()
+    .prepare(
+      `SELECT books.*, COALESCE(SUM(chapters.duration), 0) AS total_duration
+       FROM books
+       LEFT JOIN chapters ON chapters.book_id = books.id
+       GROUP BY books.id
+       ORDER BY books.title`,
+    )
+    .all()
   res.json(rows)
 })
 
