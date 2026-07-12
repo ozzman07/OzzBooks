@@ -75,6 +75,19 @@ which user is using the app.
    Media Session survives realistic session lengths (not just a minute or
    two) without the OS killing it.
 
+## Testing strategy
+
+This is a personal/family project, not a commercial product — don't build
+a full automated test suite. Scope automated tests to the one area
+that's genuinely fiddly and easy to silently break: **ingestion and
+chapter-parsing logic** (M4B chapter atom extraction, MP3-folder chapter
+inference, duplicate-across-sources detection). That's where edge cases
+hide and where a regression is hardest to notice by eye.
+
+Everything else (playback controls, scrubbing, UI behavior) is fine to
+verify by hand via the Validation tasks above and normal manual
+click-through — not worth automating at this scale.
+
 ## Phase 1 (current focus)
 
 ### Playback
