@@ -284,6 +284,12 @@ Don't remove them for being "unused."
   series, built on the Phase 3b transcription infrastructure and series
   metadata. Exact approach TBD — pending input from a related project a
   family member is separately exploring. Don't over-design this yet.
+- **Phase 6 — Remote wake automation:** on-demand Wake-on-LAN for the Mac
+  mini, so it can sleep freely instead of being kept awake on a schedule.
+  Requires an always-on device on the home network capable of running
+  Tailscale to act as the local WoL relay (the current Synology DS413j
+  can't — see accepted decision below). Blocked on acquiring that
+  hardware; not worth building until then.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
@@ -300,6 +306,7 @@ Don't remove them for being "unused."
   model. Accepted approach instead: prevent Mac mini sleep during
   expected-use hours (or schedule sleep only overnight). WoL stays
   enabled on the mini as a manual, same-network fallback only. Revisit
-  only if always-on hardware capable of running Tailscale is added.
+  as **Phase 6** if always-on hardware capable of running Tailscale is
+  added.
 - Native wrapper (Capacitor etc.): explicit non-goal unless Phase 1
   validation testing proves the PWA approach unworkable
