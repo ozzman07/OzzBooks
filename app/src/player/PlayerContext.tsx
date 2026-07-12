@@ -10,6 +10,8 @@ import {
 } from 'react'
 import type { Book, Chapter } from '../types'
 import { useSkipSilence } from './useSkipSilence'
+import { useAuth } from '../auth/AuthContext'
+import { putProgress } from '../api/cloudClient'
 
 export type SleepTimer = { kind: 'duration'; remainingSeconds: number } | { kind: 'end-of-chapter' }
 
@@ -28,7 +30,7 @@ interface PlayerState {
 }
 
 interface PlayerContextValue extends PlayerState {
-  loadBook: (book: Book, chapterId?: string) => void
+  loadBook: (book: Book, chapterId?: string, resumeAt?: number) => void
   play: () => void
   pause: () => void
   togglePlay: () => void
@@ -61,6 +63,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   useSkipSilence(audioRef, skipSilenceEnabled)
 
+  const auth = useAuth()
+  // Refs so pushProgress can read fresh state without re-subscribing
+  // listeners/intervals every time position changes.
+  const latestRef = useRef({ book, chapter, fileTime, token: auth.token })
+  useEffect(() => {
+    latestRef.current = { book, chapter, fileTime, token: auth.token }
+  })
+
   const chapterIndex = useMemo(() => {
     if (!book || !chapter) return -1
     return book.chapters.findIndex((c) => c.id === chapter.id)
@@ -84,13 +94,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const loadBook = useCallback(
-    (nextBook: Book, chapterId?: string) => {
+    (nextBook: Book, chapterId?: string, resumeAt = 0) => {
       const target = nextBook.chapters.find((c) => c.id === chapterId) ?? nextBook.chapters[0]
       setBook(nextBook)
       setChapter(target ?? null)
       if (target && audioRef.current) {
         audioRef.current.playbackRate = playbackRate
-        loadIntoAudio(target, 0, false)
+        loadIntoAudio(target, resumeAt, false)
       }
     },
     [playbackRate, loadIntoAudio],
@@ -185,6 +195,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setSleepTimer(timer)
   }, [])
 
+  // Best-effort sync to the cloud layer — no local-first outbox/retry queue
+  // yet (that's the IndexedDB piece from Claude.md's offline design, not
+  // built in the frontend yet), so a failed push here just means this
+  // device's cloud copy goes stale until the next successful one.
+  const pushProgress = useCallback(() => {
+    const { book, chapter, fileTime, token } = latestRef.current
+    if (!book || !chapter || !token) return
+    putProgress(token, book.id, {
+      position: { type: 'timestamp', value: Math.max(0, fileTime - chapter.startTime) },
+      chapterId: chapter.id,
+      updatedAt: new Date().toISOString(),
+    }).catch(() => {})
+  }, [])
+
+  // Push periodically while playing, matching "every N seconds during
+  // playback" from Claude.md's position-sync design.
+  useEffect(() => {
+    if (!isPlaying) return
+    const id = setInterval(pushProgress, 20_000)
+    return () => clearInterval(id)
+  }, [isPlaying, pushProgress])
+
   // Sleep timer countdown for fixed-duration timers
   useEffect(() => {
     if (!sleepTimer || sleepTimer.kind !== 'duration') return
@@ -205,7 +237,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!audio) return
 
     const onPlay = () => setIsPlaying(true)
-    const onPause = () => setIsPlaying(false)
+    const onPause = () => {
+      setIsPlaying(false)
+      pushProgress()
+    }
     const onEnded = () => {
       if (sleepTimer?.kind === 'end-of-chapter') {
         setSleepTimer(null)
@@ -227,7 +262,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener('ended', onEnded)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sleepTimer, nextChapter])
+  }, [sleepTimer, nextChapter, pushProgress])
 
   // Tracks file-absolute playback position, and — for M4B books where
   // several chapters share one continuously-playing file — advances the
