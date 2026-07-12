@@ -33,6 +33,17 @@ logins. The PWA itself still needs its own login (see "App-level
 authentication" below) since Tailscale only gates network access, not
 which user is using the app.
 
+**Onboarding a new family member (one-time, in order):**
+1. Admin sends a Tailscale invite (from the Tailscale admin console) to
+   the new person's email
+2. They install the Tailscale app on their phone and accept the invite —
+   one-time login, runs in the background afterward
+3. Admin creates (or sends an invite link for) their app-level account,
+   independent of Tailscale
+4. They open the app URL in Safari and use "Add to Home Screen" to
+   install the PWA, then log into their app account
+5. Steps 1–4 are one-time setup only; nothing here repeats per session
+
 ## Platform constraints that shaped these decisions (read before "fixing" things)
 
 - **iOS forces all browsers to use WebKit.** Switching browsers doesn't
@@ -114,6 +125,13 @@ click-through — not worth automating at this scale.
   risk
 - Self-heal: on connectivity, verify cached chapters still exist in
   IndexedDB, silently re-fetch anything missing
+- Stream-failure fallback: if a live network stream fails mid-play (Mac
+  mini asleep/restarting/unreachable), first check IndexedDB for that
+  chapter — the existing background pre-fetch means the current chapter
+  is usually already cached, so this should silently resume from the
+  local copy rather than interrupting playback. Only show a
+  user-facing "can't reach your library right now, retry" message (with
+  a few automatic retries + backoff first) when no local copy exists
 
 ### Download cleanup
 - Manual delete, per book/chapter, always available
@@ -219,6 +237,11 @@ click-through — not worth automating at this scale.
 - Periodic backup of the ingestion database (metadata, extracted artwork,
   match/relink history) — the source files on the NAS are already safe,
   but curation work (matches, edits, relinks) lives only in this database
+- Periodically verify backups are actually restorable, not just taken —
+  restore the latest backup into a scratch copy and spot-check it opens
+  with sane data (e.g. row counts, a few known records). An untested
+  backup can fail silently for months and only get discovered when
+  actually needed; a quarterly manual check is enough at this scale
 
 ## Data model (current, Phase 1 scope)
 
