@@ -126,6 +126,8 @@ which user is using the app.
 ### Ingestion & library
 - Ingestion scans Synology + cloud sources, normalizes into a consistent
   internal book model (handles mixed M4B / MP3-folder formats)
+- DRM-encumbered formats (e.g. Audible `.aax`/`.aaxc`) are explicitly
+  **out of scope** — DRM-free audio only (M4B, MP3, etc.)
 - Chapter extraction: M4B embedded chapter atoms; MP3 folders infer
   chapters from file/track order or ID3 chapter frames if present
 - Trigger: manual "rescan now" + scheduled nightly scan
@@ -310,3 +312,5 @@ Don't remove them for being "unused."
   added.
 - Native wrapper (Capacitor etc.): explicit non-goal unless Phase 1
   validation testing proves the PWA approach unworkable
+- DRM-encumbered audiobooks (e.g. Audible): out of scope. This is a
+  DRM-free library only
