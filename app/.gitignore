@@ -12,9 +12,6 @@ dist
 dist-ssr
 *.local
 
-# Generated dev-only placeholder audio (see scripts/gen-demo-audio.mjs)
-/public/audio/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,6 +1,9 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { mockBooks } from '../data/mockBooks'
+import { fetchBook } from '../api/client'
+import { adaptBookDetail } from '../api/adapter'
+import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
+import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
 
@@ -8,14 +11,18 @@ export function BookDetail() {
   const { bookId } = useParams()
   const navigate = useNavigate()
   const player = usePlayer()
-  const book = mockBooks.find((b) => b.id === bookId)
+  const result = useAsync(async () => adaptBookDetail(await fetchBook(bookId!)), [bookId])
 
-  if (!book) {
-    return <div className="px-4 pt-8 text-center text-slate-400">Book not found.</div>
+  if (result.status === 'loading') {
+    return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
+  }
+  if (result.status === 'error') {
+    return <LibraryError onRetry={result.retry} />
   }
 
+  const book = result.data
+
   function playFrom(chapterId: string) {
-    if (!book) return
     player.loadBook(book, chapterId)
     player.play()
     navigate('/now-playing')
@@ -41,11 +48,11 @@ export function BookDetail() {
       )}
 
       <button
-        onClick={() => playFrom(book.progress?.chapterId ?? book.chapters[0].id)}
-        disabled={book.status === 'missing'}
+        onClick={() => playFrom(book.chapters[0].id)}
+        disabled={book.status === 'missing' || book.chapters.length === 0}
         className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
       >
-        {book.progress ? 'Resume' : 'Play'}
+        Play
       </button>
 
       <p className="mt-3 text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>
