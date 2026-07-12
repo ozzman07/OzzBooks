@@ -194,15 +194,13 @@ which user is using the app.
 
 ## Operational notes (not code, but required for the system to work)
 
-- Mac mini is allowed to sleep and is woken via **Wake-on-LAN** rather
-  than staying always-on — something must send the magic packet on
-  demand (exact trigger TBD); Tailscale staying up doesn't help if the
-  machine behind it hasn't been woken yet
-- Because sleep is expected/normal here, a naive "is it reachable right
-  now" health check will false-alarm during ordinary sleep. Health-check
-  logic needs to account for the WoL cold-start path — e.g. trigger a
-  wake and allow a boot-latency window before declaring a real outage —
-  so alerting distinguishes "asleep as designed" from "failed to wake"
+- Mac mini sleep/power settings must prevent the file-serving API from
+  going dark during expected-use hours (disable sleep, or schedule sleep
+  only for known-idle overnight hours) — this is the accepted primary
+  mechanism (see decision below), not remote Wake-on-LAN
+- Health-check/alerting on the file-serving API (a simple uptime ping is
+  fine) so an unexpected outage is noticed rather than discovered when a
+  user complains
 - Periodic backup of the ingestion database (metadata, extracted artwork,
   match/relink history) — the source files on the NAS are already safe,
   but curation work (matches, edits, relinks) lives only in this database
@@ -294,5 +292,14 @@ Don't remove them for being "unused."
 - CarPlay: unsupported, accepted platform limitation
 - Extended offline (weeks, no connectivity): explicitly out of scope;
   short-gap resilience is the actual target
+- Remote/on-demand Wake-on-LAN trigger for the Mac mini: **descoped**.
+  The only other always-on home device is a Synology DS413j, which is
+  too old (single-core, 256MB RAM, no DSM version that supports
+  Tailscale or Docker) to act as a remote WoL relay without exposing it
+  to the public internet — which defeats the Tailscale-only security
+  model. Accepted approach instead: prevent Mac mini sleep during
+  expected-use hours (or schedule sleep only overnight). WoL stays
+  enabled on the mini as a manual, same-network fallback only. Revisit
+  only if always-on hardware capable of running Tailscale is added.
 - Native wrapper (Capacitor etc.): explicit non-goal unless Phase 1
   validation testing proves the PWA approach unworkable
