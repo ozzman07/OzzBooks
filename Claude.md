@@ -194,13 +194,15 @@ which user is using the app.
 
 ## Operational notes (not code, but required for the system to work)
 
-- Mac mini sleep/power settings must prevent the file-serving API from
-  going dark (disable sleep or schedule wake) — Tailscale itself staying
-  up doesn't help if the machine behind it is asleep
-- Health-check/alerting on the file-serving API (even a simple uptime
-  ping) so an unexpected outage is noticed rather than discovered when a
-  user complains — the sleep-prevention setting reduces the chance of
-  this happening, it doesn't guarantee it
+- Mac mini is allowed to sleep and is woken via **Wake-on-LAN** rather
+  than staying always-on — something must send the magic packet on
+  demand (exact trigger TBD); Tailscale staying up doesn't help if the
+  machine behind it hasn't been woken yet
+- Because sleep is expected/normal here, a naive "is it reachable right
+  now" health check will false-alarm during ordinary sleep. Health-check
+  logic needs to account for the WoL cold-start path — e.g. trigger a
+  wake and allow a boot-latency window before declaring a real outage —
+  so alerting distinguishes "asleep as designed" from "failed to wake"
 - Periodic backup of the ingestion database (metadata, extracted artwork,
   match/relink history) — the source files on the NAS are already safe,
   but curation work (matches, edits, relinks) lives only in this database
