@@ -3,9 +3,13 @@
 PWA frontend. See `../Claude.md` for the full project spec, architecture, and
 roadmap.
 
-Talks to the real file-serving API in `../server` — no more mock data.
-Copy `.env.example` to `.env.local` and point it at a running server
-instance for local dev (`npm run dev` in `../server`).
+Talks to two real backends — no more mock data:
+- `../server` — the file-serving API (library metadata, audio streaming)
+- `../cloud` — the sync/auth layer (accounts, playback position, bookmarks)
+
+Copy `.env.example` to `.env.local` and point both `VITE_API_BASE_URL`
+and `VITE_CLOUD_API_BASE_URL` at running instances for local dev
+(`npm run dev` in each of `../server` and `../cloud`).
 
 ## Develop
 

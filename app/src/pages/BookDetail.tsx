@@ -1,6 +1,8 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
+import { fetchBookProgress } from '../api/cloudClient'
+import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
@@ -11,7 +13,17 @@ export function BookDetail() {
   const { bookId } = useParams()
   const navigate = useNavigate()
   const player = usePlayer()
-  const result = useAsync(async () => adaptBookDetail(await fetchBook(bookId!)), [bookId])
+  const auth = useAuth()
+  const result = useAsync(async () => {
+    const [book, progress] = await Promise.all([
+      fetchBook(bookId!).then(adaptBookDetail),
+      auth.token ? fetchBookProgress(auth.token, bookId!) : Promise.resolve(null),
+    ])
+    if (progress) {
+      book.progress = { position: progress.position, chapterId: progress.chapter_id ?? book.chapters[0].id }
+    }
+    return book
+  }, [bookId])
 
   if (result.status === 'loading') {
     return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
@@ -22,10 +34,18 @@ export function BookDetail() {
 
   const book = result.data
 
-  function playFrom(chapterId: string) {
-    player.loadBook(book, chapterId)
+  function playFrom(chapterId: string, resumeAt = 0) {
+    player.loadBook(book, chapterId, resumeAt)
     player.play()
     navigate('/now-playing')
+  }
+
+  function playResume() {
+    if (book.progress && book.progress.position.type === 'timestamp') {
+      playFrom(book.progress.chapterId, book.progress.position.value)
+    } else {
+      playFrom(book.chapters[0].id)
+    }
   }
 
   return (
@@ -48,11 +68,11 @@ export function BookDetail() {
       )}
 
       <button
-        onClick={() => playFrom(book.chapters[0].id)}
+        onClick={playResume}
         disabled={book.status === 'missing' || book.chapters.length === 0}
         className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
       >
-        Play
+        {book.progress ? 'Resume' : 'Play'}
       </button>
 
       <p className="mt-3 text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>
