@@ -114,7 +114,10 @@ which user is using the app.
   day one even though `cfi` (ebook position) isn't used until Phase 3
 - Written to local storage immediately (small, low eviction risk) on
   every pause / every N seconds during playback
-- Queued to sync to the cloud layer whenever connectivity is available
+- Queued to sync to the cloud layer whenever connectivity is available,
+  with retry + backoff on failed sync attempts (separate concern from the
+  last-write-wins conflict policy below — this is about delivery, not
+  conflicting values)
 - Cross-device conflict handling: **last-write-wins** (accepted as
   sufficient for now; revisit only if it becomes a real problem)
 - Bookmarks are a **separate, deliberate** action from continuous
@@ -174,6 +177,12 @@ which user is using the app.
   using the app — this matters once Phase 2 multi-user lands)
 - Lightweight token check on the file-serving API itself as
   defense-in-depth beyond Tailscale network gating
+- `sources.credentials` (cloud source OAuth tokens/API keys) must be
+  encrypted at rest, not stored as plaintext — this is the one place the
+  data model holds third-party secrets
+- Cloud source OAuth tokens need a refresh flow (expiry detection +
+  re-auth) so ingestion scans don't silently start failing when a token
+  lapses
 
 ### PWA platform concerns
 - Service worker update strategy: explicit "update available, tap to
@@ -188,6 +197,10 @@ which user is using the app.
 - Mac mini sleep/power settings must prevent the file-serving API from
   going dark (disable sleep or schedule wake) — Tailscale itself staying
   up doesn't help if the machine behind it is asleep
+- Health-check/alerting on the file-serving API (even a simple uptime
+  ping) so an unexpected outage is noticed rather than discovered when a
+  user complains — the sleep-prevention setting reduces the chance of
+  this happening, it doesn't guarantee it
 - Periodic backup of the ingestion database (metadata, extracted artwork,
   match/relink history) — the source files on the NAS are already safe,
   but curation work (matches, edits, relinks) lives only in this database
@@ -201,9 +214,19 @@ sources
 books
   id, source_id, file_path, audio_source, epub_source,
   status ('active' | 'missing'),
-  series_name, series_number,
+  series_name, series_number,  -- denormalized onto books rather than a
+                                -- separate series table; accepted for now,
+                                -- means series naming consistency across a
+                                -- book's entries is a manual/ingestion
+                                -- concern, not enforced by the schema
   artwork_thumb_path, artwork_full_path,
   volume_normalization_gain
+
+chapters
+  id, book_id, index, title, start_time, duration
+  -- required by chapter-level downloads/position/navigation
+  -- (downloads.chapter_id and progress at chapter granularity both
+  -- reference this)
 
 users
   id, ... (auth fields)
