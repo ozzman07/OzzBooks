@@ -36,10 +36,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(me)
         setStatus('authenticated')
       })
-      .catch(() => {
-        // Expired/invalid token — clear it rather than getting stuck loading.
-        localStorage.removeItem(TOKEN_STORAGE_KEY)
-        setStatus('unauthenticated')
+      .catch((err) => {
+        // Only an actual 401 means the token is invalid/expired — clear it.
+        // A network error (cloud unreachable — status 0, or any other
+        // failure) must NOT log the user out just because the cloud
+        // service is briefly unreachable; that would defeat the whole
+        // point of short-gap offline resilience. Stay optimistically
+        // authenticated with the stored token; auth.user just won't be
+        // populated until a call to the cloud succeeds.
+        if (err instanceof cloud.CloudApiError && err.status === 401) {
+          localStorage.removeItem(TOKEN_STORAGE_KEY)
+          setStatus('unauthenticated')
+        } else {
+          setToken(stored)
+          setStatus('authenticated')
+        }
       })
   }, [])
 

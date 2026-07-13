@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
-import { fetchBookProgress } from '../api/cloudClient'
+import { reconcileProgress } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
@@ -17,10 +17,10 @@ export function BookDetail() {
   const result = useAsync(async () => {
     const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
-      auth.token ? fetchBookProgress(auth.token, bookId!) : Promise.resolve(null),
+      reconcileProgress(auth.token, bookId!),
     ])
     if (progress) {
-      book.progress = { position: progress.position, chapterId: progress.chapter_id ?? book.chapters[0].id }
+      book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0].id }
     }
     return book
   }, [bookId])
