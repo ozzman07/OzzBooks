@@ -67,6 +67,7 @@ export interface ApiBook {
   artwork_full_path: string | null
   volume_normalization_gain: number | null
   content_hash: string | null
+  created_at: string
   updated_at: string
 }
 
@@ -78,6 +79,54 @@ export interface ApiBookListItem extends ApiBook {
 
 export interface ApiBookDetail extends ApiBook {
   chapters: ApiChapter[]
+}
+
+export interface ApiSource {
+  id: string
+  type: string
+  label: string
+  path_scope: string
+  created_at: string
+  last_scanned_at: string | null
+  last_scan_found: number | null
+  last_scan_created: number | null
+  last_scan_updated: number | null
+  last_scan_failed: number | null
+  last_scan_skipped_duplicates: number | null
+  book_count: number
+  missing_count: number
+}
+
+export interface ApiScanIssue {
+  id: string
+  source_id: string
+  file_path: string
+  error: string
+  occurred_at: string
+}
+
+export interface ApiScanResult {
+  found: number
+  created: number
+  updated: number
+  markedMissing: number
+  skippedDuplicates: number
+  failed: number
+}
+
+export function fetchSources(): Promise<ApiSource[]> {
+  return apiFetch<ApiSource[]>('/api/sources')
+}
+
+export function fetchSourceIssues(sourceId: string): Promise<ApiScanIssue[]> {
+  return apiFetch<ApiScanIssue[]>(`/api/sources/${sourceId}/issues`)
+}
+
+// Also covers "scan for new books" — a scan always walks the whole source
+// tree fresh, so the same request both retries previously-failed files and
+// picks up anything new, with no separate "new only" mode needed.
+export function scanSource(sourceId: string): Promise<ApiScanResult> {
+  return apiFetch<ApiScanResult>(`/api/sources/${sourceId}/scan`, { method: 'POST' })
 }
 
 export function fetchBooks(): Promise<ApiBookListItem[]> {

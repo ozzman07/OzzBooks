@@ -301,6 +301,35 @@ Don't remove them for being "unused."
 - **Phase 2 — Multi-user:** UI/permissions layer on top of the
   already-scoped data model (everything above is already
   `user_id`-scoped)
+- **Phase 2b — Metadata cleanup & online enrichment:** two-part project,
+  in order (part 2 depends on part 1):
+  1. Title/author cleaning: parse a canonical title + author out of messy
+     source strings — leading track numbers, trailing `- Author - Year`
+     suffixes, raw filename fragments (`01_light_of_other_days`). Same
+     category of heuristic work as the M4B multi-part grouping and
+     folder-derived author fixes already shipped in Phase 1. This is the
+     harder and more valuable half — worth doing even without part 2, since
+     it also cleans up remaining display-title messiness that
+     folder-derived author didn't touch.
+  2. Online lookup using the *cleaned* title/author to backfill genre and
+     series data, both currently unreliable: `series_name`/`series_number`
+     are scaffolded in the schema but ingestion never actually populates
+     them (always null today); embedded genre tags were usable on well
+     under 20% of a sampled 60-book set, the rest either missing or just
+     saying "Audiobook"/"Unabridged" (not a real genre). Unblocks an actual
+     Genre browse mode and a real Series browse view, both deferred earlier
+     for lack of usable data.
+
+     Research already done (see conversation from 2026-07-13, worth
+     re-reading before starting): Open Library's search API matches
+     reliably but only against a genuinely clean title/author — a raw
+     messy title returns zero results, not a degraded fuzzy match, which
+     is why part 1 is a hard prerequisite rather than optional polish.
+     Google Books hit an anonymous-quota wall (needs a free API key to be
+     usable). Audnexus has by far the best genre/category taxonomy (it's
+     Audible's own) but turned out to be ASIN-only — no title/author search
+     endpoint exists — so it only works as a later enrichment step once an
+     ASIN is known some other way, not as the primary matcher.
 - **Phase 3a — Ebook integration:** chapter-level audio↔ebook sync, basic
   EPUB rendering (epub.js is the likely library — it produces CFIs, the
   standard EPUB position format)

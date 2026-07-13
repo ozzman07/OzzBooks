@@ -30,6 +30,8 @@ export interface Book {
   coverThumbUrl?: string
   coverFullUrl?: string
   totalDuration: number
+  /** Set once at first ingestion, never touched again — drives the "Recently added" sort. */
+  createdAt: string
   chapters: Chapter[]
   progress?: {
     position: Position
