@@ -10,6 +10,11 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'prompt',
+      // Registration happens via useRegisterSW() in UpdatePrompt.tsx so we
+      // can show the "update available" prompt Claude.md calls for —
+      // without this, the default auto-injected script would register the
+      // service worker a second time.
+      injectRegister: null,
       includeAssets: ['apple-touch-icon.png'],
       manifest: {
         name: 'OzzBooks',

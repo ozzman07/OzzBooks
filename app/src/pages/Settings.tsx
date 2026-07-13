@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
-import { fetchBooks } from '../api/client'
+import { fetchBooks, fetchSources, type ApiSource } from '../api/client'
 import { fetchSettings, putSettings } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { deleteBookDownload } from '../offline/downloadManager'
+import { SourceStatusCard } from '../components/SourceStatusCard'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -22,6 +23,11 @@ export function Settings() {
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null)
   const [downloadedBooks, setDownloadedBooks] = useState<DownloadedBook[]>([])
   const [persisted, setPersisted] = useState<boolean | null>(null)
+  const [sources, setSources] = useState<ApiSource[]>([])
+
+  const refreshSources = useCallback(async () => {
+    setSources(await fetchSources().catch(() => []))
+  }, [])
 
   const refreshDownloads = useCallback(async () => {
     const [cached, books] = await Promise.all([getAllCachedAudioFiles(), fetchBooks().catch(() => [])])
@@ -41,6 +47,7 @@ export function Settings() {
 
   useEffect(() => {
     void refreshDownloads()
+    void refreshSources()
 
     if (navigator.storage?.estimate) {
       navigator.storage.estimate().then((e) => setEstimate({ usage: e.usage ?? 0, quota: e.quota ?? 0 }))
@@ -56,7 +63,7 @@ export function Settings() {
         .then((s) => setBudgetMb(s.storage_budget_mb))
         .catch(() => {})
     }
-  }, [auth.token, refreshDownloads])
+  }, [auth.token, refreshDownloads, refreshSources])
 
   async function requestPersistence() {
     if (typeof navigator.storage?.persist !== 'function') return
@@ -135,6 +142,15 @@ export function Settings() {
           </ul>
         )}
       </section>
+
+      {sources.length > 0 && (
+        <section className="mb-6 rounded-lg border border-slate-800 p-4">
+          <h2 className="mb-2 text-sm font-medium text-slate-200">Library index</h2>
+          {sources.map((source) => (
+            <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
+          ))}
+        </section>
+      )}
 
       <section className="mb-6 rounded-lg border border-slate-800 p-4">
         <h2 className="mb-1 text-sm font-medium text-slate-200">Account</h2>

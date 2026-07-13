@@ -29,6 +29,7 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     status: book.status,
     coverThumbUrl: book.artwork_thumb_path ? artworkUrl(book.id, 'thumb') : undefined,
     coverFullUrl: book.artwork_full_path ? artworkUrl(book.id, 'full') : undefined,
+    createdAt: book.created_at,
   }
 }
 

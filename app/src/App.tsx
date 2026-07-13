@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { PlayerProvider } from './player/PlayerContext'
 import { BottomNav } from './components/BottomNav'
+import { UpdatePrompt } from './components/UpdatePrompt'
 import { Auth } from './pages/Auth'
 import { Library } from './pages/Library'
 import { BookDetail } from './pages/BookDetail'
@@ -23,6 +24,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <AuthProvider>
+      <UpdatePrompt />
       <AuthGate>
         <PlayerProvider>
           <div className="min-h-screen bg-slate-950 text-slate-100">

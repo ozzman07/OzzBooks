@@ -9,6 +9,20 @@ export interface SourceRow {
   path_scope: string
   credentials: string | null
   created_at: string
+  last_scanned_at: string | null
+  last_scan_found: number | null
+  last_scan_created: number | null
+  last_scan_updated: number | null
+  last_scan_failed: number | null
+  last_scan_skipped_duplicates: number | null
+}
+
+export interface ScanIssueRow {
+  id: string
+  source_id: string
+  file_path: string
+  error: string
+  occurred_at: string
 }
 
 export interface BookRow {
@@ -25,6 +39,7 @@ export interface BookRow {
   artwork_full_path: string | null
   volume_normalization_gain: number | null
   content_hash: string | null
+  created_at: string
   updated_at: string
 }
 

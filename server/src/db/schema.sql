@@ -4,8 +4,30 @@ CREATE TABLE IF NOT EXISTS sources (
   label TEXT NOT NULL,
   path_scope TEXT NOT NULL,
   credentials TEXT, -- encrypted blob for cloud source OAuth tokens; null for local/synology paths
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Summary of the most recent scan, surfaced in the UI as index status.
+  -- Null until the first scan runs.
+  last_scanned_at TEXT,
+  last_scan_found INTEGER,
+  last_scan_created INTEGER,
+  last_scan_updated INTEGER,
+  last_scan_failed INTEGER,
+  last_scan_skipped_duplicates INTEGER
 );
+
+-- Per-file failures from the most recent scan of a source (e.g. a corrupt
+-- M4B with no moov atom, or a truncated embedded cover image). Cleared and
+-- repopulated on every scan of that source, so this always reflects current
+-- state rather than accumulating stale history.
+CREATE TABLE IF NOT EXISTS scan_issues (
+  id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  error TEXT NOT NULL,
+  occurred_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_issues_source ON scan_issues(source_id);
 
 CREATE TABLE IF NOT EXISTS books (
   id TEXT PRIMARY KEY,
@@ -21,6 +43,10 @@ CREATE TABLE IF NOT EXISTS books (
   artwork_full_path TEXT,
   volume_normalization_gain REAL,
   content_hash TEXT, -- for duplicate detection across sources
+  -- Set once at first ingestion and never touched again (unlike updated_at,
+  -- which every rescan bumps even for unchanged books) — this is what
+  -- "Recently added" sorting in the UI is based on.
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

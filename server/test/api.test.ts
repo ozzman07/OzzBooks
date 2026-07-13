@@ -56,8 +56,27 @@ describe('sources + ingestion via the API', () => {
       .post(`/api/sources/${sourceId}/scan`)
       .set('Authorization', `Bearer ${TEST_TOKEN}`)
     expect(scanRes.status).toBe(200)
-    expect(scanRes.body.created).toBe(2)
+    expect(scanRes.body.created).toBe(6)
+    expect(scanRes.body.failed).toBe(1) // the corrupt m4b fixture
   }, 30_000)
+
+  it('lists sources with book counts and last-scan summary', async () => {
+    const res = await request(app).get('/api/sources').set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(res.status).toBe(200)
+    const source = res.body.find((s: any) => s.id === sourceId)
+    expect(source.book_count).toBe(6)
+    expect(source.last_scan_failed).toBe(1)
+    expect(source.last_scanned_at).toBeTruthy()
+  })
+
+  it('lists the file(s) that failed on the last scan', async () => {
+    const res = await request(app)
+      .get(`/api/sources/${sourceId}/issues`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveLength(1)
+    expect(res.body[0].file_path).toContain('broken.m4b')
+  })
 
   it('edits a source in place (same id, updated label)', async () => {
     const res = await request(app)
@@ -72,9 +91,9 @@ describe('sources + ingestion via the API', () => {
   it('lists books and returns a book with its chapters', async () => {
     const listRes = await request(app).get('/api/books').set('Authorization', `Bearer ${TEST_TOKEN}`)
     expect(listRes.status).toBe(200)
-    expect(listRes.body).toHaveLength(2)
+    expect(listRes.body).toHaveLength(6)
 
-    const m4bBook = listRes.body.find((b: any) => b.format === 'm4b')
+    const m4bBook = listRes.body.find((b: any) => b.title === 'Mistborn: The Final Empire')
     bookId = m4bBook.id
 
     const detailRes = await request(app).get(`/api/books/${bookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
