@@ -300,7 +300,17 @@ Don't remove them for being "unused."
 
 - **Phase 2 — Multi-user:** UI/permissions layer on top of the
   already-scoped data model (everything above is already
-  `user_id`-scoped)
+  `user_id`-scoped). When onboarding each family member, remember the PWA
+  update gotcha found during initial deployment (2026-07-13): an installed
+  Home Screen icon is its own service-worker context, separate from a
+  Safari tab on the same device — if someone's installed app ever looks
+  stuck on an old version, force-quitting Safari doesn't fix it, they need
+  to swipe the installed app away from the app switcher and reopen it. The
+  in-app "update available" banner (`UpdatePrompt.tsx`) should make this
+  mostly moot going forward, but only once a device has loaded a version
+  that includes that banner in the first place — a device stuck on a
+  pre-`UpdatePrompt` build has to be manually unstuck once, the same way
+  the Mac mini and the first iPad were.
 - **Phase 2b — Metadata cleanup & online enrichment:** two-part project,
   in order (part 2 depends on part 1):
   1. Title/author cleaning: parse a canonical title + author out of messy
