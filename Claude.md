@@ -14,7 +14,7 @@ No native App Store distribution — this is intentionally a PWA
 |---|---|
 | File storage | Synology NAS + cloud sources (Dropbox/Google Drive etc.), home-hosted |
 | File-serving API | Runs on a Mac mini, exposed via **Tailscale + Tailscale Serve** (tailnet-only HTTPS — not publicly exposed) |
-| Sync/auth layer | Cloud-hosted (e.g. Supabase/Railway-style Postgres), independent of home network uptime |
+| Sync/auth layer | Cloud-hosted: Postgres on **Neon** + API on **Render** (both free tier), independent of home network uptime |
 | Frontend | PWA — installable via Add to Home Screen, works offline via service worker |
 | Playback | HTML5 `<audio>` element + Media Session API (lock-screen controls, AirPods/Bluetooth remote, artwork) |
 
@@ -32,6 +32,17 @@ invited to the tailnet. After that it runs in the background — no repeated
 logins. The PWA itself still needs its own login (see "App-level
 authentication" below) since Tailscale only gates network access, not
 which user is using the app.
+
+**Onboarding a new family member (one-time, in order):**
+1. Admin sends a Tailscale invite (from the Tailscale admin console) to
+   the new person's email
+2. They install the Tailscale app on their phone and accept the invite —
+   one-time login, runs in the background afterward
+3. Admin creates (or sends an invite link for) their app-level account,
+   independent of Tailscale
+4. They open the app URL in Safari and use "Add to Home Screen" to
+   install the PWA, then log into their app account
+5. Steps 1–4 are one-time setup only; nothing here repeats per session
 
 ## Platform constraints that shaped these decisions (read before "fixing" things)
 
@@ -75,6 +86,19 @@ which user is using the app.
    Media Session survives realistic session lengths (not just a minute or
    two) without the OS killing it.
 
+## Testing strategy
+
+This is a personal/family project, not a commercial product — don't build
+a full automated test suite. Scope automated tests to the one area
+that's genuinely fiddly and easy to silently break: **ingestion and
+chapter-parsing logic** (M4B chapter atom extraction, MP3-folder chapter
+inference, duplicate-across-sources detection). That's where edge cases
+hide and where a regression is hardest to notice by eye.
+
+Everything else (playback controls, scrubbing, UI behavior) is fine to
+verify by hand via the Validation tasks above and normal manual
+click-through — not worth automating at this scale.
+
 ## Phase 1 (current focus)
 
 ### Playback
@@ -101,6 +125,13 @@ which user is using the app.
   risk
 - Self-heal: on connectivity, verify cached chapters still exist in
   IndexedDB, silently re-fetch anything missing
+- Stream-failure fallback: if a live network stream fails mid-play (Mac
+  mini asleep/restarting/unreachable), first check IndexedDB for that
+  chapter — the existing background pre-fetch means the current chapter
+  is usually already cached, so this should silently resume from the
+  local copy rather than interrupting playback. Only show a
+  user-facing "can't reach your library right now, retry" message (with
+  a few automatic retries + backoff first) when no local copy exists
 
 ### Download cleanup
 - Manual delete, per book/chapter, always available
@@ -114,7 +145,10 @@ which user is using the app.
   day one even though `cfi` (ebook position) isn't used until Phase 3
 - Written to local storage immediately (small, low eviction risk) on
   every pause / every N seconds during playback
-- Queued to sync to the cloud layer whenever connectivity is available
+- Queued to sync to the cloud layer whenever connectivity is available,
+  with retry + backoff on failed sync attempts (separate concern from the
+  last-write-wins conflict policy below — this is about delivery, not
+  conflicting values)
 - Cross-device conflict handling: **last-write-wins** (accepted as
   sufficient for now; revisit only if it becomes a real problem)
 - Bookmarks are a **separate, deliberate** action from continuous
@@ -123,6 +157,8 @@ which user is using the app.
 ### Ingestion & library
 - Ingestion scans Synology + cloud sources, normalizes into a consistent
   internal book model (handles mixed M4B / MP3-folder formats)
+- DRM-encumbered formats (e.g. Audible `.aax`/`.aaxc`) are explicitly
+  **out of scope** — DRM-free audio only (M4B, MP3, etc.)
 - Chapter extraction: M4B embedded chapter atoms; MP3 folders infer
   chapters from file/track order or ID3 chapter frames if present
 - Trigger: manual "rescan now" + scheduled nightly scan
@@ -174,6 +210,12 @@ which user is using the app.
   using the app — this matters once Phase 2 multi-user lands)
 - Lightweight token check on the file-serving API itself as
   defense-in-depth beyond Tailscale network gating
+- `sources.credentials` (cloud source OAuth tokens/API keys) must be
+  encrypted at rest, not stored as plaintext — this is the one place the
+  data model holds third-party secrets
+- Cloud source OAuth tokens need a refresh flow (expiry detection +
+  re-auth) so ingestion scans don't silently start failing when a token
+  lapses
 
 ### PWA platform concerns
 - Service worker update strategy: explicit "update available, tap to
@@ -186,11 +228,20 @@ which user is using the app.
 ## Operational notes (not code, but required for the system to work)
 
 - Mac mini sleep/power settings must prevent the file-serving API from
-  going dark (disable sleep or schedule wake) — Tailscale itself staying
-  up doesn't help if the machine behind it is asleep
+  going dark during expected-use hours (disable sleep, or schedule sleep
+  only for known-idle overnight hours) — this is the accepted primary
+  mechanism (see decision below), not remote Wake-on-LAN
+- Health-check/alerting on the file-serving API (a simple uptime ping is
+  fine) so an unexpected outage is noticed rather than discovered when a
+  user complains
 - Periodic backup of the ingestion database (metadata, extracted artwork,
   match/relink history) — the source files on the NAS are already safe,
   but curation work (matches, edits, relinks) lives only in this database
+- Periodically verify backups are actually restorable, not just taken —
+  restore the latest backup into a scratch copy and spot-check it opens
+  with sane data (e.g. row counts, a few known records). An untested
+  backup can fail silently for months and only get discovered when
+  actually needed; a quarterly manual check is enough at this scale
 
 ## Data model (current, Phase 1 scope)
 
@@ -201,9 +252,19 @@ sources
 books
   id, source_id, file_path, audio_source, epub_source,
   status ('active' | 'missing'),
-  series_name, series_number,
+  series_name, series_number,  -- denormalized onto books rather than a
+                                -- separate series table; accepted for now,
+                                -- means series naming consistency across a
+                                -- book's entries is a manual/ingestion
+                                -- concern, not enforced by the schema
   artwork_thumb_path, artwork_full_path,
   volume_normalization_gain
+
+chapters
+  id, book_id, index, title, start_time, duration
+  -- required by chapter-level downloads/position/navigation
+  -- (downloads.chapter_id and progress at chapter granularity both
+  -- reference this)
 
 users
   id, ... (auth fields)
@@ -261,6 +322,12 @@ Don't remove them for being "unused."
   series, built on the Phase 3b transcription infrastructure and series
   metadata. Exact approach TBD — pending input from a related project a
   family member is separately exploring. Don't over-design this yet.
+- **Phase 6 — Remote wake automation:** on-demand Wake-on-LAN for the Mac
+  mini, so it can sleep freely instead of being kept awake on a schedule.
+  Requires an always-on device on the home network capable of running
+  Tailscale to act as the local WoL relay (the current Synology DS413j
+  can't — see accepted decision below). Blocked on acquiring that
+  hardware; not worth building until then.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
@@ -269,5 +336,27 @@ Don't remove them for being "unused."
 - CarPlay: unsupported, accepted platform limitation
 - Extended offline (weeks, no connectivity): explicitly out of scope;
   short-gap resilience is the actual target
+- Remote/on-demand Wake-on-LAN trigger for the Mac mini: **descoped**.
+  The only other always-on home device is a Synology DS413j, which is
+  too old (single-core, 256MB RAM, no DSM version that supports
+  Tailscale or Docker) to act as a remote WoL relay without exposing it
+  to the public internet — which defeats the Tailscale-only security
+  model. Accepted approach instead: prevent Mac mini sleep during
+  expected-use hours (or schedule sleep only overnight). WoL stays
+  enabled on the mini as a manual, same-network fallback only. Revisit
+  as **Phase 6** if always-on hardware capable of running Tailscale is
+  added.
 - Native wrapper (Capacitor etc.): explicit non-goal unless Phase 1
   validation testing proves the PWA approach unworkable
+- DRM-encumbered audiobooks (e.g. Audible): out of scope. This is a
+  DRM-free library only
+- Cloud sync/auth hosting: **Neon (Postgres) + Render (API)**, both free
+  tier — chosen over Railway (no longer free) and Supabase (free, but a
+  project pauses after 7 days idle and needs a manual dashboard click to
+  resume). Render's free web service spins down after ~15 min idle and
+  takes 30-60s to wake on the next request — no action needed, it
+  resolves itself automatically. Preferred over Supabase's pause
+  specifically because it self-heals without requiring anyone to notice
+  and intervene, consistent with this project's general preference for
+  self-healing behavior over mechanisms that need manual attention.
+  Revisit only if the cold-start delay becomes a real nuisance.
