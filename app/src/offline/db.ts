@@ -9,8 +9,13 @@ export interface LocalProgressEntry {
   synced: boolean
 }
 
-export interface CachedChapterEntry {
-  chapterId: string
+// Keyed by sourceFileId, not chapterId: M4B chapters share one underlying
+// file (see Chapter.sourceFileId in ../types.ts), so caching per-chapter
+// would silently re-download the same bytes under every chapter of the
+// same book. Downloading any one chapter of an M4B book makes the whole
+// book playable offline, which is also the behaviorally correct outcome.
+export interface CachedAudioFileEntry {
+  sourceFileId: string
   bookId: string
   blob: Blob
   sizeBytes: number
@@ -26,9 +31,9 @@ interface OzzBooksDB extends DBSchema {
     key: string // bookId
     value: LocalProgressEntry
   }
-  chapters: {
-    key: string // chapterId
-    value: CachedChapterEntry
+  audioFiles: {
+    key: string // sourceFileId
+    value: CachedAudioFileEntry
     indexes: { bookId: string; lastPlayedAt: string }
   }
 }
@@ -41,9 +46,9 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
       upgrade(db) {
         db.createObjectStore('progress', { keyPath: 'bookId' })
 
-        const chapters = db.createObjectStore('chapters', { keyPath: 'chapterId' })
-        chapters.createIndex('bookId', 'bookId')
-        chapters.createIndex('lastPlayedAt', 'lastPlayedAt')
+        const audioFiles = db.createObjectStore('audioFiles', { keyPath: 'sourceFileId' })
+        audioFiles.createIndex('bookId', 'bookId')
+        audioFiles.createIndex('lastPlayedAt', 'lastPlayedAt')
       },
     })
   }
