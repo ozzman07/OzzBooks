@@ -102,3 +102,25 @@ export function putProgress(
     throw err
   })
 }
+
+export interface UserSettings {
+  user_id: string
+  storage_budget_mb: number
+  playback_speed: number
+  skip_silence_enabled: boolean
+}
+
+export function fetchSettings(token: string): Promise<UserSettings> {
+  return cloudFetch<UserSettings>('/sync/settings', { headers: authHeaders(token) })
+}
+
+export function putSettings(
+  token: string,
+  data: { storageBudgetMb?: number; playbackSpeed?: number; skipSilenceEnabled?: boolean },
+): Promise<UserSettings> {
+  return cloudFetch<UserSettings>('/sync/settings', {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(data),
+  })
+}

@@ -12,6 +12,8 @@ import type { Book, Chapter } from '../types'
 import { useSkipSilence } from './useSkipSilence'
 import { useAuth } from '../auth/AuthContext'
 import { recordProgress } from '../offline/syncEngine'
+import { getCachedAudioFile, touchLastPlayed } from '../offline/audioFileStore'
+import { downloadChapter } from '../offline/downloadManager'
 
 export type SleepTimer = { kind: 'duration'; remainingSeconds: number } | { kind: 'end-of-chapter' }
 
@@ -52,6 +54,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // now* and can move to a same-file sibling without a reload (see the
   // timeupdate handler below).
   const loadedSourceFileIdRef = useRef<string | null>(null)
+  // The object URL currently assigned to audio.src, when playing from a
+  // cached blob — tracked so it can be revoked once no longer needed.
+  const objectUrlRef = useRef<string | null>(null)
 
   const [book, setBook] = useState<Book | null>(null)
   const [chapter, setChapter] = useState<Chapter | null>(null)
@@ -79,19 +84,55 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const currentTime = chapter ? Math.max(0, fileTime - chapter.startTime) : 0
   const duration = chapter?.duration ?? 0
 
-  /** Loads a chapter's stream into the audio element and seeks to a
-   * chapter-relative offset, waiting for metadata if needed. */
-  const loadIntoAudio = useCallback((target: Chapter, chapterRelativeOffset: number, autoplay: boolean) => {
-    const audio = audioRef.current
-    if (!audio) return
-    loadedSourceFileIdRef.current = target.sourceFileId
-    audio.src = target.audioUrl
-    const applyStart = () => {
-      audio.currentTime = target.startTime + chapterRelativeOffset
-      if (autoplay) audio.play()
+  // Downloads the given chapter (if not already cached) plus the next one
+  // in the book, for actively-playing books — "keep current + next 1-2
+  // chapters cached" from Claude.md. Best-effort: a failure just means
+  // playback keeps using the network stream.
+  const triggerPrefetch = useCallback((book: Book, current: Chapter) => {
+    const idx = book.chapters.findIndex((c) => c.id === current.id)
+    const toPreload = [current, book.chapters[idx + 1]].filter((c): c is Chapter => Boolean(c))
+    for (const ch of toPreload) {
+      downloadChapter(ch).catch(() => {})
     }
-    audio.addEventListener('loadedmetadata', applyStart, { once: true })
   }, [])
+
+  /** Resolves the actual audio.src to use: a local object URL if this
+   * chapter's underlying file is already cached (offline-capable, and the
+   * stream-failure fallback from Claude.md — a cached chapter just can't
+   * fail to load from the network in the first place), the network stream
+   * otherwise. */
+  const resolveAudioSrc = useCallback(async (target: Chapter): Promise<string> => {
+    const cached = await getCachedAudioFile(target.sourceFileId)
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current)
+      objectUrlRef.current = null
+    }
+    if (!cached) return target.audioUrl
+    void touchLastPlayed(target.sourceFileId, new Date().toISOString())
+    const url = URL.createObjectURL(cached.blob)
+    objectUrlRef.current = url
+    return url
+  }, [])
+
+  /** Loads a chapter's audio into the audio element and seeks to a
+   * chapter-relative offset, waiting for metadata if needed. */
+  const loadIntoAudio = useCallback(
+    (book: Book, target: Chapter, chapterRelativeOffset: number, autoplay: boolean) => {
+      const audio = audioRef.current
+      if (!audio) return
+      loadedSourceFileIdRef.current = target.sourceFileId
+      void resolveAudioSrc(target).then((src) => {
+        audio.src = src
+        const applyStart = () => {
+          audio.currentTime = target.startTime + chapterRelativeOffset
+          if (autoplay) audio.play()
+        }
+        audio.addEventListener('loadedmetadata', applyStart, { once: true })
+      })
+      triggerPrefetch(book, target)
+    },
+    [resolveAudioSrc, triggerPrefetch],
+  )
 
   const loadBook = useCallback(
     (nextBook: Book, chapterId?: string, resumeAt = 0) => {
@@ -100,7 +141,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setChapter(target ?? null)
       if (target && audioRef.current) {
         audioRef.current.playbackRate = playbackRate
-        loadIntoAudio(target, resumeAt, false)
+        loadIntoAudio(nextBook, target, resumeAt, false)
       }
     },
     [playbackRate, loadIntoAudio],
@@ -146,7 +187,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         audio.currentTime = target.startTime + chapterRelativeOffset
         if (wasPlaying || autoplayIfPaused) audio.play()
       } else {
-        loadIntoAudio(target, chapterRelativeOffset, wasPlaying || autoplayIfPaused)
+        loadIntoAudio(book, target, chapterRelativeOffset, wasPlaying || autoplayIfPaused)
       }
     },
     [book, isPlaying, loadIntoAudio],

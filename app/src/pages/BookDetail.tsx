@@ -4,10 +4,50 @@ import { adaptBookDetail } from '../api/adapter'
 import { reconcileProgress } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
+import { useDownloads } from '../hooks/useDownloads'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
+import type { Book } from '../types'
+
+function DownloadBadge({
+  book,
+  downloads,
+}: {
+  book: Book
+  downloads: ReturnType<typeof useDownloads>
+}) {
+  const cachedCount = book.chapters.filter((c) => downloads.isCached(c)).length
+  if (cachedCount === 0) {
+    return (
+      <button
+        onClick={() => void downloads.downloadAll()}
+        className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
+      >
+        Download whole book
+      </button>
+    )
+  }
+  if (cachedCount === book.chapters.length) {
+    return (
+      <button
+        onClick={() => void downloads.removeAll()}
+        className="rounded border border-slate-700 px-3 py-1.5 text-xs text-amber-400"
+      >
+        Downloaded — remove
+      </button>
+    )
+  }
+  return (
+    <button
+      onClick={() => void downloads.downloadAll()}
+      className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
+    >
+      {cachedCount}/{book.chapters.length} downloaded — finish
+    </button>
+  )
+}
 
 export function BookDetail() {
   const { bookId } = useParams()
@@ -24,6 +64,8 @@ export function BookDetail() {
     }
     return book
   }, [bookId])
+
+  const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.chapters : [])
 
   if (result.status === 'loading') {
     return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
@@ -75,18 +117,31 @@ export function BookDetail() {
         {book.progress ? 'Resume' : 'Play'}
       </button>
 
-      <p className="mt-3 text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>
+      <div className="mt-3 flex items-center justify-between">
+        <p className="text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>
+        <DownloadBadge book={book} downloads={downloads} />
+      </div>
 
       <ul className="mt-6 divide-y divide-slate-800">
         {book.chapters.map((chapter) => (
-          <li key={chapter.id}>
+          <li key={chapter.id} className="flex items-center justify-between py-3">
             <button
               onClick={() => playFrom(chapter.id)}
               disabled={book.status === 'missing'}
-              className="flex w-full items-center justify-between py-3 text-left disabled:opacity-40"
+              className="flex-1 text-left disabled:opacity-40"
             >
               <span className="text-sm text-slate-200">{chapter.title}</span>
-              <span className="text-xs text-slate-500">{formatClock(chapter.duration)}</span>
+            </button>
+            <span className="text-xs text-slate-500">{formatClock(chapter.duration)}</span>
+            <button
+              onClick={() =>
+                void (downloads.isCached(chapter) ? downloads.remove(chapter) : downloads.download(chapter))
+              }
+              disabled={downloads.isPending(chapter)}
+              aria-label={downloads.isCached(chapter) ? 'Remove download' : 'Download chapter'}
+              className="ml-3 text-lg text-slate-400 disabled:opacity-40"
+            >
+              {downloads.isPending(chapter) ? '⏳' : downloads.isCached(chapter) ? '✓' : '⬇'}
             </button>
           </li>
         ))}
