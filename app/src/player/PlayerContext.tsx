@@ -11,7 +11,7 @@ import {
 import type { Book, Chapter } from '../types'
 import { useSkipSilence } from './useSkipSilence'
 import { useAuth } from '../auth/AuthContext'
-import { putProgress } from '../api/cloudClient'
+import { recordProgress } from '../offline/syncEngine'
 
 export type SleepTimer = { kind: 'duration'; remainingSeconds: number } | { kind: 'end-of-chapter' }
 
@@ -195,18 +195,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setSleepTimer(timer)
   }, [])
 
-  // Best-effort sync to the cloud layer — no local-first outbox/retry queue
-  // yet (that's the IndexedDB piece from Claude.md's offline design, not
-  // built in the frontend yet), so a failed push here just means this
-  // device's cloud copy goes stale until the next successful one.
+  // Writes to the local IndexedDB outbox immediately (always succeeds,
+  // no network dependency) and kicks off a best-effort sync — see
+  // src/offline/syncEngine.ts for the retry/backoff queue.
   const pushProgress = useCallback(() => {
     const { book, chapter, fileTime, token } = latestRef.current
-    if (!book || !chapter || !token) return
-    putProgress(token, book.id, {
-      position: { type: 'timestamp', value: Math.max(0, fileTime - chapter.startTime) },
-      chapterId: chapter.id,
-      updatedAt: new Date().toISOString(),
-    }).catch(() => {})
+    if (!book || !chapter) return
+    void recordProgress(
+      token,
+      book.id,
+      chapter.id,
+      { type: 'timestamp', value: Math.max(0, fileTime - chapter.startTime) },
+      new Date().toISOString(),
+    )
   }, [])
 
   // Push periodically while playing, matching "every N seconds during

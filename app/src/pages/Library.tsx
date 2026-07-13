@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { fetchBooks } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
-import { fetchAllProgress } from '../api/cloudClient'
+import { reconcileAllProgress } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
@@ -14,14 +14,14 @@ export function Library() {
   const result = useAsync(async () => {
     const [books, progressEntries] = await Promise.all([
       fetchBooks().then((rows) => rows.map(adaptBookListItem)),
-      auth.token ? fetchAllProgress(auth.token) : Promise.resolve([]),
+      reconcileAllProgress(auth.token),
     ])
 
     const byBookId = new Map(books.map((b) => [b.id, b]))
     const continueListening = progressEntries
       .slice()
-      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-      .map((p) => byBookId.get(p.book_id))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((p) => byBookId.get(p.bookId))
       .filter((b): b is Book => b !== undefined)
 
     return { books, continueListening }
