@@ -14,7 +14,7 @@ No native App Store distribution — this is intentionally a PWA
 |---|---|
 | File storage | Synology NAS + cloud sources (Dropbox/Google Drive etc.), home-hosted |
 | File-serving API | Runs on a Mac mini, exposed via **Tailscale + Tailscale Serve** (tailnet-only HTTPS — not publicly exposed) |
-| Sync/auth layer | Cloud-hosted (e.g. Supabase/Railway-style Postgres), independent of home network uptime |
+| Sync/auth layer | Cloud-hosted: Postgres on **Neon** + API on **Render** (both free tier), independent of home network uptime |
 | Frontend | PWA — installable via Add to Home Screen, works offline via service worker |
 | Playback | HTML5 `<audio>` element + Media Session API (lock-screen controls, AirPods/Bluetooth remote, artwork) |
 
@@ -350,3 +350,13 @@ Don't remove them for being "unused."
   validation testing proves the PWA approach unworkable
 - DRM-encumbered audiobooks (e.g. Audible): out of scope. This is a
   DRM-free library only
+- Cloud sync/auth hosting: **Neon (Postgres) + Render (API)**, both free
+  tier — chosen over Railway (no longer free) and Supabase (free, but a
+  project pauses after 7 days idle and needs a manual dashboard click to
+  resume). Render's free web service spins down after ~15 min idle and
+  takes 30-60s to wake on the next request — no action needed, it
+  resolves itself automatically. Preferred over Supabase's pause
+  specifically because it self-heals without requiring anyone to notice
+  and intervene, consistent with this project's general preference for
+  self-healing behavior over mechanisms that need manual attention.
+  Revisit only if the cold-start delay becomes a real nuisance.

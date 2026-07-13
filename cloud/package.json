@@ -4,6 +4,9 @@
   "description": "OzzBooks cloud sync/auth layer — accounts, playback position, bookmarks, settings. Hosted independently of the home network (Supabase/Railway-style Postgres).",
   "type": "module",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc && cp src/db/schema.sql dist/db/schema.sql",

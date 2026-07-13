@@ -22,6 +22,42 @@ npm run dev                  # runs migrations automatically on startup
 
 Or run migrations standalone: `npm run migrate`.
 
+## Deploy (Neon + Render, both free)
+
+**1. Database — Neon**
+1. Create a free account at neon.tech
+2. Create a project (any name, e.g. `ozzbooks`)
+3. On the project dashboard, copy the connection string it gives you —
+   it looks like `postgres://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`.
+   Use the **full string, including `?sslmode=require`** — that's how it
+   connects securely, and `pg` (this project's Postgres driver) reads it
+   straight out of the box.
+
+**2. API — Render**
+1. Create a free account at render.com and connect your GitHub account
+2. New → Web Service → pick the `ozzbooks` repo
+3. Set:
+   - **Root Directory**: `cloud`
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+   - **Instance Type**: Free
+4. Add environment variables (Render → your service → Environment):
+   - `DATABASE_URL` — the Neon connection string from step 1
+   - `OZZBOOKS_JWT_SECRET` — a random secret; generate one locally with
+     `openssl rand -hex 32` and paste the result. This signs login
+     sessions — keep it private, never commit it.
+5. Deploy. First boot runs the database migration automatically (see
+   `src/server.ts`) — no manual migration step needed.
+6. Render gives you a public URL like `https://ozzbooks-cloud.onrender.com`
+   — that's what the frontend's `VITE_CLOUD_API_BASE_URL` should point to.
+
+**Heads up on the free tier**: Render's free web services spin down after
+~15 minutes idle and take 30-60 seconds to wake up on the next request —
+no action needed, it just resolves itself slowly. This is expected, not
+a bug — see the "Open / accepted decisions" section in `../Claude.md` for
+why this tradeoff was chosen over Supabase's alternative (which pauses
+and needs a manual dashboard click to resume instead).
+
 ## API
 
 - `POST /auth/signup` `{ email, password }` → `{ token, user }`
