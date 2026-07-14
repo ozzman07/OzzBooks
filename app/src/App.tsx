@@ -1,6 +1,7 @@
 import { Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { PlayerProvider } from './player/PlayerContext'
+import { LibraryViewProvider } from './library/LibraryViewContext'
 import { BottomNav } from './components/BottomNav'
 import { UpdatePrompt } from './components/UpdatePrompt'
 import { Auth } from './pages/Auth'
@@ -27,15 +28,17 @@ export default function App() {
       <UpdatePrompt />
       <AuthGate>
         <PlayerProvider>
-          <div className="min-h-screen bg-slate-950 text-slate-100">
-            <Routes>
-              <Route path="/" element={<Library />} />
-              <Route path="/book/:bookId" element={<BookDetail />} />
-              <Route path="/now-playing" element={<NowPlaying />} />
-              <Route path="/settings" element={<Settings />} />
-            </Routes>
-            <BottomNav />
-          </div>
+          <LibraryViewProvider>
+            <div className="min-h-screen bg-slate-950 text-slate-100">
+              <Routes>
+                <Route path="/" element={<Library />} />
+                <Route path="/book/:bookId" element={<BookDetail />} />
+                <Route path="/now-playing" element={<NowPlaying />} />
+                <Route path="/settings" element={<Settings />} />
+              </Routes>
+              <BottomNav />
+            </div>
+          </LibraryViewProvider>
         </PlayerProvider>
       </AuthGate>
     </AuthProvider>

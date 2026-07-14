@@ -72,9 +72,13 @@ export interface ApiBook {
 }
 
 // List endpoint aggregates total_duration server-side (SUM over chapters);
-// the detail endpoint returns the chapters themselves instead.
+// the detail endpoint returns the chapters themselves instead. Also
+// includes last_chapter_id, which the library view uses (together with
+// synced progress) to derive a lightweight "finished" status without
+// fetching every book's full chapter list.
 export interface ApiBookListItem extends ApiBook {
   total_duration: number
+  last_chapter_id: string | null
 }
 
 export interface ApiBookDetail extends ApiBook {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchBooks } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
@@ -9,15 +9,32 @@ import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
 import type { Book } from '../types'
-
-type SortOption = 'title' | 'author' | 'series' | 'recent'
-type ViewMode = 'list' | 'byAuthor'
+import type { LocalProgressEntry } from '../offline/db'
+import { useLibraryView, type SortOption, type StatusFilter } from '../library/LibraryViewContext'
 
 const SORT_LABELS: Record<SortOption, string> = {
   title: 'Title (A–Z)',
   author: 'Author (A–Z)',
   series: 'Series',
   recent: 'Recently added',
+}
+
+const STATUS_LABELS: Record<StatusFilter, string> = {
+  all: 'All',
+  'not-started': 'Not started',
+  'in-progress': 'In progress',
+  finished: 'Finished',
+}
+
+// Reached-the-last-chapter is a proxy for "finished," not literally
+// "played to the last second" — getting that precise would mean fetching
+// every book's full chapter list just to compare position against that
+// chapter's own duration, which doesn't scale to a library this size.
+// Close enough to be useful as a coarse filter.
+function bookStatus(book: Book, progress: LocalProgressEntry | undefined): StatusFilter {
+  if (!progress) return 'not-started'
+  if (book.lastChapterId && progress.chapterId === book.lastChapterId) return 'finished'
+  return 'in-progress'
 }
 
 function collate(a: string, b: string): number {
@@ -51,11 +68,70 @@ function collateByAuthor(a: string, b: string): number {
   return collate(authorSortKey(a), authorSortKey(b)) || collate(a, b)
 }
 
-interface AuthorGroup {
-  author: string
+// Books outside a series sort by their own title, alongside series names,
+// so everything still lands in one coherent list rather than being split
+// into separate "grouped"/"ungrouped" runs. No series *number* yet (folder
+// names alone aren't a reliable source for it — see scan.ts), so books
+// within the same series currently land in title order, not reading order;
+// the planned LLM-assisted extraction will backfill series_number and this
+// will automatically start using it once populated.
+function compareBySeriesThenTitle(a: Book, b: Book): number {
+  const seriesCompare = collate(a.seriesName ?? a.title, b.seriesName ?? b.title)
+  if (seriesCompare !== 0) return seriesCompare
+  // No-op today (seriesNumber is always null until the LLM pass populates
+  // it), kept so ordering within a series automatically switches from
+  // title order to reading order the moment that data exists.
+  return (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0) || collate(a.title, b.title)
+}
+
+interface SeriesGroup {
+  seriesName: string
   books: Book[]
 }
 
+// Only a folder-derived series with 2+ books reads as an actual series for
+// browsing purposes — a lone book under a detected "series" folder is more
+// likely an incidental intermediate folder than a real series, so it folds
+// into the standalone bucket instead of cluttering the view with singleton
+// groups.
+function groupBySeries(books: Book[]): { series: SeriesGroup[]; standalone: Book[] } {
+  const bySeriesName = new Map<string, Book[]>()
+  const standalone: Book[] = []
+  for (const book of books) {
+    if (!book.seriesName) {
+      standalone.push(book)
+      continue
+    }
+    const list = bySeriesName.get(book.seriesName) ?? []
+    list.push(book)
+    bySeriesName.set(book.seriesName, list)
+  }
+
+  const series: SeriesGroup[] = []
+  for (const [seriesName, group] of bySeriesName) {
+    if (group.length < 2) {
+      standalone.push(...group)
+      continue
+    }
+    series.push({ seriesName, books: group.slice().sort((a, b) => collate(a.title, b.title)) })
+  }
+
+  series.sort((a, b) => collate(a.seriesName, b.seriesName))
+  standalone.sort((a, b) => collate(a.title, b.title))
+  return { series, standalone }
+}
+
+interface AuthorGroup {
+  author: string
+  seriesGroups: SeriesGroup[]
+  standalone: Book[]
+}
+
+// Nests the same series-vs-standalone grouping used by the By Series view
+// inside each author, instead of just sorting an author's books by series
+// (which put same-series books adjacent but with no visual separation from
+// whatever came before/after — hard to tell "these 3 tiles are one series"
+// from a flat grid at a glance).
 function groupByAuthor(books: Book[]): AuthorGroup[] {
   const byAuthor = new Map<string, Book[]>()
   for (const book of books) {
@@ -64,7 +140,10 @@ function groupByAuthor(books: Book[]): AuthorGroup[] {
     byAuthor.set(book.author, list)
   }
   return [...byAuthor.entries()]
-    .map(([author, group]) => ({ author, books: group.slice().sort((a, b) => collate(a.title, b.title)) }))
+    .map(([author, group]) => {
+      const { series, standalone } = groupBySeries(group)
+      return { author, seriesGroups: series, standalone }
+    })
     .sort((a, b) => collateByAuthor(a.author, b.author))
 }
 
@@ -91,14 +170,8 @@ function sortBooks(books: Book[], sortBy: SortOption): Book[] {
     switch (sortBy) {
       case 'author':
         return collateByAuthor(a.author, b.author) || collate(a.title, b.title)
-      case 'series': {
-        // Books outside a series sort by their own title, alongside
-        // series names, so everything still lands in one coherent list
-        // rather than being split into separate "grouped"/"ungrouped" runs.
-        const seriesCompare = collate(a.seriesName ?? a.title, b.seriesName ?? b.title)
-        if (seriesCompare !== 0) return seriesCompare
-        return (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0) || collate(a.title, b.title)
-      }
+      case 'series':
+        return compareBySeriesThenTitle(a, b)
       case 'recent':
         return b.createdAt.localeCompare(a.createdAt)
       case 'title':
@@ -110,9 +183,29 @@ function sortBooks(books: Book[], sortBy: SortOption): Book[] {
 
 export function Library() {
   const auth = useAuth()
-  const [search, setSearch] = useState('')
-  const [sortBy, setSortBy] = useState<SortOption>('title')
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const {
+    search,
+    setSearch,
+    sortBy,
+    setSortBy,
+    viewMode,
+    setViewMode,
+    statusFilter,
+    setStatusFilter,
+    needsAttentionOnly,
+    setNeedsAttentionOnly,
+    scrollYRef,
+  } = useLibraryView()
+
+  // Captures the scroll position exactly once, at the moment this page is
+  // navigated away from (e.g. to play a book) — not on every scroll event,
+  // since nothing needs it until then.
+  useEffect(() => {
+    return () => {
+      scrollYRef.current = window.scrollY
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const result = useAsync(async () => {
     const [books, progressEntries] = await Promise.all([
@@ -121,32 +214,49 @@ export function Library() {
     ])
 
     const byBookId = new Map(books.map((b) => [b.id, b]))
+    const progressByBookId = new Map(progressEntries.map((p) => [p.bookId, p]))
     const continueListening = progressEntries
       .slice()
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((p) => byBookId.get(p.bookId))
       .filter((b): b is Book => b !== undefined)
 
-    return { books, continueListening }
+    return { books, continueListening, progressByBookId }
   }, [])
 
   const filteredBooks = useMemo(() => {
     if (result.status !== 'success') return []
+    const { books, progressByBookId } = result.data
     const query = search.trim().toLowerCase()
-    return query
-      ? result.data.books.filter(
-          (b) => b.title.toLowerCase().includes(query) || b.author.toLowerCase().includes(query),
-        )
-      : result.data.books
-  }, [result, search])
+
+    return books.filter((b) => {
+      if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
+      if (needsAttentionOnly && b.status !== 'missing') return false
+      if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
+      return true
+    })
+  }, [result, search, statusFilter, needsAttentionOnly])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
 
-  // Author browse fixes its own ordering (group by author, title within
-  // group) rather than the sort dropdown — grouping already establishes an
-  // order across authors, so the dropdown's options don't map cleanly onto
-  // "what order do groups/books appear in" the way they do for the flat list.
+  // Author browse fixes its own ordering (group by author, series-then-title
+  // within group) rather than the sort dropdown — grouping already
+  // establishes an order across authors, so the dropdown's options don't
+  // map cleanly onto "what order do groups/books appear in" the way they do
+  // for the flat list.
   const authorGroups = useMemo(() => groupByAuthor(filteredBooks), [filteredBooks])
+  const seriesGroups = useMemo(() => groupBySeries(filteredBooks), [filteredBooks])
+
+  // Restores the scroll position captured above, once the book grid has
+  // actually rendered (not before — restoring against an empty "Loading…"
+  // page would just scroll back to the top again once content arrives).
+  // useLayoutEffect rather than useEffect so it applies before the browser
+  // paints this render, avoiding a visible flash at the top first.
+  useLayoutEffect(() => {
+    if (result.status !== 'success') return
+    window.scrollTo(0, scrollYRef.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result.status])
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
@@ -206,6 +316,12 @@ export function Library() {
               >
                 By Author
               </button>
+              <button
+                onClick={() => setViewMode('bySeries')}
+                className={`px-3 py-1.5 ${viewMode === 'bySeries' ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+              >
+                By Series
+              </button>
             </div>
             {viewMode === 'list' && (
               <select
@@ -222,8 +338,32 @@ export function Library() {
             )}
           </div>
 
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <div className="flex overflow-hidden rounded-lg border border-slate-700 text-xs">
+              {(Object.entries(STATUS_LABELS) as [StatusFilter, string][]).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setStatusFilter(value)}
+                  className={`px-2.5 py-1.5 ${statusFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setNeedsAttentionOnly((v) => !v)}
+              className={`rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs ${
+                needsAttentionOnly ? 'bg-red-600/90 text-white' : 'bg-slate-900 text-slate-300'
+              }`}
+            >
+              Needs attention
+            </button>
+          </div>
+
           {filteredBooks.length === 0 ? (
-            <p className="px-2 text-center text-slate-400">No books match "{search}".</p>
+            <p className="px-2 text-center text-slate-400">
+              {search ? `No books match "${search}".` : 'No books match these filters.'}
+            </p>
           ) : viewMode === 'list' ? (
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
               {visibleBooks.map((book) => (
@@ -232,12 +372,50 @@ export function Library() {
                 </li>
               ))}
             </ul>
+          ) : viewMode === 'byAuthor' ? (
+            <div className="space-y-6">
+              {authorGroups.map((group) => {
+                const total = group.seriesGroups.reduce((sum, s) => sum + s.books.length, 0) + group.standalone.length
+                return (
+                  <div key={group.author}>
+                    <h3 className="mb-2 text-sm font-medium text-slate-300">
+                      {group.author} · {total}
+                    </h3>
+                    <div className="space-y-4">
+                      {group.seriesGroups.map((seriesGroup) => (
+                        <div key={seriesGroup.seriesName}>
+                          <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+                            {seriesGroup.seriesName} · {seriesGroup.books.length}
+                          </h4>
+                          <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
+                            {seriesGroup.books.map((book) => (
+                              <li key={book.id}>
+                                <BookTile book={book} />
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                      {group.standalone.length > 0 && (
+                        <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
+                          {group.standalone.map((book) => (
+                            <li key={book.id}>
+                              <BookTile book={book} />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           ) : (
             <div className="space-y-6">
-              {authorGroups.map((group) => (
-                <div key={group.author}>
+              {seriesGroups.series.map((group) => (
+                <div key={group.seriesName}>
                   <h3 className="mb-2 text-sm font-medium text-slate-300">
-                    {group.author} · {group.books.length}
+                    {group.seriesName} · {group.books.length}
                   </h3>
                   <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
                     {group.books.map((book) => (
@@ -248,6 +426,20 @@ export function Library() {
                   </ul>
                 </div>
               ))}
+              {seriesGroups.standalone.length > 0 && (
+                <div>
+                  <h3 className="mb-2 text-sm font-medium text-slate-300">
+                    Not part of a series · {seriesGroups.standalone.length}
+                  </h3>
+                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
+                    {seriesGroups.standalone.map((book) => (
+                      <li key={book.id}>
+                        <BookTile book={book} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </section>
