@@ -1,14 +1,43 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { usePlayer } from '../player/PlayerContext'
 import { CoverArt } from '../components/CoverArt'
-import { formatClock } from '../lib/format'
+import { formatClock, formatDuration } from '../lib/format'
 
 const SLEEP_OPTIONS_MIN = [15, 30, 45, 60]
+// A dragged <input type="range"> fires onChange continuously — many times
+// per second, not just on release. Calling player.seek() on every one of
+// those was setting audio.currentTime dozens of times in rapid succession,
+// which is exactly the kind of thrashing that can overwhelm a media
+// element's decode pipeline and produce a stuck/looping state (this was
+// the actual cause of the "scrubbing gets stuck in a loop" bug — the skip
+// buttons only ever call seek() once, which is why they never triggered
+// it). Debouncing so the real seek only fires once the value settles fixes
+// it at the source, for every input method (drag, keyboard) at once.
+const SCRUB_DEBOUNCE_MS = 200
 
 export function NowPlaying() {
   const player = usePlayer()
   const [showSleepMenu, setShowSleepMenu] = useState(false)
-  const { book, chapter } = player
+  const [scrubValue, setScrubValue] = useState<number | null>(null)
+  const { book, chapter, isBuffering, streamError, finished } = player
+
+  useEffect(() => {
+    if (scrubValue === null) return
+    const id = setTimeout(() => {
+      player.seek(scrubValue)
+      setScrubValue(null)
+    }, SCRUB_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrubValue])
+
+  const bookRemaining = (() => {
+    if (!book || !chapter) return null
+    const chapterIdx = book.chapters.findIndex((c) => c.id === chapter.id)
+    const elapsedBeforeChapter = book.chapters.slice(0, chapterIdx).reduce((sum, c) => sum + c.duration, 0)
+    return Math.max(0, book.totalDuration - (elapsedBeforeChapter + (scrubValue ?? player.currentTime)))
+  })()
 
   if (!book || !chapter) {
     return (
@@ -21,6 +50,13 @@ export function NowPlaying() {
 
   return (
     <div className="mx-auto max-w-md px-6 pb-28 pt-8">
+      <Link
+        to={`/book/${book.id}`}
+        className="mb-4 inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300"
+      >
+        <span aria-hidden="true">‹</span> Book details &amp; downloads
+      </Link>
+
       <div className="mx-auto w-56">
         <CoverArt title={book.title} coverUrl={book.coverFullUrl} />
       </div>
@@ -31,20 +67,44 @@ export function NowPlaying() {
         <p className="mt-1 text-sm text-amber-400">{chapter.title}</p>
       </div>
 
+      {isBuffering && (
+        <p className="mt-3 text-center text-xs text-slate-400" role="status">
+          Loading…
+        </p>
+      )}
+
+      {streamError && (
+        <div className="mt-3 rounded-lg border border-red-900/60 bg-red-900/20 px-3 py-2 text-center">
+          <p className="text-xs text-red-300">{streamError}</p>
+          <button onClick={player.retryLoad} className="mt-1 text-xs font-medium text-amber-400 underline">
+            Retry
+          </button>
+        </div>
+      )}
+
+      {finished && (
+        <p className="mt-3 text-center text-xs text-slate-400" role="status">
+          You've finished this book.
+        </p>
+      )}
+
       <div className="mt-6">
         <input
           type="range"
           min={0}
           max={player.duration || 0}
-          value={player.currentTime}
-          onChange={(e) => player.seek(Number(e.target.value))}
+          value={scrubValue ?? player.currentTime}
+          onChange={(e) => setScrubValue(Number(e.target.value))}
           className="w-full accent-amber-400"
           aria-label="Seek"
         />
         <div className="flex justify-between text-xs text-slate-400">
-          <span>{formatClock(player.currentTime)}</span>
+          <span>{formatClock(scrubValue ?? player.currentTime)}</span>
           <span>{formatClock(player.duration)}</span>
         </div>
+        {book.chapters.length > 1 && bookRemaining !== null && (
+          <p className="mt-1 text-center text-xs text-slate-500">{formatDuration(bookRemaining)} left in book</p>
+        )}
       </div>
 
       <div className="mt-6 flex items-center justify-center gap-6">

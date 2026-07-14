@@ -13,7 +13,7 @@ export function UpdatePrompt() {
   if (!needRefresh) return null
 
   return (
-    <div className="fixed inset-x-0 top-0 z-50 flex items-center justify-between gap-3 bg-amber-400 px-4 py-2 text-sm font-medium text-slate-950">
+    <div className="fixed inset-x-0 top-0 z-50 flex items-center justify-between gap-3 bg-amber-400 px-4 py-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-sm font-medium text-slate-950">
       <span>A new version of OzzBooks is available.</span>
       <button
         onClick={() => updateServiceWorker(true)}
