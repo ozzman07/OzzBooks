@@ -1,0 +1,155 @@
+# OzzBooks — Addendum: Native macOS Client & AI-Assisted Ingestion
+
+This addendum extends `CLAUDE.md` with decisions made after the initial
+Phase 1 PWA build was underway. Append this to the main `CLAUDE.md` (or
+keep alongside it) so Claude Code has this context in future sessions.
+
+## Context: why this addendum exists
+
+The Phase 1 PWA is mostly working, but has hit a recurring, hard-to-pin-down
+**playback loop bug** (chapter-end / next-chapter transition getting stuck)
+that has survived multiple fix attempts. Separately, there's a standing
+frustration with **filename → title/author/series parsing** during
+ingestion, which was never fully reliable.
+
+**Explicit instruction: do not attempt to fix the playback loop bug as
+part of this addendum's work.** The items below are additive
+investigation/features, not a bugfix task.
+
+## Decision 1: Native macOS client — additive, not a replacement
+
+### What prompted this
+Considered whether a native macOS "server app" (replacing the Node
+file-serving API) would help the iOS PWA's clunkiness/looping. Conclusion:
+**it would not** — the loop bug lives in client-side playback code (likely
+service worker / `<audio>` element / chapter-transition state logic), which
+runs identically regardless of backend implementation. Swapping the server
+doesn't touch that code path, and iOS remains PWA-only regardless (that
+constraint hasn't changed — see main `CLAUDE.md` platform constraints
+section).
+
+### What a native macOS client *does* offer
+A separate, real diagnostic value: a SwiftUI macOS app using `AVPlayer` /
+`AVQueuePlayer` for playback sidesteps the entire category of
+PWA/WebKit-specific quirks (service worker lifecycle, Cache API eviction,
+Media Session API inconsistencies) because none of that infrastructure
+exists in a native app. If the same chapter-transition logic behaves
+correctly in the native client, that's a strong signal the PWA's loop bug
+is environment-specific rather than a flaw in the underlying playback
+state design — useful even without fixing the PWA directly.
+
+### Scope — explicitly additive
+- **No changes to the existing Node.js sync API or file-serving API.**
+  Both stay exactly as they are.
+- New: a SwiftUI macOS app (separate repo or subfolder — Claude Code's
+  call on the cleanest structure) that consumes the **same existing REST
+  endpoints** the PWA already uses: library data, streaming URLs,
+  position sync.
+- Position sync already stores `{user_id, book_id, position}` generically
+  — the native client requires **zero backend/schema changes** to
+  participate in the same sync model as the PWA.
+- Playback engine: `AVQueuePlayer` (native chaptering/queueing, native
+  background audio, no Media Session API translation layer needed).
+- Treat this as a parallel client for comparison/diagnostic purposes and
+  a nicer Mac-native experience — not a replacement for the PWA, and not
+  a dependency for iOS work.
+
+### Distribution note (for later, not urgent)
+Native macOS apps distributed outside the App Store don't go through App
+Store review — only Gatekeeper/notarization, which requires an Apple
+Developer Program membership ($99/year) if you want to avoid
+"unidentified developer" warnings when running it on another Mac (e.g.
+MacBook Air). Since current use is your own machines, right-click → Open
+once (bypassing Gatekeeper) is sufficient for now; no need to enroll in
+the paid program unless/until distributing beyond your own devices.
+
+## Decision 2: AI-assisted ingestion — filename/metadata parsing
+
+### Problem being addressed
+Filename-based parsing (regex/heuristics) for extracting title, author,
+series, and series number from real-world audiobook file/folder naming is
+unreliable — naming conventions in the wild are too inconsistent for
+pattern matching to generalize well. This has been an ongoing pain point
+independent of the playback bug.
+
+### Approach: local-first LLM extraction, with validation and fallback
+
+**Step 1 — Local LLM extraction (primary path).**
+Use the existing local LM Studio setup on the Mac mini (same pattern as
+prior Gemma experimentation) to run a structured-extraction pass over
+filenames, folder structure, and any embedded ID3/M4B metadata. Candidate
+models: Gemma 3 12B, Qwen 2.5 14B, or Llama 3.1 8B, quantized (Q4/Q5) —
+comfortable fit for the M4 Pro's 24GB unified memory. This is a batch,
+infrequent task (runs during ingestion/rescan, not per-playback), so
+inference speed is not a hard constraint.
+
+**Step 2 — Metadata lookup/enrichment (validation).**
+Take the local model's rough guess (title/author/series) and query an
+external books metadata source (Google Books API, Open Library, or
+similar) to confirm or correct it against real book data, and to pull an
+authoritative cover image / series number if the local guess was
+incomplete. This catches cases where the local model's inference was
+close but not quite right.
+
+**Step 3 — Cloud LLM fallback (edge cases only).**
+For extractions that remain low-confidence after steps 1–2 (e.g. no
+metadata match found, or the local model flags low confidence), fall back
+to a cloud API call (e.g. Claude API) for a stronger inference pass. This
+should be the exception path, not the default — most of the library
+should resolve via steps 1–2 alone, keeping cost near zero and everything
+local by default.
+
+### Where this lives
+This is entirely an **ingestion-pipeline concern**, independent of native
+vs. PWA client work. It runs in the existing Node ingestion service (or
+wherever ingestion currently lives) and benefits every client
+automatically, since ingestion output is shared.
+
+## Decision 3: AI-assisted filename/folder cleanup on disk
+
+### What this adds beyond Decision 2
+Decision 2 produces a *clean normalized model* used internally by the app
+(title/author/series shown in the UI) without touching the actual files.
+This decision is about optionally **renaming/reorganizing the real files
+on the NAS** to match a consistent convention (e.g.
+`{Series} {Number} - {Title}/{ChapterNum} - {ChapterTitle}.{ext}`), using
+the same extraction pipeline's output as the source of truth for new
+names.
+
+### Required safeguards — non-negotiable given this touches real files
+- **Opt-in only, per book.** Never renames automatically as part of
+  routine ingestion. Ingestion produces *proposals*; nothing is written
+  to the NAS without explicit user action.
+- **Preview before write.** Every rename batch must show a full diff (old
+  path → proposed new path) for review/edit before anything is applied.
+- **Undo log.** Maintain a persistent record (simple table or JSON log)
+  of original → renamed path mappings per batch, so any rename operation
+  can be reversed. This is the kind of feature where a silent bad batch
+  rename is a genuinely bad failure mode — treat reversibility as a hard
+  requirement, not a nice-to-have.
+
+### Suggested data model addition
+```
+rename_operations
+  id, batch_id, book_id,
+  original_path, new_path,
+  applied_at, reverted_at (nullable)
+```
+
+## Summary of what to build (for Claude Code)
+
+1. **Native macOS client** (new, additive) — SwiftUI + `AVQueuePlayer`,
+   consumes existing REST API and position-sync model unchanged. No
+   backend changes required. Purpose: nicer native experience on Mac +
+   diagnostic comparison against the PWA's playback bug (without fixing
+   that bug directly).
+2. **Local-first AI ingestion parsing** (ingestion pipeline change) —
+   LM Studio local model → metadata lookup validation → cloud fallback
+   for low-confidence cases only.
+3. **Optional filesystem cleanup feature** (new, opt-in) — proposes
+   renamed/reorganized files on the NAS using ingestion's extraction
+   output, gated behind preview + explicit approval + undo log.
+
+None of the above should touch or attempt to resolve the existing PWA
+playback loop bug — that remains a separate, already-in-progress issue
+outside the scope of this addendum.
