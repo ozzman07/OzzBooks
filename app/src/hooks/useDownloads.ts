@@ -66,6 +66,10 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
         await downloadChapter(chapter, budgetMb)
+        // Refresh after each file, not just once at the end, so the
+        // checkmark appears as each download completes instead of only
+        // after the whole book finishes.
+        await refresh()
       } finally {
         setPending((p) => {
           const next = new Set(p)
@@ -74,7 +78,6 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
         })
       }
     }
-    await refresh()
   }, [chapters, cachedFileIds, getBudgetMb, refresh])
 
   const remove = useCallback(

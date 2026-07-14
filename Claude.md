@@ -367,6 +367,23 @@ Don't remove them for being "unused."
   Tailscale to act as the local WoL relay (the current Synology DS413j
   can't — see accepted decision below). Blocked on acquiring that
   hardware; not worth building until then.
+- **Speculative, not committed — native Mac apps:** brainstormed idea (see
+  `Ozzbooks_Addendum` in the repo root for the original writeup): a
+  Mac-mini "pseudo server" app plus a separate MacBook client app using
+  `AVQueuePlayer`, additive to the existing Node API (no backend changes
+  required), iOS stays PWA-only regardless (that platform constraint
+  doesn't change). Originally motivated partly as a diagnostic tool for
+  the recurring "playback loop" bug — that rationale is largely moot now:
+  the loop was root-caused and fixed directly in the PWA (2026-07-14
+  session — a scrubber/stall-watchdog logic bug, not a WebKit/PWA
+  environment issue). What's left is a genuine "make the Mac experience
+  feel more native" desire, but a lot of that gap (update-available
+  banner, in-app navigation back to book details, download status
+  visibility) is closeable through continued PWA polish at far lower
+  ongoing cost than maintaining a second codebase in a different
+  language/ecosystem. Hold off unless a concrete, specific need for
+  native-level audio (not just "feels nicer") shows up, or PWA polish
+  demonstrably hits a ceiling.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
