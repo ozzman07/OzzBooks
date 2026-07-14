@@ -18,7 +18,21 @@ interface Candidate {
   parts?: string[]
 }
 
+// Folders used to stash the original files a book was combined/converted
+// from (kept as a just-in-case backup, not meant to be part of the
+// library). This already matches every naming variant found in the real
+// library — "Source Files", "source files", bare "Source"/"source", and
+// "zzzSource files" — but "zzzSource files" specifically is the one being
+// adopted as the standard going forward (existing folders are being
+// renamed to it gradually), so treat any drift in this rule as needing to
+// keep matching that name exactly. Deliberately whole-name-only so it
+// doesn't catch real book titles that happen to contain "source" as a
+// substring, like "Sourcery" or "The Source of Magic".
+const SOURCE_BACKUP_FOLDER_RE = /^(zzz)?\s*sources?(\s+files?)?$/i
+
 async function findCandidates(dir: string): Promise<Candidate[]> {
+  if (SOURCE_BACKUP_FOLDER_RE.test(path.basename(dir))) return []
+
   const entries = await readdir(dir, { withFileTypes: true })
   const files = entries.filter((e) => e.isFile())
   const dirs = entries.filter((e) => e.isDirectory())
@@ -54,12 +68,17 @@ async function findCandidates(dir: string): Promise<Candidate[]> {
     })
   }
 
-  // Recurse into subdirectories to support Author/Series/Book nesting —
-  // but a directory already classified as a book's own folder is a leaf.
-  if (m4bFiles.length === 0 && mp3Files.length === 0) {
-    for (const d of dirs) {
-      candidates.push(...(await findCandidates(path.join(dir, d.name))))
-    }
+  // Always recurse into subdirectories to support Author/Series/Book
+  // nesting — including when this folder *also* has loose audio files
+  // directly in it (e.g. a standalone short story .m4b sitting alongside a
+  // series' own book subfolders). Previously this only recursed when the
+  // folder had zero direct audio files, which silently skipped every
+  // subdirectory whenever any loose file was present alongside them — the
+  // real cause of whole series going missing from the index (found via a
+  // folder with one loose novella file plus 21 book subfolders, all 21 of
+  // which were never being scanned at all).
+  for (const d of dirs) {
+    candidates.push(...(await findCandidates(path.join(dir, d.name))))
   }
 
   return candidates
@@ -87,6 +106,33 @@ function deriveAuthorFromFolder(pathScope: string, filePath: string): string | n
   if (rest.length === 0) return null // file/folder sits directly at the source root, no author level
   if (!authorFolder || GARBLED_FOLDER_NAME_RE.test(authorFolder)) return null
   return authorFolder
+}
+
+/**
+ * Same idea as deriveAuthorFromFolder, one level down: when a book's own
+ * folder sits inside an extra layer between it and the author folder (e.g.
+ * "Butcher, Jim/The Dresden Files/The Dresden Files 01.0 - Storm Front/"),
+ * that middle folder is a reliable series name for the vast majority of
+ * this library's series. Returns null for books that sit directly under
+ * their author folder (no series layer) — a stable, low-risk v1 ahead of
+ * the planned LLM-assisted extraction, which will also fill in
+ * series_number (this only derives the name; a reliable number can't be
+ * extracted from folder names alone — e.g. "Odyssey Series/1997 - 3001 The
+ * Final Odyssey" would misread the year 1997 as the series position).
+ *
+ * Known imperfection, accepted for now: a deep "collected works" folder
+ * (e.g. "Brandon Sanderson Cosmere Collection" containing Mistborn,
+ * Elantris, Stormlight Archive, etc. each in their own subfolder) reads as
+ * one broad "series" rather than each actual sub-series — the LLM pass
+ * will disambiguate this later.
+ */
+function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string): string | null {
+  const relative = path.relative(pathScope, bookOwnFolder)
+  const segments = relative.split(path.sep)
+  if (segments.length < 3) return null // directly under the author folder — no series layer
+  const seriesFolder = segments[segments.length - 2]
+  if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
+  return seriesFolder
 }
 
 async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
@@ -147,6 +193,8 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
 
       const ingested = await ingestCandidate(candidate)
       const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
+      const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
+      const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
       const bookId = existing?.id ?? randomUUID()
       const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
 
@@ -177,7 +225,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         format: candidate.format,
         title: ingested.title,
         author,
-        series_name: ingested.seriesName,
+        series_name: seriesName,
         series_number: ingested.seriesNumber,
         artwork_thumb_path: artwork?.thumbPath ?? null,
         artwork_full_path: artwork?.fullPath ?? null,

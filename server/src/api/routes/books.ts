@@ -7,7 +7,8 @@ export const booksRouter = Router()
 booksRouter.get('/', (_req, res) => {
   const rows = getDb()
     .prepare(
-      `SELECT books.*, COALESCE(SUM(chapters.duration), 0) AS total_duration
+      `SELECT books.*, COALESCE(SUM(chapters.duration), 0) AS total_duration,
+         (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id
        FROM books
        LEFT JOIN chapters ON chapters.book_id = books.id
        GROUP BY books.id

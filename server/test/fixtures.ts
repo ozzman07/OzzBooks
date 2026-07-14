@@ -19,6 +19,10 @@ export interface TestLibrary {
   genericBookPart2: string
   folderAuthorBookPath: string
   garbledFolderBookPath: string
+  mixedFolderLooseBookPath: string
+  mixedFolderNestedBookPath: string
+  sourceBackupFilePath: string
+  legitimateSourceTitleBookPath: string
 }
 
 async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
@@ -191,6 +195,64 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     'aac',
   ])
 
+  // --- Mixed folder: a loose standalone .m4b sitting directly alongside a
+  // subdirectory that's itself a full book — reproduces the real "Dresden
+  // Files" bug where a folder's own short-story file caused the scanner to
+  // treat it as a leaf and silently skip every sibling book subfolder ---
+  const seriesDir = path.join(root, 'Series Author', 'The Series')
+  await mkdir(seriesDir, { recursive: true })
+  const mixedFolderLooseBookPath = path.join(seriesDir, 'Standalone Short Story.m4b')
+  await makeTone(mixedFolderLooseBookPath, 1, [
+    '-metadata',
+    'title=Standalone Short Story',
+    '-metadata',
+    'artist=Series Author',
+    '-c:a',
+    'aac',
+  ])
+  const nestedBookDir = path.join(seriesDir, 'The Series 01 - Book One')
+  await mkdir(nestedBookDir, { recursive: true })
+  const mixedFolderNestedBookPath = path.join(nestedBookDir, 'book.m4b')
+  await makeTone(mixedFolderNestedBookPath, 1, [
+    '-metadata',
+    'title=The Series 01 - Book One',
+    '-metadata',
+    'artist=Series Author',
+    '-c:a',
+    'aac',
+  ])
+
+  // --- "zzzSource files" backup folder — the endorsed naming convention
+  // going forward (existing "Source"/"source files"/etc folders are being
+  // renamed to this over time) — original files kept just in case, must
+  // never be ingested (would otherwise show as a duplicate) ---
+  const sourceBackupDir = path.join(seriesDir, 'zzzSource files')
+  await mkdir(sourceBackupDir, { recursive: true })
+  const sourceBackupFilePath = path.join(sourceBackupDir, 'original.m4b')
+  await makeTone(sourceBackupFilePath, 1, [
+    '-metadata',
+    'title=Should Never Be Ingested',
+    '-metadata',
+    'artist=Series Author',
+    '-c:a',
+    'aac',
+  ])
+
+  // --- A real book whose title happens to contain "Source" as a substring
+  // — must NOT be caught by the backup-folder exclusion, which is
+  // whole-name-only specifically to avoid this ---
+  const legitimateSourceTitleDir = path.join(root, 'Series Author', 'Sourcery')
+  await mkdir(legitimateSourceTitleDir, { recursive: true })
+  const legitimateSourceTitleBookPath = path.join(legitimateSourceTitleDir, 'book.m4b')
+  await makeTone(legitimateSourceTitleBookPath, 1, [
+    '-metadata',
+    'title=Sourcery',
+    '-metadata',
+    'artist=Series Author',
+    '-c:a',
+    'aac',
+  ])
+
   // --- Corrupt M4B: real extension, no valid container data — reproduces
   // the "moov atom not found" failure mode seen from truncated transfers,
   // which must be skipped rather than aborting the whole scan ---
@@ -212,5 +274,9 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     genericBookPart2,
     folderAuthorBookPath,
     garbledFolderBookPath,
+    mixedFolderLooseBookPath,
+    mixedFolderNestedBookPath,
+    sourceBackupFilePath,
+    legitimateSourceTitleBookPath,
   }
 }

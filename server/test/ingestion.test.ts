@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(6) // mp3-folder + m4b + split book + generic-chapters book + folder-author book + garbled-folder book; DRM file skipped
-    expect(result.found).toBe(7) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(9) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title
+    expect(result.found).toBe(10) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,7 +44,7 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(6)
+    expect(books).toHaveLength(9)
 
     const mp3Book = books.find((b) => b.format === 'mp3_folder')
     expect(mp3Book.title).toBe('Project Hail Mary')
@@ -108,6 +108,39 @@ describe('ingestion', () => {
     const garbledFolderBook = books.find((b) => b.title === 'Garbled Folder Test Book')
     expect(garbledFolderBook).toBeTruthy()
     expect(garbledFolderBook.author).toBe('Fallback Tag Author')
+
+    // A loose standalone .m4b sitting directly in a folder must not stop
+    // sibling subdirectories from also being scanned — this is the actual
+    // "Dresden Files" bug: a short-story file alongside 21 book subfolders
+    // previously caused all 21 to be silently skipped.
+    const looseBook = books.find((b) => b.title === 'Standalone Short Story')
+    expect(looseBook).toBeTruthy()
+    const nestedBook = books.find((b) => b.title === 'The Series 01 - Book One')
+    expect(nestedBook).toBeTruthy()
+
+    // Series name derives from the folder one level above the book's own
+    // folder — "The Series 01 - Book One" sits inside "The Series", so
+    // that's the series. The loose short story sitting directly in "The
+    // Series" folder is only 2 levels deep (Author/The Series), so it must
+    // NOT get "The Series" mistaken for its own series — there's no extra
+    // nesting level for a loose file the way there is for a subfolder.
+    expect(nestedBook.series_name).toBe('The Series')
+    expect(looseBook.series_name).toBeNull()
+
+    // A book sitting directly under its author folder (no series layer at
+    // all) must also get no series.
+    expect(folderAuthorBook.series_name).toBeNull()
+
+    // "zzzSource files" backup folders (kept as a just-in-case original
+    // when combining files into one audiobook — the endorsed naming
+    // convention going forward) must be excluded entirely.
+    const sourceBackupBook = books.find((b) => b.title === 'Should Never Be Ingested')
+    expect(sourceBackupBook).toBeUndefined()
+
+    // But a real book whose title merely contains "Source" as a substring
+    // must NOT be caught by that exclusion.
+    const sourceryBook = books.find((b) => b.title === 'Sourcery')
+    expect(sourceryBook).toBeTruthy()
   }, 30_000)
 
   it('keeps created_at stable across rescans (unlike updated_at, which every scan bumps)', async () => {
