@@ -32,6 +32,10 @@ export interface Book {
   totalDuration: number
   /** Set once at first ingestion, never touched again — drives the "Recently added" sort. */
   createdAt: string
+  /** Only present on list-view books (from ApiBookListItem); used to derive
+   * a lightweight "finished" status by comparing against synced progress,
+   * without fetching every book's full chapter list. */
+  lastChapterId?: string
   chapters: Chapter[]
   progress?: {
     position: Position

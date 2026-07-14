@@ -34,7 +34,12 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
 }
 
 export function adaptBookListItem(book: ApiBookListItem): Book {
-  return { ...adaptBookFields(book), chapters: [], totalDuration: book.total_duration }
+  return {
+    ...adaptBookFields(book),
+    chapters: [],
+    totalDuration: book.total_duration,
+    lastChapterId: book.last_chapter_id ?? undefined,
+  }
 }
 
 export function adaptBookDetail(book: ApiBookDetail): Book {
