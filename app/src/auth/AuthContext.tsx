@@ -13,6 +13,12 @@ interface AuthContextValue {
   signup: (email: string, password: string) => Promise<void>
   logout: () => void
   error: string | null
+  /** Throws cloud.CloudApiError on failure (e.g. wrong current password) —
+   * left for the caller to catch and display locally, unlike login/signup's
+   * shared `error` state, since these are used from a settings form rather
+   * than the auth screen. */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
+  changeEmail: (newEmail: string, currentPassword: string) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -94,8 +100,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('unauthenticated')
   }, [])
 
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      if (!token) throw new Error('not authenticated')
+      await cloud.changePassword(token, currentPassword, newPassword)
+    },
+    [token],
+  )
+
+  const changeEmail = useCallback(
+    async (newEmail: string, currentPassword: string) => {
+      if (!token) throw new Error('not authenticated')
+      const updated = await cloud.changeEmail(token, newEmail, currentPassword)
+      setUser(updated)
+    },
+    [token],
+  )
+
   return (
-    <AuthContext.Provider value={{ status, user, token, login, signup, logout, error }}>
+    <AuthContext.Provider
+      value={{ status, user, token, login, signup, logout, error, changePassword, changeEmail }}
+    >
       {children}
     </AuthContext.Provider>
   )

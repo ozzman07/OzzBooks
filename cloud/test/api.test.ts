@@ -69,6 +69,79 @@ describe('auth', () => {
   })
 })
 
+describe('self-service password/email change (no reset-flow infra exists, so this is the alternative)', () => {
+  it('rejects a password change with the wrong current password', async () => {
+    const res = await request(app)
+      .patch('/auth/password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currentPassword: 'wrong-password', newPassword: 'brand-new-password' })
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects a new password shorter than 8 characters', async () => {
+    const res = await request(app)
+      .patch('/auth/password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currentPassword: 'correct-horse-battery', newPassword: 'short' })
+    expect(res.status).toBe(400)
+  })
+
+  it('changes the password and the old one stops working', async () => {
+    const res = await request(app)
+      .patch('/auth/password')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currentPassword: 'correct-horse-battery', newPassword: 'brand-new-password' })
+    expect(res.status).toBe(204)
+
+    const oldLogin = await request(app).post('/auth/login').send({ email, password: 'correct-horse-battery' })
+    expect(oldLogin.status).toBe(401)
+
+    const newLogin = await request(app).post('/auth/login').send({ email, password: 'brand-new-password' })
+    expect(newLogin.status).toBe(200)
+
+    // The original token must still work — it only encodes userId, not
+    // anything password-derived, so changing the password shouldn't force
+    // a re-login on whatever session made the change.
+    const me = await request(app).get('/auth/me').set('Authorization', `Bearer ${token}`)
+    expect(me.status).toBe(200)
+  })
+
+  it('rejects an email change with the wrong current password', async () => {
+    const res = await request(app)
+      .patch('/auth/email')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ newEmail: 'wrong-password-attempt@example.com', currentPassword: 'not-the-right-one' })
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects an email change to one already in use', async () => {
+    const otherEmail = `other-email-${Date.now()}@example.com`
+    await request(app).post('/auth/signup').send({ email: otherEmail, password: 'correct-horse-battery' })
+
+    const res = await request(app)
+      .patch('/auth/email')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ newEmail: otherEmail, currentPassword: 'brand-new-password' })
+    expect(res.status).toBe(409)
+  })
+
+  it('changes the email and can log in with the new one', async () => {
+    const newEmail = `changed-${Date.now()}@example.com`
+    const res = await request(app)
+      .patch('/auth/email')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ newEmail, currentPassword: 'brand-new-password' })
+    expect(res.status).toBe(200)
+    expect(res.body.email).toBe(newEmail)
+
+    const newLogin = await request(app).post('/auth/login').send({ email: newEmail, password: 'brand-new-password' })
+    expect(newLogin.status).toBe(200)
+
+    const oldLogin = await request(app).post('/auth/login').send({ email, password: 'brand-new-password' })
+    expect(oldLogin.status).toBe(401)
+  })
+})
+
 describe('progress sync (last-write-wins)', () => {
   const bookId = 'book-123'
 

@@ -71,3 +71,61 @@ authRouter.get('/me', requireAuth, async (req, res) => {
   }
   res.json({ id: user.id, email: user.email, createdAt: user.created_at })
 })
+
+// No password-reset/email flow exists (no mail-sending infra in this
+// project) — this is the self-service alternative: change either while
+// still logged in and able to prove you know the current password. Tokens
+// only encode userId, not email/password, so an existing session stays
+// valid across either change — no forced re-login.
+authRouter.patch('/password', requireAuth, async (req, res) => {
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : null
+  const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : null
+
+  if (!currentPassword || !newPassword || newPassword.length < 8) {
+    res.status(400).json({ error: 'current password and a new password of at least 8 characters are required' })
+    return
+  }
+
+  const result = await getPool().query<UserRow>('SELECT * FROM users WHERE id = $1', [req.userId])
+  const user = result.rows[0]
+  if (!user || !(await verifyPassword(currentPassword, user.password_hash))) {
+    res.status(401).json({ error: 'current password is incorrect' })
+    return
+  }
+
+  const newHash = await hashPassword(newPassword)
+  await getPool().query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.userId])
+  res.status(204).end()
+})
+
+authRouter.patch('/email', requireAuth, async (req, res) => {
+  const newEmail = normalizeEmail(req.body?.newEmail)
+  const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : null
+
+  if (!newEmail || !currentPassword) {
+    res.status(400).json({ error: 'a valid new email and current password are required' })
+    return
+  }
+
+  const result = await getPool().query<UserRow>('SELECT * FROM users WHERE id = $1', [req.userId])
+  const user = result.rows[0]
+  if (!user || !(await verifyPassword(currentPassword, user.password_hash))) {
+    res.status(401).json({ error: 'current password is incorrect' })
+    return
+  }
+
+  try {
+    const updated = await getPool().query<UserRow>('UPDATE users SET email = $1 WHERE id = $2 RETURNING id, email', [
+      newEmail,
+      req.userId,
+    ])
+    res.json({ id: updated.rows[0].id, email: updated.rows[0].email })
+  } catch (err) {
+    if ((err as { code?: string }).code === '23505') {
+      // Postgres unique_violation
+      res.status(409).json({ error: 'an account with that email already exists' })
+      return
+    }
+    throw err
+  }
+})
