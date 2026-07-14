@@ -1,10 +1,142 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { fetchBooks, fetchSources, type ApiSource } from '../api/client'
-import { fetchSettings, putSettings } from '../api/cloudClient'
+import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { deleteBookDownload } from '../offline/downloadManager'
 import { SourceStatusCard } from '../components/SourceStatusCard'
+
+// No password-reset/change-of-email flow exists (no mail-sending infra in
+// this project) — these two forms are the self-service alternative, each
+// gated behind re-entering the current password.
+function ChangePasswordForm() {
+  const auth = useAuth()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSuccess(false)
+    if (newPassword !== confirmPassword) {
+      setError("New passwords don't match")
+      return
+    }
+    setSubmitting(true)
+    try {
+      await auth.changePassword(currentPassword, newPassword)
+      setSuccess(true)
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+    } catch (err) {
+      setError(err instanceof CloudApiError ? err.message : 'Could not reach the server')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-slate-800 pt-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Change password</p>
+      <input
+        type="password"
+        required
+        placeholder="Current password"
+        value={currentPassword}
+        onChange={(e) => setCurrentPassword(e.target.value)}
+        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+      />
+      <input
+        type="password"
+        required
+        minLength={8}
+        placeholder="New password (min 8 characters)"
+        value={newPassword}
+        onChange={(e) => setNewPassword(e.target.value)}
+        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+      />
+      <input
+        type="password"
+        required
+        placeholder="Confirm new password"
+        value={confirmPassword}
+        onChange={(e) => setConfirmPassword(e.target.value)}
+        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+      />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {success && <p className="text-xs text-emerald-400">Password changed.</p>}
+      <button
+        type="submit"
+        disabled={submitting}
+        className="rounded-lg border border-slate-700 py-2 text-sm text-slate-200 disabled:opacity-40"
+      >
+        {submitting ? 'Saving…' : 'Update password'}
+      </button>
+    </form>
+  )
+}
+
+function ChangeEmailForm() {
+  const auth = useAuth()
+  const [newEmail, setNewEmail] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSuccess(false)
+    setSubmitting(true)
+    try {
+      await auth.changeEmail(newEmail, currentPassword)
+      setSuccess(true)
+      setNewEmail('')
+      setCurrentPassword('')
+    } catch (err) {
+      setError(err instanceof CloudApiError ? err.message : 'Could not reach the server')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-slate-800 pt-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Change email</p>
+      <input
+        type="email"
+        required
+        placeholder="New email"
+        value={newEmail}
+        onChange={(e) => setNewEmail(e.target.value)}
+        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+      />
+      <input
+        type="password"
+        required
+        placeholder="Current password"
+        value={currentPassword}
+        onChange={(e) => setCurrentPassword(e.target.value)}
+        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+      />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {success && <p className="text-xs text-emerald-400">Email updated.</p>}
+      <button
+        type="submit"
+        disabled={submitting}
+        className="rounded-lg border border-slate-700 py-2 text-sm text-slate-200 disabled:opacity-40"
+      >
+        {submitting ? 'Saving…' : 'Update email'}
+      </button>
+    </form>
+  )
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
@@ -157,10 +289,12 @@ export function Settings() {
         <p className="mb-3 text-sm text-slate-400">{auth.user?.email}</p>
         <button
           onClick={auth.logout}
-          className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200"
+          className="mb-1 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200"
         >
           Log out
         </button>
+        <ChangePasswordForm />
+        <ChangeEmailForm />
       </section>
 
       <p className="text-center text-xs text-slate-600">OzzBooks — Phase 1</p>

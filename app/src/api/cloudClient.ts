@@ -61,6 +61,27 @@ export function fetchMe(token: string): Promise<AuthUser> {
   return cloudFetch<AuthUser>('/auth/me', { headers: authHeaders(token) })
 }
 
+// No password-reset/change-of-email flow exists (no mail-sending infra) —
+// these are the self-service alternative, gated behind proving you know
+// the current password. The session token stays valid across either
+// change since it only encodes the user id, not anything derived from
+// email/password.
+export function changePassword(token: string, currentPassword: string, newPassword: string): Promise<void> {
+  return cloudFetch<void>('/auth/password', {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ currentPassword, newPassword }),
+  })
+}
+
+export function changeEmail(token: string, newEmail: string, currentPassword: string): Promise<AuthUser> {
+  return cloudFetch<AuthUser>('/auth/email', {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ newEmail, currentPassword }),
+  })
+}
+
 export interface ProgressEntry {
   user_id: string
   book_id: string
