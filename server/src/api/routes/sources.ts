@@ -3,6 +3,7 @@ import { Router } from 'express'
 import { getDb } from '../../db/index.js'
 import type { SourceRow } from '../../types.js'
 import { scanSource } from '../../ingestion/scan.js'
+import { browseSourceDirectory } from '../../ingestion/relink.js'
 
 export const sourcesRouter = Router()
 
@@ -66,6 +67,27 @@ sourcesRouter.patch('/:id', (req, res) => {
   getDb().prepare('UPDATE sources SET label = ?, path_scope = ? WHERE id = ?').run(label, pathScope, existing.id)
   const row = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(existing.id)
   res.json(row)
+})
+
+// Manual relink fallback when the ranked suggestions (books.ts's
+// relink-candidates endpoint) don't have the right file — one-level
+// directory listing so the client can navigate folder by folder.
+sourcesRouter.get('/:id/browse', async (req, res) => {
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
+    | SourceRow
+    | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
+  }
+
+  const relPath = typeof req.query.path === 'string' ? req.query.path : ''
+  try {
+    const entries = await browseSourceDirectory(source, relPath)
+    res.json(entries)
+  } catch (err) {
+    res.status(400).json({ error: 'browse failed', detail: String(err) })
+  }
 })
 
 sourcesRouter.post('/:id/scan', async (req, res) => {

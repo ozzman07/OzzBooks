@@ -103,10 +103,12 @@ export function BookDetail() {
         </p>
       )}
       {book.status === 'missing' && (
-        <p className="mt-2 rounded bg-red-900/40 px-3 py-2 text-center text-xs text-red-300">
-          This book's source file couldn't be found. Progress and bookmarks are kept — relink it
-          from Settings to resume playback.
-        </p>
+        <div className="mt-2 rounded bg-red-900/40 px-3 py-2 text-center text-xs text-red-300">
+          <p>This book's source file couldn't be found. Progress and bookmarks are kept.</p>
+          <button onClick={() => navigate(`/book/${bookId}/relink`)} className="mt-2 underline">
+            Relink
+          </button>
+        </div>
       )}
 
       <button

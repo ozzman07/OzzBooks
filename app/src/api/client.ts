@@ -141,6 +141,61 @@ export function fetchBook(id: string): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`)
 }
 
+// Relinking a missing book: ranked suggestions first, manual folder browse
+// as a fallback, then a parse-only preview (old-vs-new duration/chapter
+// count sanity check) before the confirm step actually writes anything.
+export interface ApiRelinkCandidate {
+  path: string // relative to the source's path_scope
+  format: 'm4b' | 'mp3_folder'
+}
+
+export interface ApiBrowseEntry {
+  name: string
+  path: string // relative to the source's path_scope
+  type: 'folder' | 'file'
+  selectable: boolean
+  format?: 'm4b' | 'mp3_folder'
+}
+
+export interface ApiRelinkPreview {
+  newTitle: string
+  newDurationSeconds: number
+  newChapterCount: number
+  oldDurationSeconds: number
+  oldChapterCount: number
+  mismatchWarning: boolean
+}
+
+export function fetchRelinkCandidates(bookId: string): Promise<ApiRelinkCandidate[]> {
+  return apiFetch<ApiRelinkCandidate[]>(`/api/books/${bookId}/relink-candidates`)
+}
+
+export function browseSource(sourceId: string, relativePath: string): Promise<ApiBrowseEntry[]> {
+  return apiFetch<ApiBrowseEntry[]>(`/api/sources/${sourceId}/browse?path=${encodeURIComponent(relativePath)}`)
+}
+
+export function previewRelink(
+  bookId: string,
+  relativePath: string,
+  format: 'm4b' | 'mp3_folder',
+): Promise<ApiRelinkPreview> {
+  return apiFetch<ApiRelinkPreview>(`/api/books/${bookId}/relink/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ path: relativePath, format }),
+  })
+}
+
+export function confirmRelink(
+  bookId: string,
+  relativePath: string,
+  format: 'm4b' | 'mp3_folder',
+): Promise<{ bookId: string }> {
+  return apiFetch<{ bookId: string }>(`/api/books/${bookId}/relink/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ path: relativePath, format }),
+  })
+}
+
 export function streamUrl(chapterId: string): string {
   return mediaUrl(`/api/chapters/${chapterId}/stream`)
 }

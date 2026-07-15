@@ -7,6 +7,7 @@ import { UpdatePrompt } from './components/UpdatePrompt'
 import { Auth } from './pages/Auth'
 import { Library } from './pages/Library'
 import { BookDetail } from './pages/BookDetail'
+import { RelinkBook } from './pages/RelinkBook'
 import { NowPlaying } from './pages/NowPlaying'
 import { Settings } from './pages/Settings'
 
@@ -33,6 +34,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Library />} />
                 <Route path="/book/:bookId" element={<BookDetail />} />
+                <Route path="/book/:bookId/relink" element={<RelinkBook />} />
                 <Route path="/now-playing" element={<NowPlaying />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>

@@ -9,7 +9,7 @@ import { groupM4bParts } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork } from './artwork.js'
 
-interface Candidate {
+export interface Candidate {
   format: 'm4b' | 'mp3_folder'
   /** book-level path: the first (or only) .m4b file, or the folder for mp3_folder books */
   filePath: string
@@ -30,7 +30,7 @@ interface Candidate {
 // substring, like "Sourcery" or "The Source of Magic".
 const SOURCE_BACKUP_FOLDER_RE = /^(zzz)?\s*sources?(\s+files?)?$/i
 
-async function findCandidates(dir: string): Promise<Candidate[]> {
+export async function findCandidates(dir: string): Promise<Candidate[]> {
   if (SOURCE_BACKUP_FOLDER_RE.test(path.basename(dir))) return []
 
   const entries = await readdir(dir, { withFileTypes: true })
@@ -135,7 +135,7 @@ function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string): strin
   return seriesFolder
 }
 
-async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
+export async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
   if (candidate.format === 'm4b') {
     return ingestM4b(candidate.parts ?? [candidate.filePath])
   }
@@ -151,6 +151,88 @@ export interface ScanResult {
   markedMissing: number
   skippedDuplicates: number
   failed: number
+}
+
+/**
+ * Applies one parsed candidate to the books/chapters tables: derives
+ * author/series from folder structure, extracts artwork, and upserts the
+ * book row. Passing existingBookId keeps the same book id on update —
+ * used both for a normal rescan match and for a content-hash relink match
+ * (see scanSource) or a manual relink confirm, all of which must preserve
+ * the book id so cloud-synced progress/bookmarks/downloads (keyed by book
+ * id) stay intact across a file move.
+ */
+export async function applyIngestedCandidate(
+  source: SourceRow,
+  candidate: Candidate,
+  existingBookId: string | undefined,
+  hash: string,
+): Promise<{ bookId: string; created: boolean }> {
+  const db = getDb()
+  const ingested = await ingestCandidate(candidate)
+  const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
+  const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
+  const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
+  const bookId = existingBookId ?? randomUUID()
+  const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
+
+  const upsert = db.prepare(`
+    INSERT INTO books (
+      id, source_id, file_path, format, title, author, series_name, series_number,
+      status, artwork_thumb_path, artwork_full_path, content_hash, created_at, updated_at
+    ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number,
+      'active', @artwork_thumb_path, @artwork_full_path, @content_hash, datetime('now'), datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      file_path = excluded.file_path,
+      format = excluded.format,
+      title = excluded.title,
+      author = excluded.author,
+      series_name = excluded.series_name,
+      series_number = excluded.series_number,
+      status = 'active',
+      artwork_thumb_path = excluded.artwork_thumb_path,
+      artwork_full_path = excluded.artwork_full_path,
+      content_hash = excluded.content_hash,
+      updated_at = datetime('now')
+      -- created_at deliberately not touched on conflict — set once at
+      -- first insert, preserved across every rescan after that. file_path
+      -- and format ARE updated on conflict (unlike a plain per-path match)
+      -- so a content-hash relink match can move the row to its new path
+      -- instead of the move being silently ignored.
+  `)
+
+  upsert.run({
+    id: bookId,
+    source_id: source.id,
+    file_path: candidate.filePath,
+    format: candidate.format,
+    title: ingested.title,
+    author,
+    series_name: seriesName,
+    series_number: ingested.seriesNumber,
+    artwork_thumb_path: artwork?.thumbPath ?? null,
+    artwork_full_path: artwork?.fullPath ?? null,
+    content_hash: hash,
+  })
+
+  db.prepare('DELETE FROM chapters WHERE book_id = ?').run(bookId)
+  const insertChapter = db.prepare(`
+    INSERT INTO chapters (id, book_id, idx, title, start_time, duration, file_path)
+    VALUES (@id, @book_id, @idx, @title, @start_time, @duration, @file_path)
+  `)
+  ingested.chapters.forEach((chapter, idx) => {
+    insertChapter.run({
+      id: randomUUID(),
+      book_id: bookId,
+      idx,
+      title: chapter.title,
+      start_time: chapter.startTime,
+      duration: chapter.duration,
+      file_path: chapter.filePath,
+    })
+  })
+
+  return { bookId, created: !existingBookId }
 }
 
 export async function scanSource(source: SourceRow): Promise<ScanResult> {
@@ -177,7 +259,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     try {
       const hash = await contentHash(candidate.hashInput)
 
-      const existing = db
+      let existing = db
         .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND file_path = ?')
         .get(source.id, candidate.filePath)
 
@@ -189,68 +271,29 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
           result.skippedDuplicates++
           continue
         }
+
+        // Same-source hash match: this file is a previously-indexed book
+        // that moved (folder rename/reorganization), not a new book.
+        // Matches regardless of current status ('active' or already
+        // 'missing' from an earlier scan) — without this, a same-source
+        // move orphans the old row as missing and creates a duplicate at
+        // the new path, silently resetting progress/bookmarks/downloads.
+        // Excludes rows already claimed by another file processed earlier
+        // in this same scan, guarding against genuine intra-library
+        // duplicates confusing the match.
+        const relinkMatch = db
+          .prepare<[string, string, string], BookRow>(
+            'SELECT * FROM books WHERE source_id = ? AND content_hash = ? AND file_path != ?',
+          )
+          .get(source.id, hash, candidate.filePath)
+        if (relinkMatch && !seenFilePaths.has(relinkMatch.file_path)) {
+          existing = relinkMatch
+        }
       }
 
-      const ingested = await ingestCandidate(candidate)
-      const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
-      const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
-      const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
-      const bookId = existing?.id ?? randomUUID()
-      const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
-
-      const upsert = db.prepare(`
-        INSERT INTO books (
-          id, source_id, file_path, format, title, author, series_name, series_number,
-          status, artwork_thumb_path, artwork_full_path, content_hash, created_at, updated_at
-        ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number,
-          'active', @artwork_thumb_path, @artwork_full_path, @content_hash, datetime('now'), datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET
-          title = excluded.title,
-          author = excluded.author,
-          series_name = excluded.series_name,
-          series_number = excluded.series_number,
-          status = 'active',
-          artwork_thumb_path = excluded.artwork_thumb_path,
-          artwork_full_path = excluded.artwork_full_path,
-          content_hash = excluded.content_hash,
-          updated_at = datetime('now')
-          -- created_at deliberately not touched on conflict — set once at
-          -- first insert, preserved across every rescan after that
-      `)
-
-      upsert.run({
-        id: bookId,
-        source_id: source.id,
-        file_path: candidate.filePath,
-        format: candidate.format,
-        title: ingested.title,
-        author,
-        series_name: seriesName,
-        series_number: ingested.seriesNumber,
-        artwork_thumb_path: artwork?.thumbPath ?? null,
-        artwork_full_path: artwork?.fullPath ?? null,
-        content_hash: hash,
-      })
-
-      db.prepare('DELETE FROM chapters WHERE book_id = ?').run(bookId)
-      const insertChapter = db.prepare(`
-        INSERT INTO chapters (id, book_id, idx, title, start_time, duration, file_path)
-        VALUES (@id, @book_id, @idx, @title, @start_time, @duration, @file_path)
-      `)
-      ingested.chapters.forEach((chapter, idx) => {
-        insertChapter.run({
-          id: randomUUID(),
-          book_id: bookId,
-          idx,
-          title: chapter.title,
-          start_time: chapter.startTime,
-          duration: chapter.duration,
-          file_path: chapter.filePath,
-        })
-      })
-
-      if (existing) result.updated++
-      else result.created++
+      const { created } = await applyIngestedCandidate(source, candidate, existing?.id, hash)
+      if (created) result.created++
+      else result.updated++
     } catch (err) {
       // A single unreadable/corrupt file (e.g. a truncated M4B with no moov
       // atom) shouldn't abort ingestion for the rest of the library — log

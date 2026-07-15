@@ -236,4 +236,133 @@ describe('ingestion', () => {
     expect(bookAfter.status).toBe('missing')
     expect(bookAfter.id).toBe(bookBefore.id) // same row, not deleted/recreated
   }, 30_000)
+
+  it('auto-relinks a same-source file move by content hash instead of creating a duplicate', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, rename } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-relink-'))
+    const originalDir = path.join(tempRoot, 'Move Author', 'Move Book')
+    await mkdir(originalDir, { recursive: true })
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1',
+      '-c:a',
+      'libmp3lame',
+      path.join(originalDir, '01.mp3'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Relink Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const first = await scanSource(source)
+    expect(first.created).toBe(1)
+    const bookBefore = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookBefore.status).toBe('active')
+
+    // Same reorganization scenario as a user renaming a NAS folder: content
+    // is byte-identical, only the path changes.
+    const movedDir = path.join(tempRoot, 'Move Author', 'Move Book Reorganized')
+    await rename(originalDir, movedDir)
+
+    const second = await scanSource(source)
+    expect(second.created).toBe(0) // must NOT create a duplicate book
+    expect(second.updated).toBe(1) // the hash match counts as an update, not a create
+    expect(second.markedMissing).toBe(0) // must NOT orphan the old row as missing
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1) // no duplicate row
+    expect(books[0].id).toBe(bookBefore.id) // same book id — progress/bookmarks/downloads stay valid
+    expect(books[0].file_path).toBe(movedDir) // mp3_folder format: file_path is the folder itself
+    expect(books[0].status).toBe('active')
+  }, 30_000)
+
+  it('ranks relink candidates by title/author word overlap against the missing book', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { findRelinkCandidates } = await import('../src/ingestion/relink.js')
+    const { mkdir, rm } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-rank-'))
+    async function makeMp3Book(dir: string, freq: number) {
+      await mkdir(dir, { recursive: true })
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=${freq}:duration=1`,
+        '-c:a',
+        'libmp3lame',
+        path.join(dir, '01.mp3'),
+      ])
+    }
+
+    const targetDir = path.join(tempRoot, 'Jane Doe', 'Great Adventure')
+    await makeMp3Book(targetDir, 200)
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Ranking Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const missingBook = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(missingBook.title).toBe('Great Adventure')
+    expect(missingBook.author).toBe('Jane Doe')
+
+    // Remove the original so it's genuinely missing, then add decoy files
+    // directly to disk without rescanning — unclaimed by any book row,
+    // which is what findRelinkCandidates needs to consider them.
+    await rm(targetDir, { recursive: true, force: true })
+    await scanSource(source) // marks it missing
+
+    const goodMatchDir = path.join(tempRoot, 'Jane Doe', 'Great Adventure Retitled')
+    await makeMp3Book(goodMatchDir, 210)
+    const weakMatchDir = path.join(tempRoot, 'Jane Doe', 'Totally Unrelated Story')
+    await makeMp3Book(weakMatchDir, 220)
+    const noMatchDir = path.join(tempRoot, 'Unrelated Author', 'Random Book')
+    await makeMp3Book(noMatchDir, 230)
+
+    const missingBookAfter = db.prepare('SELECT * FROM books WHERE id = ?').get(missingBook.id) as any
+    expect(missingBookAfter.status).toBe('missing')
+
+    const candidates = await findRelinkCandidates(source, missingBookAfter)
+    const paths = candidates.map((c) => c.path)
+
+    // Shares both title words ("great"/"adventure") and the author folder
+    // ("jane"/"doe") — should outrank the folder that only shares the
+    // author.
+    const goodIndex = paths.findIndex((p) => p.includes('Great Adventure Retitled'))
+    const weakIndex = paths.findIndex((p) => p.includes('Totally Unrelated Story'))
+    expect(goodIndex).toBeGreaterThanOrEqual(0)
+    expect(weakIndex).toBeGreaterThanOrEqual(0)
+    expect(goodIndex).toBeLessThan(weakIndex)
+
+    // No word overlap at all (different author folder, unrelated title) —
+    // filtered out entirely rather than ranked last.
+    expect(paths.some((p) => p.includes('Random Book'))).toBe(false)
+  }, 30_000)
 })
