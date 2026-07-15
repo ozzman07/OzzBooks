@@ -20,18 +20,18 @@ export interface Candidate {
 
 // Folders used to stash the original files a book was combined/converted
 // from (kept as a just-in-case backup, not meant to be part of the
-// library). This already matches every naming variant found in the real
-// library — "Source Files", "source files", bare "Source"/"source", and
-// "zzzSource files" — but "zzzSource files" specifically is the one being
-// adopted as the standard going forward (existing folders are being
-// renamed to it gradually), so treat any drift in this rule as needing to
-// keep matching that name exactly. Deliberately whole-name-only so it
-// doesn't catch real book titles that happen to contain "source" as a
+// library). Two naming families found in the real library: "Source"/
+// "source files"/"zzzSource files" (the one being adopted as the standard
+// going forward — existing folders are being renamed to it gradually), and
+// "To Delete" (found on the Dresden Files books — leftover duplicate .m4b
+// files sitting in a "To Delete" subfolder alongside the real one, not yet
+// cleaned up on the NAS). Deliberately whole-name-only so it doesn't catch
+// real book titles that happen to contain one of these words as a
 // substring, like "Sourcery" or "The Source of Magic".
-const SOURCE_BACKUP_FOLDER_RE = /^(zzz)?\s*sources?(\s+files?)?$/i
+const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
 
 export async function findCandidates(dir: string): Promise<Candidate[]> {
-  if (SOURCE_BACKUP_FOLDER_RE.test(path.basename(dir))) return []
+  if (BACKUP_FOLDER_RE.test(path.basename(dir))) return []
 
   const entries = await readdir(dir, { withFileTypes: true })
   const files = entries.filter((e) => e.isFile())
