@@ -23,6 +23,9 @@ export interface TestLibrary {
   mixedFolderNestedBookPath: string
   sourceBackupFilePath: string
   legitimateSourceTitleBookPath: string
+  toDeleteBookPath: string
+  toDeleteBackupFilePath: string
+  corruptCoverBookPath: string
 }
 
 async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
@@ -253,6 +256,50 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     'aac',
   ])
 
+  // --- "To Delete" backup folder — a second naming convention found on the
+  // real library (the Dresden Files books) alongside "zzzSource files":
+  // leftover duplicate .m4b files sitting next to the real one, not yet
+  // cleaned up on the NAS. Must be excluded the same way.
+  const toDeleteBookDir = path.join(root, 'Some Author', 'To Delete Test Book')
+  await mkdir(toDeleteBookDir, { recursive: true })
+  const toDeleteBookPath = path.join(toDeleteBookDir, 'book.m4b')
+  await makeTone(toDeleteBookPath, 1, [
+    '-metadata',
+    'title=To Delete Test Book',
+    '-metadata',
+    'artist=Some Author',
+    '-c:a',
+    'aac',
+  ])
+  const toDeleteBackupDir = path.join(toDeleteBookDir, 'To Delete')
+  await mkdir(toDeleteBackupDir, { recursive: true })
+  const toDeleteBackupFilePath = path.join(toDeleteBackupDir, 'old-copy.m4b')
+  await makeTone(toDeleteBackupFilePath, 1, [
+    '-metadata',
+    'title=Should Never Be Ingested Either',
+    '-metadata',
+    'artist=Some Author',
+    '-c:a',
+    'aac',
+  ])
+
+  // --- Book with a corrupt cover.jpg sitting alongside a perfectly valid
+  // m4b — reproduces the real "premature end of JPEG image" failure mode:
+  // a bad cover image must not fail ingestion of the whole book, just skip
+  // the artwork.
+  const corruptCoverDir = path.join(root, 'Some Author', 'Corrupt Cover Book')
+  await mkdir(corruptCoverDir, { recursive: true })
+  const corruptCoverBookPath = path.join(corruptCoverDir, 'book.m4b')
+  await makeTone(corruptCoverBookPath, 1, [
+    '-metadata',
+    'title=Corrupt Cover Book',
+    '-metadata',
+    'artist=Some Author',
+    '-c:a',
+    'aac',
+  ])
+  await writeFile(path.join(corruptCoverDir, 'cover.jpg'), Buffer.from('not a real jpeg, just garbage bytes'))
+
   // --- Corrupt M4B: real extension, no valid container data — reproduces
   // the "moov atom not found" failure mode seen from truncated transfers,
   // which must be skipped rather than aborting the whole scan ---
@@ -278,5 +325,8 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     mixedFolderNestedBookPath,
     sourceBackupFilePath,
     legitimateSourceTitleBookPath,
+    toDeleteBookPath,
+    toDeleteBackupFilePath,
+    corruptCoverBookPath,
   }
 }

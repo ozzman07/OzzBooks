@@ -25,8 +25,14 @@ async function findFolderCover(dir: string): Promise<Buffer | null> {
 /**
  * Extracts cover art (embedded tag picture, else cover.jpg/folder.jpg in the
  * book's directory), writes thumbnail + full-size PNGs, and returns their
- * paths. Returns null if no art was found — the frontend falls back to its
- * own generic placeholder in that case, so nothing is written.
+ * paths. Returns null if no art was found, or if the image data that was
+ * found is corrupt/truncated and sharp can't decode it (e.g. a premature
+ * end of a JPEG) — either way the frontend falls back to its own generic
+ * placeholder, so a bad cover image degrades gracefully instead of failing
+ * ingestion for the whole book (previously: a single corrupt cover image
+ * threw out of this function uncaught, which the scan loop's per-candidate
+ * catch treated the same as an unreadable audio file — the entire book got
+ * skipped and marked as a scan failure over what's just a bad thumbnail).
  */
 export async function extractArtwork(
   bookId: string,
@@ -41,8 +47,13 @@ export async function extractArtwork(
   const thumbPath = path.join(artworkDir, `${bookId}-thumb.png`)
   const fullPath = path.join(artworkDir, `${bookId}-full.png`)
 
-  await sharp(source).resize(200, 200, { fit: 'cover' }).png().toFile(thumbPath)
-  await sharp(source).resize(1000, 1000, { fit: 'cover' }).png().toFile(fullPath)
+  try {
+    await sharp(source).resize(200, 200, { fit: 'cover' }).png().toFile(thumbPath)
+    await sharp(source).resize(1000, 1000, { fit: 'cover' }).png().toFile(fullPath)
+  } catch (err) {
+    console.warn(`Skipping corrupt cover art for book ${bookId}:`, err)
+    return null
+  }
 
   return { thumbPath, fullPath }
 }

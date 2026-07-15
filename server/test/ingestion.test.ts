@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(9) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title
-    expect(result.found).toBe(10) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(11) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book"
+    expect(result.found).toBe(12) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,7 +44,7 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(9)
+    expect(books).toHaveLength(11)
 
     const mp3Book = books.find((b) => b.format === 'mp3_folder')
     expect(mp3Book.title).toBe('Project Hail Mary')
@@ -141,6 +141,24 @@ describe('ingestion', () => {
     // must NOT be caught by that exclusion.
     const sourceryBook = books.find((b) => b.title === 'Sourcery')
     expect(sourceryBook).toBeTruthy()
+
+    // "To Delete" backup folders (the second naming convention, found on
+    // the real Dresden Files books) must be excluded the same way as
+    // "zzzSource files" — the real book next to it still ingests normally.
+    const toDeleteBook = books.find((b) => b.title === 'To Delete Test Book')
+    expect(toDeleteBook).toBeTruthy()
+    expect(toDeleteBook.file_path).toBe(library.toDeleteBookPath)
+    const toDeleteBackupBook = books.find((b) => b.title === 'Should Never Be Ingested Either')
+    expect(toDeleteBackupBook).toBeUndefined()
+
+    // A corrupt cover.jpg must not fail ingestion of the book itself — it
+    // just ends up with no artwork (frontend falls back to a placeholder),
+    // same as a book with no cover art at all.
+    const corruptCoverBook = books.find((b) => b.title === 'Corrupt Cover Book')
+    expect(corruptCoverBook).toBeTruthy()
+    expect(corruptCoverBook.status).toBe('active')
+    expect(corruptCoverBook.artwork_thumb_path).toBeNull()
+    expect(corruptCoverBook.artwork_full_path).toBeNull()
   }, 30_000)
 
   it('keeps created_at stable across rescans (unlike updated_at, which every scan bumps)', async () => {
