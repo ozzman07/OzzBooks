@@ -76,6 +76,16 @@ export function BookDetail() {
 
   const book = result.data
 
+  // Every chapter shares the same underlying file for a single m4b with
+  // embedded chapter markers (as opposed to an mp3-folder book, or a
+  // multi-part m4b, where each chapter really is its own file) — per-chapter
+  // download doesn't mean anything distinct in that case, since downloading
+  // any one chapter already downloads the whole book. Showing a download
+  // button on every one of what can be dozens of chapter markers is just
+  // confusing; the "Download whole book" badge above already covers it.
+  const singleFile =
+    book.chapters.length > 0 && book.chapters.every((c) => c.sourceFileId === book.chapters[0].sourceFileId)
+
   function playFrom(chapterId: string, resumeAt = 0) {
     player.loadBook(book, chapterId, resumeAt)
     player.play()
@@ -135,16 +145,18 @@ export function BookDetail() {
               <span className="text-sm text-slate-200">{chapter.title}</span>
             </button>
             <span className="text-xs text-slate-500">{formatClock(chapter.duration)}</span>
-            <button
-              onClick={() =>
-                void (downloads.isCached(chapter) ? downloads.remove(chapter) : downloads.download(chapter))
-              }
-              disabled={downloads.isPending(chapter)}
-              aria-label={downloads.isCached(chapter) ? 'Remove download' : 'Download chapter'}
-              className="ml-3 text-lg text-slate-400 disabled:opacity-40"
-            >
-              {downloads.isPending(chapter) ? '⏳' : downloads.isCached(chapter) ? '✓' : '⬇'}
-            </button>
+            {!singleFile && (
+              <button
+                onClick={() =>
+                  void (downloads.isCached(chapter) ? downloads.remove(chapter) : downloads.download(chapter))
+                }
+                disabled={downloads.isPending(chapter)}
+                aria-label={downloads.isCached(chapter) ? 'Remove download' : 'Download chapter'}
+                className="ml-3 text-lg text-slate-400 disabled:opacity-40"
+              >
+                {downloads.isPending(chapter) ? '⏳' : downloads.isCached(chapter) ? '✓' : '⬇'}
+              </button>
+            )}
           </li>
         ))}
       </ul>
