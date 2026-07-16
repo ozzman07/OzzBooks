@@ -8,6 +8,7 @@ import { ingestM4b, isDrmFile } from './m4b.js'
 import { groupM4bParts } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork } from './artwork.js'
+import { getProvider } from '../integrations/remote/registry.js'
 
 export interface Candidate {
   format: 'm4b' | 'mp3_folder'
@@ -237,6 +238,38 @@ export async function applyIngestedCandidate(
 
 export async function scanSource(source: SourceRow): Promise<ScanResult> {
   const db = getDb()
+
+  // Groundwork only, no concrete remote provider exists yet — a source
+  // with a non-local type fails the scan cleanly (clear scan_issues
+  // message, distinguishing "no provider" from "provider exists but
+  // remote scanning isn't implemented yet") rather than either crashing
+  // (findCandidates would throw on a non-filesystem path_scope) or
+  // silently doing nothing. Local/Synology scanning below is completely
+  // unaffected.
+  if (source.type !== 'local' && source.type !== 'synology') {
+    const provider = getProvider(source.type)
+    const message = provider
+      ? `Remote scanning for source type "${source.type}" is not implemented yet`
+      : `No provider registered for source type "${source.type}" yet`
+
+    db.prepare('DELETE FROM scan_issues WHERE source_id = ?').run(source.id)
+    db.prepare('INSERT INTO scan_issues (id, source_id, file_path, error) VALUES (?, ?, ?, ?)').run(
+      randomUUID(),
+      source.id,
+      source.path_scope,
+      message,
+    )
+    const result: ScanResult = { found: 0, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 1 }
+    db.prepare(
+      `UPDATE sources SET
+         last_scanned_at = datetime('now'),
+         last_scan_found = ?, last_scan_created = ?, last_scan_updated = ?,
+         last_scan_failed = ?, last_scan_skipped_duplicates = ?
+       WHERE id = ?`,
+    ).run(result.found, result.created, result.updated, result.failed, result.skippedDuplicates, source.id)
+    return result
+  }
+
   const candidates = await findCandidates(source.path_scope)
 
   const result: ScanResult = {

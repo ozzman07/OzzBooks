@@ -1,6 +1,7 @@
 export type SourceType = 'local' | 'synology' | 'dropbox' | 'google_drive'
 export type BookFormat = 'm4b' | 'mp3_folder'
 export type BookStatus = 'active' | 'missing'
+export type CredentialsStatus = 'ok' | 'needs_reconnect'
 
 export interface SourceRow {
   id: string
@@ -8,6 +9,9 @@ export interface SourceRow {
   label: string
   path_scope: string
   credentials: string | null
+  credentials_expires_at: string | null
+  credentials_status: CredentialsStatus
+  credentials_account_label: string | null
   created_at: string
   last_scanned_at: string | null
   last_scan_found: number | null

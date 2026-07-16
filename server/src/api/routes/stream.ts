@@ -1,18 +1,34 @@
 import { Router } from 'express'
 import { getDb } from '../../db/index.js'
-import type { ChapterRow } from '../../types.js'
+import type { ChapterRow, SourceRow } from '../../types.js'
+import { proxyRemoteStream } from './streamProxy.js'
 
 export const streamRouter = Router()
 
 // res.sendFile (built on the `send` module) already implements HTTP Range
 // support — 206 partial content, Accept-Ranges, Content-Range — so seeking
 // and background pre-fetch work without us hand-rolling range parsing.
+// This path is untouched for local/synology chapters; anything else
+// (remote sources) is delegated to streamProxy.ts instead.
 streamRouter.get('/:id/stream', (req, res) => {
   const chapter = getDb().prepare('SELECT * FROM chapters WHERE id = ?').get(req.params.id) as
     | ChapterRow
     | undefined
   if (!chapter) {
     res.status(404).json({ error: 'chapter not found' })
+    return
+  }
+
+  const source = getDb()
+    .prepare('SELECT sources.* FROM sources JOIN books ON books.source_id = sources.id WHERE books.id = ?')
+    .get(chapter.book_id) as SourceRow | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found for chapter' })
+    return
+  }
+
+  if (source.type !== 'local' && source.type !== 'synology') {
+    proxyRemoteStream(source, res)
     return
   }
 

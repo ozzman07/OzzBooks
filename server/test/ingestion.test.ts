@@ -383,4 +383,35 @@ describe('ingestion', () => {
     // filtered out entirely rather than ranked last.
     expect(paths.some((p) => p.includes('Random Book'))).toBe(false)
   }, 30_000)
+
+  it('fails cleanly with no provider registered for a non-local source type, without touching local sources', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'google_drive',
+      'Unimplemented Drive Source',
+      'some-remote-folder-id',
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result).toEqual({ found: 0, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 1 })
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(1)
+    expect(issues[0].error).toMatch(/no provider registered/i)
+
+    const updatedSource = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+    expect(updatedSource.last_scan_failed).toBe(1)
+    expect(updatedSource.last_scanned_at).toBeTruthy()
+
+    // No books were created for this source, and it must not have
+    // touched any other source's books.
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(0)
+  })
 })

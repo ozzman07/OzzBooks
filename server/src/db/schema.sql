@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS sources (
   label TEXT NOT NULL,
   path_scope TEXT NOT NULL,
   credentials TEXT, -- encrypted blob for cloud source OAuth tokens; null for local/synology paths
+  credentials_expires_at TEXT, -- plaintext, not sensitive; access-token expiry for proactive refresh
+  credentials_status TEXT NOT NULL DEFAULT 'ok' CHECK (credentials_status IN ('ok', 'needs_reconnect')),
+  credentials_account_label TEXT, -- display only, e.g. "connected as name@gmail.com"
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- Summary of the most recent scan, surfaced in the UI as index status.
   -- Null until the first scan runs.
