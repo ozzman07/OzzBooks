@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { getDb } from '../../db/index.js'
 import type { SourceRow } from '../../types.js'
-import { scanSource } from '../../ingestion/scan.js'
 import { browseSourceDirectory } from '../../ingestion/relink.js'
+import { startScan, getScanState } from '../../ingestion/scanStatus.js'
 
 export const sourcesRouter = Router()
 
@@ -90,7 +90,12 @@ sourcesRouter.get('/:id/browse', async (req, res) => {
   }
 })
 
-sourcesRouter.post('/:id/scan', async (req, res) => {
+// Fire-and-forget: a real scan can take well over an hour on a large
+// library, so this returns immediately instead of blocking on the whole
+// thing — a client on a phone would otherwise lose the response the
+// moment the tab backgrounds mid-request. Poll GET /:id/scan-status for
+// progress/result instead.
+sourcesRouter.post('/:id/scan', (req, res) => {
   const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
     | SourceRow
     | undefined
@@ -98,11 +103,14 @@ sourcesRouter.post('/:id/scan', async (req, res) => {
     res.status(404).json({ error: 'source not found' })
     return
   }
+  res.status(202).json(startScan(source))
+})
 
-  try {
-    const result = await scanSource(source)
-    res.json(result)
-  } catch (err) {
-    res.status(500).json({ error: 'scan failed', detail: String(err) })
+sourcesRouter.get('/:id/scan-status', (req, res) => {
+  const source = getDb().prepare('SELECT id FROM sources WHERE id = ?').get(req.params.id)
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
   }
+  res.json(getScanState(req.params.id))
 })

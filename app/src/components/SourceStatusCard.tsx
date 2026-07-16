@@ -1,5 +1,14 @@
-import { useState } from 'react'
-import { fetchSourceIssues, scanSource, type ApiScanIssue, type ApiSource } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  fetchSourceIssues,
+  fetchScanStatus,
+  scanSource,
+  type ApiScanIssue,
+  type ApiScanState,
+  type ApiSource,
+} from '../api/client'
+
+const POLL_INTERVAL_MS = 5000
 
 function formatWhen(iso: string | null): string {
   if (!iso) return 'Never scanned'
@@ -7,13 +16,43 @@ function formatWhen(iso: string | null): string {
   return `Last scanned ${date.toLocaleString()}`
 }
 
+function formatStarted(iso: string): string {
+  const date = new Date(iso.endsWith('Z') ? iso : `${iso}Z`)
+  return date.toLocaleTimeString()
+}
+
 export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; onRescanned: () => void }) {
-  const [scanning, setScanning] = useState(false)
-  const [scanError, setScanError] = useState<string | null>(null)
+  const [scanState, setScanState] = useState<ApiScanState>({ status: 'idle' })
+  const [triggerError, setTriggerError] = useState<string | null>(null)
   const [issues, setIssues] = useState<ApiScanIssue[] | null>(null)
   const [issuesLoading, setIssuesLoading] = useState(false)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const scanning = scanState.status === 'running'
   const failedCount = source.last_scan_failed ?? 0
+
+  const poll = useCallback(async () => {
+    const state = await fetchScanStatus(source.id).catch((): ApiScanState => ({ status: 'idle' }))
+    setScanState(state)
+    if (state.status === 'running') {
+      pollTimer.current = setTimeout(() => void poll(), POLL_INTERVAL_MS)
+    } else if (state.status === 'completed') {
+      setIssues(null) // stale until re-opened; the list may have changed
+      onRescanned()
+    }
+  }, [source.id, onRescanned])
+
+  useEffect(() => {
+    // A scan can run for well over an hour and isn't tied to any one
+    // request/tab — check on mount (and whenever this card remounts, e.g.
+    // navigating back into Settings) rather than assuming idle, so an
+    // in-progress scan started earlier still shows correctly.
+    void poll()
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source.id])
 
   async function toggleIssues() {
     if (issues) {
@@ -29,16 +68,15 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
   }
 
   async function rescan() {
-    setScanning(true)
-    setScanError(null)
+    setTriggerError(null)
     try {
-      await scanSource(source.id)
-      setIssues(null) // stale until re-opened; the list may have changed
-      onRescanned()
+      const state = await scanSource(source.id)
+      setScanState(state)
+      if (state.status === 'running') {
+        pollTimer.current = setTimeout(() => void poll(), POLL_INTERVAL_MS)
+      }
     } catch (err) {
-      setScanError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setScanning(false)
+      setTriggerError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -58,6 +96,10 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
         </button>
       </div>
 
+      {scanState.status === 'running' && (
+        <p className="mt-2 text-xs text-amber-400">Started {formatStarted(scanState.startedAt)} — this can take a while on a large library.</p>
+      )}
+
       <p className="mt-2 text-xs text-slate-400">{formatWhen(source.last_scanned_at)}</p>
       <p className="text-xs text-slate-400">
         {source.book_count} book{source.book_count === 1 ? '' : 's'} indexed
@@ -73,7 +115,10 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
         </p>
       )}
 
-      {scanError && <p className="mt-2 text-xs text-red-400">Scan failed: {scanError}</p>}
+      {scanState.status === 'failed' && (
+        <p className="mt-2 text-xs text-red-400">Scan failed: {scanState.error}</p>
+      )}
+      {triggerError && <p className="mt-2 text-xs text-red-400">{triggerError}</p>}
 
       {failedCount > 0 && (
         <div className="mt-2">
