@@ -38,6 +38,12 @@ function migrate(db: Database.Database): void {
     ['last_scan_updated', 'INTEGER'],
     ['last_scan_failed', 'INTEGER'],
     ['last_scan_skipped_duplicates', 'INTEGER'],
+    ['credentials_expires_at', 'TEXT'],
+    [
+      'credentials_status',
+      "TEXT NOT NULL DEFAULT 'ok' CHECK (credentials_status IN ('ok', 'needs_reconnect'))",
+    ],
+    ['credentials_account_label', 'TEXT'],
   ]
   for (const [name, type] of scanSummaryColumns) {
     if (!sourcesColumns.has(name)) {
