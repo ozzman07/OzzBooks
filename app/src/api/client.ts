@@ -118,6 +118,17 @@ export interface ApiScanResult {
   failed: number
 }
 
+// A scan is fire-and-forget on the server (it can run for well over an
+// hour on a large library) — triggering it returns a 'running' state
+// immediately rather than the result, and fetchScanStatus is polled until
+// it flips to 'completed'/'failed'. This survives a mobile tab
+// backgrounding mid-scan, unlike waiting on one long request.
+export type ApiScanState =
+  | { status: 'idle' }
+  | { status: 'running'; startedAt: string }
+  | { status: 'completed'; result: ApiScanResult; finishedAt: string }
+  | { status: 'failed'; error: string; finishedAt: string }
+
 export function fetchSources(): Promise<ApiSource[]> {
   return apiFetch<ApiSource[]>('/api/sources')
 }
@@ -129,8 +140,12 @@ export function fetchSourceIssues(sourceId: string): Promise<ApiScanIssue[]> {
 // Also covers "scan for new books" — a scan always walks the whole source
 // tree fresh, so the same request both retries previously-failed files and
 // picks up anything new, with no separate "new only" mode needed.
-export function scanSource(sourceId: string): Promise<ApiScanResult> {
-  return apiFetch<ApiScanResult>(`/api/sources/${sourceId}/scan`, { method: 'POST' })
+export function scanSource(sourceId: string): Promise<ApiScanState> {
+  return apiFetch<ApiScanState>(`/api/sources/${sourceId}/scan`, { method: 'POST' })
+}
+
+export function fetchScanStatus(sourceId: string): Promise<ApiScanState> {
+  return apiFetch<ApiScanState>(`/api/sources/${sourceId}/scan-status`)
 }
 
 export function fetchBooks(): Promise<ApiBookListItem[]> {
