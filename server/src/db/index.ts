@@ -62,6 +62,15 @@ function migrate(db: Database.Database): void {
     // never-touched created_at from scanSource's INSERT.
     db.exec('UPDATE books SET created_at = updated_at WHERE created_at IS NULL')
   }
+  const booksTextColumns: [string, string][] = [
+    ['genre', 'TEXT'],
+    ['metadata_enrichment_attempted_at', 'TEXT'],
+  ]
+  for (const [name, type] of booksTextColumns) {
+    if (!booksColumns.has(name)) {
+      db.exec(`ALTER TABLE books ADD COLUMN ${name} ${type}`)
+    }
+  }
 }
 
 export function closeDb(): void {

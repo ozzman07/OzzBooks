@@ -1,11 +1,101 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { fetchBooks, fetchSources, connectGoogleDrive, type ApiSource } from '../api/client'
+import {
+  fetchBooks,
+  fetchSources,
+  connectGoogleDrive,
+  startEnrichment,
+  fetchEnrichmentStatus,
+  type ApiSource,
+  type ApiEnrichmentState,
+} from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { deleteBookDownload } from '../offline/downloadManager'
 import { SourceStatusCard } from '../components/SourceStatusCard'
+
+const ENRICHMENT_POLL_INTERVAL_MS = 5000
+
+// Library-wide, not per-source, so this lives alongside the per-source
+// SourceStatusCards rather than as one of them — same fire-and-forget +
+// poll pattern (fetchEnrichmentStatus mirrors fetchScanStatus exactly).
+function MetadataEnrichmentCard() {
+  const [state, setState] = useState<ApiEnrichmentState>({ status: 'idle' })
+  const [triggerError, setTriggerError] = useState<string | null>(null)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const running = state.status === 'running'
+
+  const poll = useCallback(async () => {
+    const next = await fetchEnrichmentStatus().catch((): ApiEnrichmentState => ({ status: 'idle' }))
+    setState(next)
+    if (next.status === 'running') {
+      pollTimer.current = setTimeout(() => void poll(), ENRICHMENT_POLL_INTERVAL_MS)
+    }
+  }, [])
+
+  useEffect(() => {
+    // A pass can run for tens of minutes and isn't tied to any one
+    // request/tab — check on mount so a pass started earlier (or before
+    // navigating away and back) still shows correctly.
+    void poll()
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function start() {
+    setTriggerError(null)
+    try {
+      const next = await startEnrichment()
+      setState(next)
+      if (next.status === 'running') {
+        pollTimer.current = setTimeout(() => void poll(), ENRICHMENT_POLL_INTERVAL_MS)
+      }
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="mb-3 rounded border border-slate-800 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-sm text-slate-200">Genre & cover backfill</p>
+          <p className="text-xs text-slate-500">
+            Looks up missing genre and cover art from Open Library. Runs slowly (about one book a second) to stay
+            respectful of their free API.
+          </p>
+        </div>
+        <button
+          onClick={() => void start()}
+          disabled={running}
+          className="shrink-0 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+        >
+          {running ? 'Running…' : 'Backfill'}
+        </button>
+      </div>
+
+      {state.status === 'running' && (
+        <p className="mt-2 text-xs text-amber-400">
+          Started {new Date(state.startedAt).toLocaleTimeString()} — this can take a while.
+        </p>
+      )}
+      {state.status === 'completed' && (
+        <p className="mt-2 text-xs text-emerald-400">
+          Done: {state.result.genreUpdated} genre{state.result.genreUpdated === 1 ? '' : 's'} added,{' '}
+          {state.result.coverUpdated} cover{state.result.coverUpdated === 1 ? '' : 's'} added
+          {state.result.skipped > 0 && `, ${state.result.skipped} skipped (no confident match)`}
+          {state.result.failed > 0 && `, ${state.result.failed} failed`}.
+        </p>
+      )}
+      {state.status === 'failed' && <p className="mt-2 text-xs text-red-400">Failed: {state.error}</p>}
+      {triggerError && <p className="mt-2 text-xs text-red-400">{triggerError}</p>}
+    </div>
+  )
+}
 
 // No password-reset/change-of-email flow exists (no mail-sending infra in
 // this project) — these two forms are the self-service alternative, each
@@ -311,6 +401,8 @@ export function Settings() {
         >
           Connect Google Drive
         </button>
+
+        <MetadataEnrichmentCard />
       </section>
 
       <section className="mb-6 rounded-lg border border-slate-800 p-4">

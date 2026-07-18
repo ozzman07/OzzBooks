@@ -163,6 +163,30 @@ export function fetchScanStatus(sourceId: string): Promise<ApiScanState> {
   return apiFetch<ApiScanState>(`/api/sources/${sourceId}/scan-status`)
 }
 
+export interface ApiEnrichmentResult {
+  attempted: number
+  genreUpdated: number
+  coverUpdated: number
+  skipped: number
+  failed: number
+}
+
+// Same fire-and-forget shape as ApiScanState, but library-wide rather than
+// per-source — see server/src/ingestion/enrichment/enrichmentStatus.ts.
+export type ApiEnrichmentState =
+  | { status: 'idle' }
+  | { status: 'running'; startedAt: string }
+  | { status: 'completed'; result: ApiEnrichmentResult; finishedAt: string }
+  | { status: 'failed'; error: string; finishedAt: string }
+
+export function startEnrichment(): Promise<ApiEnrichmentState> {
+  return apiFetch<ApiEnrichmentState>('/api/enrichment/start', { method: 'POST' })
+}
+
+export function fetchEnrichmentStatus(): Promise<ApiEnrichmentState> {
+  return apiFetch<ApiEnrichmentState>('/api/enrichment/status')
+}
+
 export function fetchBooks(): Promise<ApiBookListItem[]> {
   return apiFetch<ApiBookListItem[]>('/api/books')
 }
