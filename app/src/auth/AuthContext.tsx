@@ -35,27 +35,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus('unauthenticated')
       return
     }
+    // Optimistically authenticated the instant a stored token exists,
+    // rather than blocking the whole app behind a "Loading…" screen for
+    // however long the cloud round-trip takes to confirm it — the cloud
+    // service's free tier can take 30-60s to wake from idle (accepted
+    // tradeoff, see Claude.md), and can even return a transient error on
+    // that first wake-up request. fetchMe() still runs, just in the
+    // background: it populates `user` once it succeeds, and a genuine
+    // 401 (token actually invalid/expired) still logs out — just
+    // asynchronously instead of blocking first paint on confirming
+    // validity. Any other failure (cloud unreachable, cold-start
+    // hiccup) is left alone, matching the existing "don't log out just
+    // because the cloud is briefly unreachable" principle, just applied
+    // from the start instead of only after a failed round-trip.
+    setToken(stored)
+    setStatus('authenticated')
     cloud
       .fetchMe(stored)
-      .then((me) => {
-        setToken(stored)
-        setUser(me)
-        setStatus('authenticated')
-      })
+      .then((me) => setUser(me))
       .catch((err) => {
-        // Only an actual 401 means the token is invalid/expired — clear it.
-        // A network error (cloud unreachable — status 0, or any other
-        // failure) must NOT log the user out just because the cloud
-        // service is briefly unreachable; that would defeat the whole
-        // point of short-gap offline resilience. Stay optimistically
-        // authenticated with the stored token; auth.user just won't be
-        // populated until a call to the cloud succeeds.
         if (err instanceof cloud.CloudApiError && err.status === 401) {
           localStorage.removeItem(TOKEN_STORAGE_KEY)
+          setToken(null)
+          setUser(null)
           setStatus('unauthenticated')
-        } else {
-          setToken(stored)
-          setStatus('authenticated')
         }
       })
   }, [])
