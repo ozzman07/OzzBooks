@@ -41,6 +41,25 @@ function collate(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 }
 
+// Many titles in this library are still raw filename fragments rather
+// than clean human titles — ingestion doesn't clean these up yet (see
+// Claude.md's planned Phase 2b title-cleaning work, not built). Sorting
+// on the raw string clusters unrelated numbered-prefix files together
+// ("01 - Ender's Game - Orson Scott Card - 1985", "01_light_of_other_days")
+// under digits instead of landing near where a person would actually look
+// for them. This only computes a sort KEY — the displayed title is never
+// changed, and a title without any of these artifacts passes through
+// unchanged. Known limitation: doesn't strip trailing "- Author - Year"
+// noise, since that pattern is too variable to target safely without the
+// full title-cleaning pass.
+function titleSortKey(title: string): string {
+  return title
+    .replace(/^\d{1,3}\s*[._-]\s*/, '') // leading track-number-style prefix ("01 - ", "001.", "00_")
+    .replace(/_/g, ' ') // raw filename fragments use underscores instead of spaces
+    .replace(/^(the|a|an)\s+/i, '') // ignore a leading article, matching conventional library alphabetization
+    .trim()
+}
+
 // Author tags in this library are a mix of "First Last" (the common case)
 // and already-inverted "Last, First" (e.g. "Clarke, Arthur C.") — plus some
 // multi-author/role-annotated strings ("Eric Flint, Andrew Dennis",
@@ -76,12 +95,15 @@ function collateByAuthor(a: string, b: string): number {
 // the planned LLM-assisted extraction will backfill series_number and this
 // will automatically start using it once populated.
 function compareBySeriesThenTitle(a: Book, b: Book): number {
-  const seriesCompare = collate(a.seriesName ?? a.title, b.seriesName ?? b.title)
+  const seriesCompare = collate(
+    titleSortKey(a.seriesName ?? a.title),
+    titleSortKey(b.seriesName ?? b.title),
+  )
   if (seriesCompare !== 0) return seriesCompare
   // No-op today (seriesNumber is always null until the LLM pass populates
   // it), kept so ordering within a series automatically switches from
   // title order to reading order the moment that data exists.
-  return (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0) || collate(a.title, b.title)
+  return (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0) || collate(titleSortKey(a.title), titleSortKey(b.title))
 }
 
 interface SeriesGroup {
@@ -113,11 +135,11 @@ function groupBySeries(books: Book[]): { series: SeriesGroup[]; standalone: Book
       standalone.push(...group)
       continue
     }
-    series.push({ seriesName, books: group.slice().sort((a, b) => collate(a.title, b.title)) })
+    series.push({ seriesName, books: group.slice().sort((a, b) => collate(titleSortKey(a.title), titleSortKey(b.title))) })
   }
 
-  series.sort((a, b) => collate(a.seriesName, b.seriesName))
-  standalone.sort((a, b) => collate(a.title, b.title))
+  series.sort((a, b) => collate(titleSortKey(a.seriesName), titleSortKey(b.seriesName)))
+  standalone.sort((a, b) => collate(titleSortKey(a.title), titleSortKey(b.title)))
   return { series, standalone }
 }
 
@@ -169,14 +191,14 @@ function sortBooks(books: Book[], sortBy: SortOption): Book[] {
   return books.slice().sort((a, b) => {
     switch (sortBy) {
       case 'author':
-        return collateByAuthor(a.author, b.author) || collate(a.title, b.title)
+        return collateByAuthor(a.author, b.author) || collate(titleSortKey(a.title), titleSortKey(b.title))
       case 'series':
         return compareBySeriesThenTitle(a, b)
       case 'recent':
         return b.createdAt.localeCompare(a.createdAt)
       case 'title':
       default:
-        return collate(a.title, b.title)
+        return collate(titleSortKey(a.title), titleSortKey(b.title))
     }
   })
 }
