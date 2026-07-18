@@ -68,10 +68,21 @@ function matchScore(queryTitle: string, queryAuthor: string, doc: OpenLibrarySea
  * Open Library's own relevance ranking doesn't know our match-confidence
  * rules, so every returned doc is scored, not just the first.
  */
-export async function searchWork(title: string, author: string | null): Promise<OpenLibraryMatch | null> {
+async function runSearch(title: string, author: string | null): Promise<OpenLibrarySearchDoc[]> {
   await paceRequest()
 
-  const params = new URLSearchParams({ title, limit: '5' })
+  // The fielded `title=` param does a strict/near-exact match against Open
+  // Library's title field — it 404s-to-empty on perfectly real titles that
+  // carry any extra text (e.g. a series-number prefix baked into the
+  // filename-derived title, "Dark Tower VI: Song Of Susannah" finds
+  // nothing, but the general-purpose `q=` param finds "Song of Susannah"
+  // immediately). `q=` is used for the title text for this reason; author
+  // stays a separate fielded param rather than folded into `q=` — Open
+  // Library's search backend treats a leading `-` in a query token as an
+  // exclusion operator, so appending raw " - Author Name" text into one
+  // combined query string (as this used to do) could silently exclude the
+  // correct result. `subject` isn't returned by default, hence `fields=`.
+  const params = new URLSearchParams({ q: title, limit: '5', fields: 'title,author_name,subject,cover_i' })
   if (author) params.set('author', author)
 
   const res = await fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
@@ -81,7 +92,23 @@ export async function searchWork(title: string, author: string | null): Promise<
     throw new Error(`Open Library search failed: ${res.status} ${res.statusText}`)
   }
   const body = (await res.json()) as OpenLibrarySearchResponse
-  const docs = body.docs ?? []
+  return body.docs ?? []
+}
+
+export async function searchWork(title: string, author: string | null): Promise<OpenLibraryMatch | null> {
+  let docs = await runSearch(title, author)
+
+  // Unlike a normal ranking signal, Open Library's `author` param is a
+  // strict filter — it zeroes out results entirely rather than just
+  // de-prioritizing a mismatch. Found live against real library data: a
+  // book whose (folder-derived) "author" field was actually the genre
+  // "History" returned nothing with author set, but the exact same title
+  // alone found the correct book immediately. Retry title-only rather
+  // than give up — the match-confidence check below still guards against
+  // a wrong book being accepted.
+  if (docs.length === 0 && author) {
+    docs = await runSearch(title, null)
+  }
   if (docs.length === 0) return null
 
   let best: { doc: OpenLibrarySearchDoc; score: number } | null = null

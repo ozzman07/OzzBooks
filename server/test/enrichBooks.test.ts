@@ -92,6 +92,22 @@ describe('enrichBooks', () => {
     expect((db.prepare('SELECT metadata_enrichment_attempted_at FROM books WHERE id = ?').get(missingCover) as any).metadata_enrichment_attempted_at).toBeTruthy()
   })
 
+  it('strips trailing "- Author" and parenthetical noise before querying Open Library', async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue(null)
+
+    const sourceId = await insertSource()
+    await insertBook(sourceId, { genre: null, title: "Beauty's Release (read by George Holmes)" })
+    await insertBook(sourceId, { genre: null, title: 'Congo - Michael Crichton' })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    await enrichBooks()
+
+    const cleanedTitles = vi.mocked(searchWork).mock.calls.map((call) => call[0])
+    expect(cleanedTitles).toContain("Beauty's Release")
+    expect(cleanedTitles).toContain('Congo')
+  })
+
   it('populates genre on a confident match and stamps the attempt', async () => {
     const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
     vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null })
