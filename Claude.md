@@ -416,3 +416,11 @@ Don't remove them for being "unused."
   and intervene, consistent with this project's general preference for
   self-healing behavior over mechanisms that need manual attention.
   Revisit only if the cold-start delay becomes a real nuisance.
+  **Update (2026-07-18): this happened** — the cold-start delay was
+  blocking the whole app on open, at one point even returning a
+  transient error (HTTP 520). A client-side fix shipped first
+  (`AuthContext.tsx` now authenticates optimistically from the stored
+  token instead of blocking on the cloud round-trip). A full migration
+  of `cloud/` off Render+Neon onto the Mac mini is planned as the
+  root-cause fix if the client-side mitigation isn't enough — see
+  `Ozzbooks_Addendum_CloudMigration` for the full plan, not yet started.
