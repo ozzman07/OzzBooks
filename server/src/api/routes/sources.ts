@@ -7,10 +7,22 @@ import { startScan, getScanState } from '../../ingestion/scanStatus.js'
 
 export const sourcesRouter = Router()
 
+// Deliberately excludes `credentials` — no reason to ever send the
+// encrypted OAuth token blob to a client, even encrypted (defense in
+// depth: less exposure if a client-side bug or a browser extension ever
+// logged a response body). Every route below that returns a source row
+// to the client uses this instead of `SELECT *`.
+const PUBLIC_SOURCE_COLUMNS = `
+  id, type, label, path_scope, created_at,
+  last_scanned_at, last_scan_found, last_scan_created,
+  last_scan_updated, last_scan_failed, last_scan_skipped_duplicates,
+  credentials_expires_at, credentials_status, credentials_account_label
+`
+
 sourcesRouter.get('/', (_req, res) => {
   const rows = getDb()
     .prepare(
-      `SELECT sources.*,
+      `SELECT ${PUBLIC_SOURCE_COLUMNS},
          (SELECT COUNT(*) FROM books WHERE books.source_id = sources.id AND books.status = 'active') AS book_count,
          (SELECT COUNT(*) FROM books WHERE books.source_id = sources.id AND books.status = 'missing') AS missing_count
        FROM sources
@@ -46,7 +58,7 @@ sourcesRouter.post('/', (req, res) => {
     .prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)')
     .run(id, type, label, pathScope)
 
-  const row = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(id)
+  const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(id)
   res.status(201).json(row)
 })
 
@@ -65,7 +77,7 @@ sourcesRouter.patch('/:id', (req, res) => {
   const pathScope = req.body?.pathScope ?? existing.path_scope
 
   getDb().prepare('UPDATE sources SET label = ?, path_scope = ? WHERE id = ?').run(label, pathScope, existing.id)
-  const row = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(existing.id)
+  const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(existing.id)
   res.json(row)
 })
 

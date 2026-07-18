@@ -77,12 +77,11 @@ describe('getValidAccessToken', () => {
       },
       ensureManagedFolder: async () => ({ folderId: 'x' }),
       listTree: async () => [],
-      getStreamHeaders: async () => ({}),
       getMetadataAccess: async () => ({ url: '', headers: {} }),
     }
 
-    const token = await getValidAccessToken(source, provider)
-    expect(token).toBe('still-good')
+    const credentials = await getValidAccessToken(source, provider)
+    expect(credentials.accessToken).toBe('still-good')
     expect(refreshCalls).toBe(0)
   })
 
@@ -101,12 +100,11 @@ describe('getValidAccessToken', () => {
       refreshToken: async (current) => ({ ...current, accessToken: 'fresh-token', expiresInSeconds: 3600 }),
       ensureManagedFolder: async () => ({ folderId: 'x' }),
       listTree: async () => [],
-      getStreamHeaders: async () => ({}),
       getMetadataAccess: async () => ({ url: '', headers: {} }),
     }
 
-    const token = await getValidAccessToken(source, provider)
-    expect(token).toBe('fresh-token')
+    const credentials = await getValidAccessToken(source, provider)
+    expect(credentials.accessToken).toBe('fresh-token')
 
     const updated = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(source.id) as any
     expect(decryptCredentials(updated.credentials).accessToken).toBe('fresh-token')
@@ -131,7 +129,6 @@ describe('getValidAccessToken', () => {
       },
       ensureManagedFolder: async () => ({ folderId: 'x' }),
       listTree: async () => [],
-      getStreamHeaders: async () => ({}),
       getMetadataAccess: async () => ({ url: '', headers: {} }),
     }
 
@@ -140,7 +137,7 @@ describe('getValidAccessToken', () => {
       getValidAccessToken(source, provider),
       getValidAccessToken(source, provider),
     ])
-    expect([a, b, c]).toEqual(['fresh', 'fresh', 'fresh'])
+    expect([a.accessToken, b.accessToken, c.accessToken]).toEqual(['fresh', 'fresh', 'fresh'])
     expect(refreshCalls).toBe(1)
   })
 
@@ -159,7 +156,6 @@ describe('getValidAccessToken', () => {
       },
       ensureManagedFolder: async () => ({ folderId: 'x' }),
       listTree: async () => [],
-      getStreamHeaders: async () => ({}),
       getMetadataAccess: async () => ({ url: '', headers: {} }),
     }
 

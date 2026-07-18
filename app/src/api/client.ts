@@ -97,6 +97,8 @@ export interface ApiSource {
   last_scan_updated: number | null
   last_scan_failed: number | null
   last_scan_skipped_duplicates: number | null
+  credentials_status: 'ok' | 'needs_reconnect'
+  credentials_account_label: string | null
   book_count: number
   missing_count: number
 }
@@ -131,6 +133,19 @@ export type ApiScanState =
 
 export function fetchSources(): Promise<ApiSource[]> {
   return apiFetch<ApiSource[]>('/api/sources')
+}
+
+// Full-page navigation, not fetch() — this is an OAuth consent flow, the
+// browser has to actually go to Google's consent screen and back, not
+// receive JSON. Passing sourceId re-authorizes an existing source in
+// place (used for "Reconnect" after credentials_status flips to
+// needs_reconnect) rather than creating a duplicate.
+export function connectGoogleDrive(label?: string, sourceId?: string): void {
+  const params = new URLSearchParams()
+  if (label) params.set('label', label)
+  if (sourceId) params.set('sourceId', sourceId)
+  const query = params.toString()
+  window.location.href = `${API_BASE_URL}/api/sources/oauth/google/start${query ? `?${query}` : ''}`
 }
 
 export function fetchSourceIssues(sourceId: string): Promise<ApiScanIssue[]> {

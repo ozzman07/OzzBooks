@@ -3,6 +3,7 @@ import {
   fetchSourceIssues,
   fetchScanStatus,
   scanSource,
+  connectGoogleDrive,
   type ApiScanIssue,
   type ApiScanState,
   type ApiSource,
@@ -30,6 +31,7 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
 
   const scanning = scanState.status === 'running'
   const failedCount = source.last_scan_failed ?? 0
+  const needsReconnect = source.credentials_status === 'needs_reconnect'
 
   const poll = useCallback(async () => {
     const state = await fetchScanStatus(source.id).catch((): ApiScanState => ({ status: 'idle' }))
@@ -89,12 +91,30 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
         </div>
         <button
           onClick={() => void rescan()}
-          disabled={scanning}
+          disabled={scanning || needsReconnect}
           className="shrink-0 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
         >
           {scanning ? 'Scanning…' : 'Rescan'}
         </button>
       </div>
+
+      {needsReconnect && (
+        <div className="mt-2 rounded bg-amber-900/40 px-3 py-2">
+          <p className="text-xs text-amber-300">
+            This source needs to be reconnected — access was lost or revoked.
+          </p>
+          <button
+            onClick={() => connectGoogleDrive(source.label, source.id)}
+            className="mt-1 text-xs text-amber-400 underline"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
+
+      {source.credentials_account_label && (
+        <p className="mt-1 text-xs text-slate-500">{source.credentials_account_label}</p>
+      )}
 
       {scanState.status === 'running' && (
         <p className="mt-2 text-xs text-amber-400">Started {formatStarted(scanState.startedAt)} — this can take a while on a large library.</p>

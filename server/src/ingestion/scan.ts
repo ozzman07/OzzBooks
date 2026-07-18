@@ -3,12 +3,12 @@ import { readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
 import type { BookRow, SourceRow } from '../types.js'
-import { ingestMp3Folder, type IngestedBook } from './mp3Folder.js'
+import { ingestMp3Folder, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { ingestM4b, isDrmFile } from './m4b.js'
 import { groupM4bParts } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork } from './artwork.js'
-import { getProvider } from '../integrations/remote/registry.js'
+import { getProvider, getScanner } from '../integrations/remote/registry.js'
 
 export interface Candidate {
   format: 'm4b' | 'mp3_folder'
@@ -29,7 +29,7 @@ export interface Candidate {
 // cleaned up on the NAS). Deliberately whole-name-only so it doesn't catch
 // real book titles that happen to contain one of these words as a
 // substring, like "Sourcery" or "The Source of Magic".
-const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
+export const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
 
 export async function findCandidates(dir: string): Promise<Candidate[]> {
   if (BACKUP_FOLDER_RE.test(path.basename(dir))) return []
@@ -101,12 +101,23 @@ const GARBLED_FOLDER_NAME_RE = /^[A-Z0-9]{6}~[A-Z0-9]$/
  * back to the tag-derived author) when there's no author-folder level to
  * read from, or when it's one of the garbled short names above.
  */
-function deriveAuthorFromFolder(pathScope: string, filePath: string): string | null {
-  const relative = path.relative(pathScope, filePath)
-  const [authorFolder, ...rest] = relative.split(path.sep)
+/**
+ * The segment-array core, extracted so a remote source (Drive's
+ * parents-based folder hierarchy, no real path string to split) can
+ * reuse the exact same derivation logic — it just builds its own segment
+ * array by walking folder names up to the source root, instead of
+ * splitting a filesystem path. Local behavior below is unchanged.
+ */
+export function deriveAuthorFromSegments(segments: string[]): string | null {
+  const [authorFolder, ...rest] = segments
   if (rest.length === 0) return null // file/folder sits directly at the source root, no author level
   if (!authorFolder || GARBLED_FOLDER_NAME_RE.test(authorFolder)) return null
   return authorFolder
+}
+
+function deriveAuthorFromFolder(pathScope: string, filePath: string): string | null {
+  const relative = path.relative(pathScope, filePath)
+  return deriveAuthorFromSegments(relative.split(path.sep))
 }
 
 /**
@@ -127,13 +138,18 @@ function deriveAuthorFromFolder(pathScope: string, filePath: string): string | n
  * one broad "series" rather than each actual sub-series — the LLM pass
  * will disambiguate this later.
  */
-function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string): string | null {
-  const relative = path.relative(pathScope, bookOwnFolder)
-  const segments = relative.split(path.sep)
+/** Segment-array core — see deriveAuthorFromSegments's docstring above,
+ * same reasoning applies here. */
+export function deriveSeriesFromSegments(segments: string[]): string | null {
   if (segments.length < 3) return null // directly under the author folder — no series layer
   const seriesFolder = segments[segments.length - 2]
   if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
   return seriesFolder
+}
+
+function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string): string | null {
+  const relative = path.relative(pathScope, bookOwnFolder)
+  return deriveSeriesFromSegments(relative.split(path.sep))
 }
 
 export async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
@@ -163,19 +179,34 @@ export interface ScanResult {
  * the book id so cloud-synced progress/bookmarks/downloads (keyed by book
  * id) stay intact across a file move.
  */
-export async function applyIngestedCandidate(
+export interface ResolvedBook {
+  filePath: string
+  format: 'm4b' | 'mp3_folder'
+  title: string
+  author: string | null
+  seriesName: string | null
+  seriesNumber: number | null
+  artworkThumbPath: string | null
+  artworkFullPath: string | null
+  contentHash: string
+  chapters: IngestedChapter[]
+}
+
+/**
+ * The actual DB write (upsert + chapter replace), decoupled from local
+ * parsing/derivation — this is the part remote sources reuse directly
+ * (see integrations/remote/googleDrive/remoteScan.ts), since their
+ * author/series derivation and metadata parsing use entirely different
+ * mechanics (Drive's parents-based folder hierarchy, ffprobe-over-URL)
+ * than the local-filesystem-path logic in applyIngestedCandidate below.
+ */
+export function writeBookAndChapters(
   source: SourceRow,
-  candidate: Candidate,
-  existingBookId: string | undefined,
-  hash: string,
-): Promise<{ bookId: string; created: boolean }> {
+  bookId: string,
+  created: boolean,
+  resolved: ResolvedBook,
+): { bookId: string; created: boolean } {
   const db = getDb()
-  const ingested = await ingestCandidate(candidate)
-  const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
-  const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
-  const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
-  const bookId = existingBookId ?? randomUUID()
-  const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
 
   const upsert = db.prepare(`
     INSERT INTO books (
@@ -205,15 +236,15 @@ export async function applyIngestedCandidate(
   upsert.run({
     id: bookId,
     source_id: source.id,
-    file_path: candidate.filePath,
-    format: candidate.format,
-    title: ingested.title,
-    author,
-    series_name: seriesName,
-    series_number: ingested.seriesNumber,
-    artwork_thumb_path: artwork?.thumbPath ?? null,
-    artwork_full_path: artwork?.fullPath ?? null,
-    content_hash: hash,
+    file_path: resolved.filePath,
+    format: resolved.format,
+    title: resolved.title,
+    author: resolved.author,
+    series_name: resolved.seriesName,
+    series_number: resolved.seriesNumber,
+    artwork_thumb_path: resolved.artworkThumbPath,
+    artwork_full_path: resolved.artworkFullPath,
+    content_hash: resolved.contentHash,
   })
 
   db.prepare('DELETE FROM chapters WHERE book_id = ?').run(bookId)
@@ -221,7 +252,7 @@ export async function applyIngestedCandidate(
     INSERT INTO chapters (id, book_id, idx, title, start_time, duration, file_path)
     VALUES (@id, @book_id, @idx, @title, @start_time, @duration, @file_path)
   `)
-  ingested.chapters.forEach((chapter, idx) => {
+  resolved.chapters.forEach((chapter, idx) => {
     insertChapter.run({
       id: randomUUID(),
       book_id: bookId,
@@ -233,21 +264,54 @@ export async function applyIngestedCandidate(
     })
   })
 
-  return { bookId, created: !existingBookId }
+  return { bookId, created }
+}
+
+export async function applyIngestedCandidate(
+  source: SourceRow,
+  candidate: Candidate,
+  existingBookId: string | undefined,
+  hash: string,
+): Promise<{ bookId: string; created: boolean }> {
+  const ingested = await ingestCandidate(candidate)
+  const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
+  const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
+  const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
+  const bookId = existingBookId ?? randomUUID()
+  const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
+
+  return writeBookAndChapters(source, bookId, !existingBookId, {
+    filePath: candidate.filePath,
+    format: candidate.format,
+    title: ingested.title,
+    author,
+    seriesName,
+    seriesNumber: ingested.seriesNumber,
+    artworkThumbPath: artwork?.thumbPath ?? null,
+    artworkFullPath: artwork?.fullPath ?? null,
+    contentHash: hash,
+    chapters: ingested.chapters,
+  })
 }
 
 export async function scanSource(source: SourceRow): Promise<ScanResult> {
   const db = getDb()
 
-  // Groundwork only, no concrete remote provider exists yet — a source
-  // with a non-local type fails the scan cleanly (clear scan_issues
-  // message, distinguishing "no provider" from "provider exists but
-  // remote scanning isn't implemented yet") rather than either crashing
+  // A source with a non-local type delegates to whatever provider/scanner
+  // is registered for it (see integrations/remote/registry.ts) — Google
+  // Drive registers both at server startup. If either is missing, fails
+  // the scan cleanly (clear scan_issues message) rather than crashing
   // (findCandidates would throw on a non-filesystem path_scope) or
   // silently doing nothing. Local/Synology scanning below is completely
-  // unaffected.
+  // unaffected either way.
   if (source.type !== 'local' && source.type !== 'synology') {
     const provider = getProvider(source.type)
+    const scanner = getScanner(source.type)
+
+    if (provider && scanner) {
+      return scanner(source, provider)
+    }
+
     const message = provider
       ? `Remote scanning for source type "${source.type}" is not implemented yet`
       : `No provider registered for source type "${source.type}" yet`

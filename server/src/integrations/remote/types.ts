@@ -42,13 +42,12 @@ export interface RemoteProvider {
   ensureManagedFolder(credentials: DecryptedCredentials): Promise<{ folderId: string; label?: string }>
   /** Recursively walks the source's folder tree, source.path_scope as the root folder id. */
   listTree(source: SourceRow, credentials: DecryptedCredentials): Promise<RemoteEntry[]>
-  /** Auth headers for a direct streaming/download request to fileId. */
-  getStreamHeaders(
-    source: SourceRow,
-    credentials: DecryptedCredentials,
-    fileId: string,
-  ): Promise<Record<string, string>>
-  /** URL + headers for metadata extraction (ffprobe/tokenizer) against fileId. */
+  /** URL + headers to fetch fileId's content — used for both metadata
+   * extraction (ffprobe/tokenizer) and the streaming proxy. Kept as one
+   * method rather than two: for this provider they're identical, and a
+   * provider where they'd genuinely differ (e.g. a signed short-lived
+   * download URL vs. a metadata-only endpoint) can still return different
+   * values per call, nothing here assumes they're the same. */
   getMetadataAccess(
     source: SourceRow,
     credentials: DecryptedCredentials,
