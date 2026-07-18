@@ -1,0 +1,199 @@
+# OzzBooks — Addendum: Migrating cloud/ from Render+Neon to the Mac mini
+
+This addendum extends `Claude.md` with a planned (not yet built)
+infrastructure change: moving the `cloud/` sync/auth service off Render
+(API) + Neon (Postgres) and onto the Mac mini, alongside `server/`.
+Append this to the main `Claude.md` (or keep alongside it, as with
+`Ozzbooks_Addendum`) so Claude Code has this context in future sessions.
+
+**Status: planned, not started.** The user is trying the app-side fix
+below first (see "What's already shipped") for a few days before
+deciding whether to proceed with this migration.
+
+## Context: why this is being considered
+
+Render's free-tier web services spin down after ~15 minutes idle and
+take 30-60 seconds to wake on the next request — this was an accepted,
+documented tradeoff when `cloud/` was first deployed (see `Claude.md`'s
+"Open / accepted decisions"). In practice it meant opening the app after
+a period of disuse could hang for 30+ seconds, and was observed
+returning an outright transient error (HTTP 520) on a cold start, not
+just being slow.
+
+**What's already shipped** (2026-07-18): `AuthContext.tsx` no longer
+blocks the entire app behind a loading screen while waiting on that
+round-trip — it authenticates optimistically from the locally stored
+token immediately, and reconciles with the cloud in the background. This
+fixes the symptom (app feels frozen on open) but not the root cause
+(Render still takes 30-60s to respond on a cold call, e.g. for a fresh
+login, or before background reconciliation finishes). If the family finds
+the app-side fix isn't enough, this migration addresses the cause
+directly.
+
+### Why this doesn't cost as much resilience as it originally bought
+
+`cloud/` was split onto external hosting specifically so accounts and
+sync state would "stay available even if the home network or Mac mini is
+down" (`Claude.md` architecture rationale). In practice, that resilience
+has limited value for this app: streaming, browsing, and downloading
+already require the Mac mini and Tailscale to be reachable. If the Mac
+mini is down, being able to log in without being able to play anything
+doesn't accomplish much — the app is already unusable for its actual
+purpose during that window. Consolidating `cloud/` onto the same machine
+doesn't meaningfully reduce what the family can do during a real outage;
+it's already all-or-nothing in practice.
+
+## Scope
+
+**Moves:** `cloud/`'s Express API and its Postgres data (`users`,
+`progress`, `bookmarks`, `downloads`, `user_settings`, plus the
+not-yet-wired-up `annotations`/`reading_prefs`/`book_position_map`
+tables).
+
+**Does not move / is not affected:** `server/` (file-serving API,
+ingestion, the new Google Drive remote-source work) stays exactly as it
+is — different service, different port, no changes needed there.
+
+## Target architecture
+
+- A production Postgres instance running locally on the Mac mini
+  (Postgres 16 is already installed via `brew` from earlier
+  local-testing setup — that installation can be reused, but the
+  production database must be a **new, separate database**, not the
+  existing `ozzbooks_cloud_test` scratch DB used by `cloud/`'s test
+  suite).
+- `cloud/`'s Express app running as its own local Node process, its own
+  `LaunchDaemon` (mirroring `server/`'s existing
+  `/Library/LaunchDaemons/com.ozzbooks.server.plist` pattern exactly —
+  same `UserName`, `KeepAlive`, log-file conventions), on its existing
+  default port (4300), kept as a **separate deployable service** from
+  `server/` rather than merged into one process — preserves the existing
+  architectural separation (independent restart/failure isolation)
+  rather than conflating two conceptually distinct services just because
+  they now happen to run on the same machine.
+- Reachable over the same Tailscale HTTPS endpoint the family already
+  uses, via a second path-based Tailscale Serve mapping alongside the
+  existing one:
+  ```
+  # existing
+  tailscale serve https / http://localhost:4100
+  # new
+  tailscale serve https /cloud http://localhost:4300
+  ```
+  **Needs verification during implementation, not assumed here:**
+  whether Tailscale Serve strips the `/cloud` prefix before proxying, or
+  forwards the full original path through unchanged. If it forwards the
+  full path, `cloud/`'s Express routes need an added `/cloud` prefix
+  (currently mounted at bare `/auth` and `/sync`) to match what actually
+  arrives at the backend.
+- The frontend's `VITE_CLOUD_API_BASE_URL` (currently
+  `https://ozzbooks.onrender.com` in `app/.env.production.local`) points
+  at the new local address instead — requires an `app/` rebuild and
+  redeploy after the switch.
+
+## Migration steps, in order
+
+1. **Provision the local production database.**
+   ```bash
+   createuser -s ozzbooks_prod   # if a distinct role from the test setup is wanted
+   createdb ozzbooks_cloud_prod -O ozzbooks_prod
+   ```
+   (Exact role/db naming is a free choice — just must not collide with
+   the existing `ozzbooks_cloud_test` used by `cloud/test/api.test.ts`.)
+
+2. **Apply the schema.** `cloud/`'s existing `npm run migrate` (or
+   automatic on-startup migration, per its `README.md`) against the new
+   local `DATABASE_URL` — reuses the exact schema/migration code already
+   written and tested, no changes needed.
+
+3. **Migrate existing data out of Neon.**
+   ```bash
+   pg_dump "$NEON_DATABASE_URL" --no-owner --no-acl -f cloud_backup.sql
+   psql "postgres://ozzbooks_prod@localhost:5432/ozzbooks_cloud_prod" -f cloud_backup.sql
+   ```
+   Do this as close to the actual cutover as practical to minimize how
+   much progress/bookmark activity happens on Neon after the dump is
+   taken (a brief window of staleness is fine for a family app — no need
+   for a zero-downtime replication strategy).
+
+4. **Deploy `cloud/` locally.**
+   - `npm run build` in `cloud/` (same `tsc` + schema-copy pattern
+     `server/` already uses).
+   - New LaunchDaemon plist mirroring `server/`'s exactly, with:
+     - `DATABASE_URL` → the new local connection string
+     - `OZZBOOKS_JWT_SECRET` → **reuse the exact value currently set on
+       Render**, not a freshly generated one — this keeps every
+       already-issued 90-day session token valid across the cutover, so
+       nobody is forced to log back in. (Reissuing a new secret is the
+       simpler path if a one-time forced re-login across the family is
+       judged acceptable instead — worth deciding at implementation
+       time, not assumed here.)
+     - `PORT` → `4300` (already the default)
+   - Load the daemon (`sudo launchctl load ...` — needs the user's own
+     terminal, same limitation as the credentials-key env var earlier
+     this session: Claude can't sudo-edit a root-owned plist here).
+
+5. **Add the Tailscale Serve mapping** (see "Target architecture" above)
+   and verify the path-prefix behavior empirically before relying on it.
+
+6. **Repoint and redeploy the frontend.** Update
+   `app/.env.production.local`'s `VITE_CLOUD_API_BASE_URL`, `npm run
+   build` in `app/` (static files served by `server/`, already
+   established as needing no separate deploy step beyond the rebuild).
+
+7. **Verify before fully cutting over:** log in with an existing account
+   against the new local endpoint, confirm progress/bookmarks/settings
+   read back correctly, confirm a fresh signup works, confirm sync
+   writes (position updates) land in the local DB.
+
+8. **Decommission Render + Neon** only after the above is confirmed
+   stable for a few days — pause rather than delete the Render service
+   and Neon project initially (both free, low cost to keep as a rollback
+   safety net for ~30 days before fully tearing down).
+
+## Backups
+
+Once `cloud/`'s data lives only on the Mac mini, it needs the same
+backup treatment already built for the ingestion SQLite database
+(`server/scripts/backup-db.sh` / `verify-backup.sh`) — accounts,
+progress, and bookmarks are exactly the kind of data that shouldn't
+depend on a single disk with no backup. A `pg_dump`-based equivalent,
+mirroring that script's structure closely:
+
+- Daily `pg_dump` of the local `ozzbooks_cloud_prod` database, written
+  to both a local `backups/` folder and the NAS (`/Volumes/Books/`),
+  same dual-destination reasoning as the existing script (local = fast
+  recovery from a bad migration/bug; NAS = survives the Mac mini's disk
+  dying).
+  ```bash
+  pg_dump "$DATABASE_URL" -Fc -f "$BACKUP_DIR/cloud-$(date +%Y-%m-%d).dump"
+  ```
+- Same retention approach (prune anything older than 30 days).
+- A `verify-restore` companion script restoring the latest dump into a
+  scratch database and printing sanity counts (`SELECT COUNT(*) FROM
+  users`, etc.) — same reasoning as the existing `verify-backup.sh`:
+  turns "is this backup actually restorable" into a one-command check
+  instead of something that quietly never gets tested.
+- Should be scheduled via the same LaunchAgent pattern
+  (`com.ozzbooks.backup.plist`) — either extend that job to also dump
+  Postgres, or add a second, parallel LaunchAgent for it.
+
+## Rollback plan
+
+As long as Render + Neon aren't torn down yet (see step 8), rollback is
+just reverting `VITE_CLOUD_API_BASE_URL` back to the Render URL and
+rebuilding the frontend — a few minutes, not a data-recovery exercise.
+This is the main reason to keep the old deployment paused-not-deleted
+for a real trial period after cutover, not just as a formality.
+
+## Open questions to settle before implementation (not decided here)
+
+- JWT secret: reuse (seamless) vs. regenerate (simpler, forces one
+  re-login) — see step 4.
+- Exact Tailscale Serve path-prefix behavior — see "Target architecture."
+- Whether to merge `cloud/` and `server/` into one process long-term
+  once both live on the same machine, vs. keep them separate
+  indefinitely as done here — this addendum assumes "keep separate" as
+  the safer, more consistent-with-existing-architecture default; revisit
+  only if running two Node processes turns out to be a real operational
+  burden in practice (unlikely at this scale).
