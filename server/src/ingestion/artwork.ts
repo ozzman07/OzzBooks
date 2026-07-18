@@ -23,26 +23,17 @@ async function findFolderCover(dir: string): Promise<Buffer | null> {
 }
 
 /**
- * Extracts cover art (embedded tag picture, else cover.jpg/folder.jpg in the
- * book's directory), writes thumbnail + full-size PNGs, and returns their
- * paths. Returns null if no art was found, or if the image data that was
- * found is corrupt/truncated and sharp can't decode it (e.g. a premature
- * end of a JPEG) — either way the frontend falls back to its own generic
- * placeholder, so a bad cover image degrades gracefully instead of failing
- * ingestion for the whole book (previously: a single corrupt cover image
- * threw out of this function uncaught, which the scan loop's per-candidate
- * catch treated the same as an unreadable audio file — the entire book got
- * skipped and marked as a scan failure over what's just a bad thumbnail).
+ * Resizes+saves thumbnail/full-size PNGs from a raw image Buffer,
+ * whatever its source — an embedded tag picture, a local cover.jpg, or
+ * (see ingestion/enrichment/) a cover downloaded from Open Library.
+ * Factored out of extractArtwork() so all three sources share this
+ * instead of duplicating the sharp resize/save calls. Returns null if
+ * the image data is corrupt/truncated and sharp can't decode it (e.g. a
+ * premature end of a JPEG) rather than throwing — same "degrade
+ * gracefully, don't fail the whole book over a bad thumbnail" reasoning
+ * as before.
  */
-export async function extractArtwork(
-  bookId: string,
-  bookDir: string,
-  metadata: IAudioMetadata,
-): Promise<ArtworkPaths | null> {
-  const embedded = metadata.common.picture?.[0]
-  const source = embedded ? Buffer.from(embedded.data) : await findFolderCover(bookDir)
-  if (!source) return null
-
+export async function saveArtworkBuffer(bookId: string, source: Buffer): Promise<ArtworkPaths | null> {
   mkdirSync(artworkDir, { recursive: true })
   const thumbPath = path.join(artworkDir, `${bookId}-thumb.png`)
   const fullPath = path.join(artworkDir, `${bookId}-full.png`)
@@ -56,4 +47,20 @@ export async function extractArtwork(
   }
 
   return { thumbPath, fullPath }
+}
+
+/**
+ * Extracts cover art (embedded tag picture, else cover.jpg/folder.jpg in the
+ * book's directory) and saves it via saveArtworkBuffer(). Returns null if
+ * no art was found at all.
+ */
+export async function extractArtwork(
+  bookId: string,
+  bookDir: string,
+  metadata: IAudioMetadata,
+): Promise<ArtworkPaths | null> {
+  const embedded = metadata.common.picture?.[0]
+  const source = embedded ? Buffer.from(embedded.data) : await findFolderCover(bookDir)
+  if (!source) return null
+  return saveArtworkBuffer(bookId, source)
 }

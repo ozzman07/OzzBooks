@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS books (
   artwork_full_path TEXT,
   volume_normalization_gain REAL,
   content_hash TEXT, -- for duplicate detection across sources
+  genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched
+  -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
+  -- doesn't repeatedly re-query the same already-attempted book — a
+  -- future "retry failed lookups" action resets this to NULL.
+  metadata_enrichment_attempted_at TEXT,
   -- Set once at first ingestion and never touched again (unlike updated_at,
   -- which every rescan bumps even for unchanged books) — this is what
   -- "Recently added" sorting in the UI is based on.
