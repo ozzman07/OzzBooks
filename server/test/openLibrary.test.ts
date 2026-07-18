@@ -18,14 +18,60 @@ describe('searchWork', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     await searchWork('Mistborn', 'Brandon Sanderson')
+    // Called twice: an empty result with an author set triggers the
+    // title-only fallback retry (see the dedicated test below) — both
+    // requests must carry the identifying header.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries title-only when an author-filtered search finds nothing', async () => {
+    // Found live against real library data: Open Library's `author` param
+    // is a strict filter, not a ranking hint — a garbage author value
+    // (e.g. a folder-derived "History") can zero out results for an
+    // otherwise perfectly findable book. The title here has two
+    // significant words shared with the real doc's title so the retry's
+    // result still clears MIN_MATCH_SCORE on title overlap alone, since
+    // the garbage author contributes nothing to the score either way.
+    const fetchMock = vi.fn(async (url: string) => {
+      const parsed = new URL(url)
+      if (parsed.searchParams.has('author')) return searchResponse([])
+      return searchResponse([
+        {
+          title: 'Grantville Gazette',
+          author_name: ['Eric Flint'],
+          subject: ['Alternate history'],
+          cover_i: 42,
+        },
+      ])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const match = await searchWork('Grantville Gazette Volume IV', 'History')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(match).toEqual({ genre: 'Alternate history', coverId: 42 })
+  })
+
+  it('does not retry when no author was supplied in the first place', async () => {
+    const fetchMock = vi.fn(async () => searchResponse([]))
+    vi.stubGlobal('fetch', fetchMock)
+    await searchWork('Some Obscure Nonexistent Title Xyz', null)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('includes title and author as separate query params', async () => {
+  it('sends the title as the general q param and author as its own separate param', async () => {
+    // q= (not the fielded title= param) — the fielded param turned out to
+    // be near-exact-match strict against real Open Library data (a plain
+    // "Dark Tower VI: Song Of Susannah" found nothing), and author stays
+    // its own param rather than folded into q= so a raw " - Author Name"
+    // fragment can't be misread as a search-exclusion operator.
+    // Only checks the first (author-filtered) request — an empty result
+    // triggers the title-only fallback retry, covered separately below.
+    let callCount = 0
     const fetchMock = vi.fn(async (url: string) => {
+      callCount++
       const parsed = new URL(url)
-      expect(parsed.searchParams.get('title')).toBe('Mistborn')
-      expect(parsed.searchParams.get('author')).toBe('Brandon Sanderson')
+      expect(parsed.searchParams.get('q')).toBe('Mistborn')
+      expect(parsed.searchParams.get('fields')).toContain('subject')
+      if (callCount === 1) expect(parsed.searchParams.get('author')).toBe('Brandon Sanderson')
       return searchResponse([])
     })
     vi.stubGlobal('fetch', fetchMock)

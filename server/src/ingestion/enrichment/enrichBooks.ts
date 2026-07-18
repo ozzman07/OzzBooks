@@ -3,19 +3,24 @@ import { saveArtworkBuffer } from '../artwork.js'
 import type { BookRow } from '../../types.js'
 import { searchWork, fetchCover } from './openLibrary.js'
 
-// Server-side equivalent of app/src/pages/Library.tsx's titleSortKey() —
-// no code sharing exists between the two packages, so this is a small
-// duplicated function rather than an import. Same patterns: strip a
-// leading track-number-style prefix, normalize underscores to spaces,
-// drop a leading article — turns "01 - Ender's Game - Orson Scott Card -
-// 1985" into something resembling a real title before it's used as a
-// search query, without needing the full AI-based title extraction still
-// on the roadmap.
+// Server-side equivalent of app/src/pages/Library.tsx's titleSortKey(),
+// extended further since this feeds a search query rather than a sort
+// comparison — no code sharing exists between the two packages, so this
+// stays a small duplicated function rather than an import. Strips a
+// leading track-number-style prefix, normalizes underscores to spaces,
+// drops a leading article, and (found necessary during a live spot-check
+// against real library titles — "Congo - Michael Crichton" and "Beauty's
+// Release (read by George Holmes)" both returned zero Open Library
+// results otherwise) strips a trailing " - Author/Narrator" suffix and
+// any parenthetical noise like "(read by X)"/"(Unabridged)".
 function cleanTitleForSearch(title: string): string {
   return title
     .replace(/^\d{1,3}\s*[._-]\s*/, '')
     .replace(/_/g, ' ')
+    .replace(/\s+-\s+.+$/, '')
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
     .replace(/^(the|a|an)\s+/i, '')
+    .replace(/\s+/g, ' ')
     .trim()
 }
 
