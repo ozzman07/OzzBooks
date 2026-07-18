@@ -30,7 +30,7 @@ export default function App() {
       <AuthGate>
         <PlayerProvider>
           <LibraryViewProvider>
-            <div className="min-h-screen bg-slate-950 text-slate-100">
+            <div className="min-h-screen bg-slate-950 pt-[env(safe-area-inset-top)] text-slate-100">
               <Routes>
                 <Route path="/" element={<Library />} />
                 <Route path="/book/:bookId" element={<BookDetail />} />
