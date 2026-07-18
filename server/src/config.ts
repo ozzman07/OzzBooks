@@ -23,6 +23,17 @@ export const config = {
   // OZZBOOKS_CREDENTIALS_KEY (and switch this to requireEnvInProduction)
   // before a real provider ships and starts storing real OAuth tokens.
   credentialsEncryptionKey: process.env.OZZBOOKS_CREDENTIALS_KEY ?? 'dev-local-credentials-key',
+  // Deliberately NOT required at startup (unlike apiToken above) — these
+  // genuinely don't exist yet until the Google Cloud Console setup is
+  // done, and gating server boot on them would take the whole app down
+  // for everyone over a feature only one user is trying to set up. Left
+  // null until configured; googleDrive/auth.ts checks for null lazily,
+  // only when someone actually starts the OAuth flow.
+  googleOAuth: {
+    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
+    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? null,
+    redirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI ?? null,
+  },
 }
 
 export const dbPath = path.join(config.dataDir, 'ingestion.sqlite3')

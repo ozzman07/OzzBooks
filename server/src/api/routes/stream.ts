@@ -10,7 +10,7 @@ export const streamRouter = Router()
 // and background pre-fetch work without us hand-rolling range parsing.
 // This path is untouched for local/synology chapters; anything else
 // (remote sources) is delegated to streamProxy.ts instead.
-streamRouter.get('/:id/stream', (req, res) => {
+streamRouter.get('/:id/stream', async (req, res) => {
   const chapter = getDb().prepare('SELECT * FROM chapters WHERE id = ?').get(req.params.id) as
     | ChapterRow
     | undefined
@@ -19,16 +19,19 @@ streamRouter.get('/:id/stream', (req, res) => {
     return
   }
 
-  const source = getDb()
-    .prepare('SELECT sources.* FROM sources JOIN books ON books.source_id = sources.id WHERE books.id = ?')
-    .get(chapter.book_id) as SourceRow | undefined
-  if (!source) {
+  const sourceAndFormat = getDb()
+    .prepare(
+      'SELECT sources.*, books.format AS book_format FROM sources JOIN books ON books.source_id = sources.id WHERE books.id = ?',
+    )
+    .get(chapter.book_id) as (SourceRow & { book_format: string }) | undefined
+  if (!sourceAndFormat) {
     res.status(404).json({ error: 'source not found for chapter' })
     return
   }
+  const { book_format: bookFormat, ...source } = sourceAndFormat
 
   if (source.type !== 'local' && source.type !== 'synology') {
-    proxyRemoteStream(source, res)
+    await proxyRemoteStream(req, res, source, chapter, bookFormat)
     return
   }
 

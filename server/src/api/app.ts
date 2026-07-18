@@ -9,6 +9,7 @@ import { sourcesRouter } from './routes/sources.js'
 import { booksRouter } from './routes/books.js'
 import { streamRouter } from './routes/stream.js'
 import { artworkRouter } from './routes/artwork.js'
+import { googleAuthRouter } from './routes/googleAuth.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // server/src/api -> repo root -> app/dist
@@ -23,6 +24,12 @@ export function createApp() {
   app.use(cors())
 
   app.use('/health', healthRouter)
+
+  // Mounted before requireApiToken deliberately — reached by direct
+  // browser navigation (Google's redirect, and the frontend's own
+  // full-page redirect to start), which can't carry the app's Bearer
+  // token. See googleAuth.ts for why this is an acceptable exemption.
+  app.use('/api/sources/oauth', googleAuthRouter)
 
   app.use('/api', requireApiToken)
   app.use('/api/sources', sourcesRouter)

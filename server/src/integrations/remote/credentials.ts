@@ -105,14 +105,18 @@ async function refreshAndPersist(
 }
 
 /**
- * Returns a currently-valid access token for source, refreshing first if
- * it's expired or within REFRESH_BUFFER_MS of expiring. Callers that get
- * a 401 anyway (clock skew, a provider revoking mid-request) should treat
- * that as a one-shot signal to force a refresh and retry once, not retry
- * in a loop — a second consecutive 401 means isPermanentAuthFailure's
- * class of problem, not a token freshness problem.
+ * Returns currently-valid credentials for source, refreshing first if the
+ * access token is expired or within REFRESH_BUFFER_MS of expiring.
+ * Returns the full DecryptedCredentials (not just accessToken) so callers
+ * can pass it straight into RemoteProvider methods, which all take a full
+ * credentials object — avoids re-decrypting or re-fetching the source row
+ * to reconstruct it after a refresh. Callers that get a 401 anyway (clock
+ * skew, a provider revoking mid-request) should treat that as a one-shot
+ * signal to force a refresh and retry once, not retry in a loop — a
+ * second consecutive 401 means isPermanentAuthFailure's class of problem,
+ * not a token freshness problem.
  */
-export async function getValidAccessToken(source: SourceRow, provider: RemoteProvider): Promise<string> {
+export async function getValidAccessToken(source: SourceRow, provider: RemoteProvider): Promise<DecryptedCredentials> {
   if (!source.credentials) {
     throw new Error(`source ${source.id} has no stored credentials`)
   }
@@ -125,5 +129,5 @@ export async function getValidAccessToken(source: SourceRow, provider: RemotePro
     credentials = await refreshAndPersist(source, provider, credentials)
   }
 
-  return credentials.accessToken
+  return credentials
 }

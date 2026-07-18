@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
-import { fetchBooks, fetchSources, type ApiSource } from '../api/client'
+import { fetchBooks, fetchSources, connectGoogleDrive, type ApiSource } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { deleteBookDownload } from '../offline/downloadManager'
@@ -151,11 +152,16 @@ interface DownloadedBook {
 
 export function Settings() {
   const auth = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [budgetMb, setBudgetMb] = useState<number | null>(null)
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null)
   const [downloadedBooks, setDownloadedBooks] = useState<DownloadedBook[]>([])
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [sources, setSources] = useState<ApiSource[]>([])
+  // Set by the OAuth callback's redirect (?connected=google_drive) — shown
+  // once, then stripped from the URL so refreshing the page doesn't keep
+  // re-showing it.
+  const justConnected = searchParams.get('connected')
 
   const refreshSources = useCallback(async () => {
     setSources(await fetchSources().catch(() => []))
@@ -175,6 +181,16 @@ export function Settings() {
         bytes,
       })),
     )
+  }, [])
+
+  useEffect(() => {
+    if (justConnected) {
+      setSearchParams((params) => {
+        params.delete('connected')
+        return params
+      })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -275,14 +291,27 @@ export function Settings() {
         )}
       </section>
 
-      {sources.length > 0 && (
-        <section className="mb-6 rounded-lg border border-slate-800 p-4">
-          <h2 className="mb-2 text-sm font-medium text-slate-200">Library index</h2>
-          {sources.map((source) => (
-            <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
-          ))}
-        </section>
-      )}
+      <section className="mb-6 rounded-lg border border-slate-800 p-4">
+        <h2 className="mb-2 text-sm font-medium text-slate-200">Library index</h2>
+
+        {justConnected === 'google_drive' && (
+          <p className="mb-3 rounded bg-emerald-900/40 px-3 py-2 text-xs text-emerald-300">
+            Google Drive connected. Upload audiobooks into the "OzzBooks Audiobooks" folder in your Drive, then
+            rescan below to add them.
+          </p>
+        )}
+
+        {sources.map((source) => (
+          <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
+        ))}
+
+        <button
+          onClick={() => connectGoogleDrive()}
+          className="mt-2 w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300"
+        >
+          Connect Google Drive
+        </button>
+      </section>
 
       <section className="mb-6 rounded-lg border border-slate-800 p-4">
         <h2 className="mb-1 text-sm font-medium text-slate-200">Account</h2>
