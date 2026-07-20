@@ -1,5 +1,5 @@
 import * as cloud from '../api/cloudClient'
-import { getAllLocalProgress, getLocalProgress, putLocalProgress } from './progressStore'
+import { getAllLocalProgress, getLocalProgress, putLocalProgress, deleteLocalProgress } from './progressStore'
 import { trySync } from './syncEngine'
 import type { LocalProgressEntry } from './db'
 
@@ -71,4 +71,17 @@ export async function reconcileAllProgress(token: string | null): Promise<LocalP
   if (hadUnsynced) void trySync(token)
 
   return [...byBookId.values()]
+}
+
+/** Removes a book from the Continue Listening shelf — a deliberate clear
+ * (e.g. a stale entry left behind after a rename/relink), not a normal
+ * progress write. Local delete always happens first and always succeeds
+ * (no network dependency), so the shelf updates immediately even if the
+ * cloud delete below fails; a failure there just means a slow reconnect
+ * could resurrect the entry from the still-present cloud row on the next
+ * reconcile, which is an acceptable rare edge case for a cleanup action —
+ * the caller can surface the thrown error and let the user retry. */
+export async function removeFromContinueListening(token: string | null, bookId: string): Promise<void> {
+  await deleteLocalProgress(bookId)
+  if (token) await cloud.deleteProgress(token, bookId)
 }

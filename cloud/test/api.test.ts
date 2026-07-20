@@ -190,6 +190,22 @@ describe('progress sync (last-write-wins)', () => {
     const res = await request(app).get(`/sync/progress/${bookId}`).set('Authorization', `Bearer ${otherToken}`)
     expect(res.status).toBe(404) // this other user has no progress on this book
   })
+
+  it('removes a book from the Continue Listening shelf', async () => {
+    const del = await request(app).delete(`/sync/progress/${bookId}`).set('Authorization', `Bearer ${token}`)
+    expect(del.status).toBe(204)
+
+    const get = await request(app).get(`/sync/progress/${bookId}`).set('Authorization', `Bearer ${token}`)
+    expect(get.status).toBe(404)
+
+    const list = await request(app).get('/sync/progress').set('Authorization', `Bearer ${token}`)
+    expect(list.body.some((p: any) => p.book_id === bookId)).toBe(false)
+  })
+
+  it('deleting a nonexistent progress row is a harmless no-op', async () => {
+    const res = await request(app).delete('/sync/progress/never-existed').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(204)
+  })
 })
 
 describe('bookmarks', () => {

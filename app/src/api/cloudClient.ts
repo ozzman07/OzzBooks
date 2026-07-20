@@ -124,6 +124,12 @@ export function putProgress(
   })
 }
 
+// A deliberate clear (e.g. a stale entry left behind after a relink), not
+// something that participates in progress's last-write-wins.
+export function deleteProgress(token: string, bookId: string): Promise<void> {
+  return cloudFetch<void>(`/sync/progress/${bookId}`, { method: 'DELETE', headers: authHeaders(token) })
+}
+
 export interface UserSettings {
   user_id: string
   storage_budget_mb: number

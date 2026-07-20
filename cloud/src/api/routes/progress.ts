@@ -69,3 +69,11 @@ progressRouter.put('/:bookId', async (req, res) => {
   )
   res.status(409).json(current.rows[0])
 })
+
+// Removes a book from the Continue Listening shelf (e.g. a stale entry
+// left behind after a relink/rename) — a deliberate clear, not something
+// that participates in last-write-wins like the PUT above.
+progressRouter.delete('/:bookId', async (req, res) => {
+  await getPool().query('DELETE FROM progress WHERE user_id = $1 AND book_id = $2', [req.userId, req.params.bookId])
+  res.status(204).end()
+})
