@@ -413,4 +413,19 @@ describe('playlists', () => {
     const res = await request(app).get('/sync/playlists')
     expect(res.status).toBe(401)
   })
+
+  it('backfills Up Next on migrate() for an account that predates this feature', async () => {
+    const { getPool, migrate } = await import('../src/db/index.js')
+    // Simulates a pre-existing user: the row this account's signup created
+    // is gone, same as any account created before the playlists feature
+    // shipped (its signup never inserted one in the first place).
+    await getPool().query('DELETE FROM playlists WHERE owner_id = $1 AND is_reserved = true', [userId])
+
+    await migrate()
+
+    const res = await request(app).get('/sync/playlists').set('Authorization', `Bearer ${token}`)
+    const reserved = res.body.filter((p: any) => p.is_reserved)
+    expect(reserved).toHaveLength(1)
+    expect(reserved[0].name).toBe('Up Next')
+  })
 })
