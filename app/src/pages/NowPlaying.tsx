@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { usePlayer } from '../player/PlayerContext'
+import { useAuth } from '../auth/AuthContext'
 import { CoverArt } from '../components/CoverArt'
 import { formatClock, formatDuration } from '../lib/format'
+import { fetchBook } from '../api/client'
+import { adaptBookDetail } from '../api/adapter'
+import { fetchPlaylists, fetchPlaylist, removeFromPlaylist, findUpNext } from '../api/cloudClient'
 
 const SLEEP_OPTIONS_MIN = [15, 30, 45, 60]
 // A dragged <input type="range"> fires onChange continuously — many times
@@ -18,6 +22,7 @@ const SCRUB_DEBOUNCE_MS = 200
 
 export function NowPlaying() {
   const player = usePlayer()
+  const auth = useAuth()
   const [showSleepMenu, setShowSleepMenu] = useState(false)
   const [scrubValue, setScrubValue] = useState<number | null>(null)
   const { book, chapter, isBuffering, streamError, finished } = player
@@ -31,6 +36,52 @@ export function NowPlaying() {
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrubValue])
+
+  // Auto-advance through the Up Next queue. PlayerContext itself stays
+  // playlist-agnostic (see the playlists plan) — this is the one place
+  // already watching `finished`, so it's where "what plays next" gets
+  // decided. Only advances if the book that just finished was actually
+  // the head of Up Next (nothing happens for a book opened directly from
+  // Library); the consumed item is removed either way that's found.
+  useEffect(() => {
+    if (!finished || !book || !auth.token) return
+    const token = auth.token
+    let cancelled = false
+
+    async function advance() {
+      try {
+        const playlists = await fetchPlaylists(token)
+        const upNext = findUpNext(playlists)
+        if (!upNext || cancelled) return
+
+        const detail = await fetchPlaylist(token, upNext.id)
+        if (cancelled) return
+        const head = detail.items[0]
+        if (!head || head.book_id !== book!.id) return // not playing from the queue
+
+        await removeFromPlaylist(token, upNext.id, head.id)
+        if (cancelled) return
+
+        const next = detail.items[1]
+        if (!next) return // queue is now empty
+
+        const nextBook = await fetchBook(next.book_id).then(adaptBookDetail)
+        if (cancelled) return
+        player.loadBook(nextBook)
+        player.play()
+      } catch {
+        // Best-effort — network hiccup or the next book no longer exists
+        // (deleted/relinked). Leave the "finished" state as it is rather
+        // than surface a new error UI for what's a background convenience.
+      }
+    }
+
+    void advance()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finished])
 
   const bookRemaining = (() => {
     if (!book || !chapter) return null

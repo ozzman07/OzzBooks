@@ -36,6 +36,9 @@ authRouter.post('/signup', async (req, res) => {
   const user = result.rows[0]
 
   await getPool().query('INSERT INTO user_settings (user_id) VALUES ($1)', [user.id])
+  await getPool().query("INSERT INTO playlists (owner_id, name, is_reserved) VALUES ($1, 'Up Next', true)", [
+    user.id,
+  ])
 
   res.status(201).json({ token: signToken({ userId: user.id }), user: { id: user.id, email: user.email } })
 })

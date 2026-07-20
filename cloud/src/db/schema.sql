@@ -48,6 +48,45 @@ CREATE TABLE IF NOT EXISTS user_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Playlists unify "queue" and "playlist" into one concept. Every user gets
+-- exactly one reserved "Up Next" playlist at signup (is_reserved = true),
+-- which can't be renamed or deleted — it's the queue for ad-hoc "play this
+-- next" actions. Ordinary playlists are is_reserved = false.
+--
+-- owner_id (not user_id) and playlist_items having its own id (not a
+-- (playlist_id, book_id) composite key) are both deliberate: they leave
+-- room for a future "share a playlist" feature (a collaborator table
+-- keyed off playlist_id, and duplicate/multi-add support) without a
+-- migration — not building sharing now, just not blocking it later.
+CREATE TABLE IF NOT EXISTS playlists (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  is_reserved BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Enforces "exactly one Up Next per user" at the database level (race-proof
+-- under concurrent signups, unlike an app-level check-then-insert) — a
+-- partial index only constrains rows where is_reserved is true, so it
+-- doesn't limit how many ordinary named playlists a user can have.
+CREATE UNIQUE INDEX IF NOT EXISTS one_reserved_playlist_per_owner
+  ON playlists (owner_id) WHERE is_reserved;
+
+-- book_id is TEXT, not a foreign key, matching progress/bookmarks/downloads
+-- above — book records live in server/'s own SQLite, not here.
+CREATE TABLE IF NOT EXISTS playlist_items (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  playlist_id UUID NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+  book_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS playlist_items_playlist_id_position
+  ON playlist_items (playlist_id, position);
+
 -- Stubbed ahead of Phase 4 (full e-reader UX) — intentionally scaffolded
 -- now per Claude.md so no migration is needed later. Not wired to any API
 -- endpoint yet.

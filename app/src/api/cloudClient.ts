@@ -145,3 +145,82 @@ export function putSettings(
     body: JSON.stringify(data),
   })
 }
+
+export interface Playlist {
+  id: string
+  owner_id: string
+  name: string
+  is_reserved: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PlaylistItem {
+  id: string
+  playlist_id: string
+  book_id: string
+  position: number
+  added_at: string
+}
+
+export interface PlaylistWithItems extends Playlist {
+  items: PlaylistItem[]
+}
+
+// "Up Next" is the one reserved playlist every user gets at signup — it's
+// the queue for ad-hoc "play this next" actions. Small helper since a few
+// pages need to find it in a playlist list rather than re-deriving inline.
+export function findUpNext(playlists: Playlist[]): Playlist | undefined {
+  return playlists.find((p) => p.is_reserved)
+}
+
+export function fetchPlaylists(token: string): Promise<Playlist[]> {
+  return cloudFetch<Playlist[]>('/sync/playlists', { headers: authHeaders(token) })
+}
+
+export function fetchPlaylist(token: string, id: string): Promise<PlaylistWithItems> {
+  return cloudFetch<PlaylistWithItems>(`/sync/playlists/${id}`, { headers: authHeaders(token) })
+}
+
+export function createPlaylist(token: string, name: string): Promise<Playlist> {
+  return cloudFetch<Playlist>('/sync/playlists', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function renamePlaylist(token: string, id: string, name: string): Promise<Playlist> {
+  return cloudFetch<Playlist>(`/sync/playlists/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function deletePlaylist(token: string, id: string): Promise<void> {
+  return cloudFetch<void>(`/sync/playlists/${id}`, { method: 'DELETE', headers: authHeaders(token) })
+}
+
+export function addToPlaylist(token: string, playlistId: string, bookId: string): Promise<PlaylistItem> {
+  return cloudFetch<PlaylistItem>(`/sync/playlists/${playlistId}/items`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ bookId }),
+  })
+}
+
+export function removeFromPlaylist(token: string, playlistId: string, itemId: string): Promise<void> {
+  return cloudFetch<void>(`/sync/playlists/${playlistId}/items/${itemId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  })
+}
+
+export function reorderPlaylist(token: string, playlistId: string, itemIds: string[]): Promise<PlaylistItem[]> {
+  return cloudFetch<PlaylistItem[]>(`/sync/playlists/${playlistId}/items`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify({ itemIds }),
+  })
+}
