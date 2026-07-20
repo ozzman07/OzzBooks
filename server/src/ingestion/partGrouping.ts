@@ -73,3 +73,10 @@ export function groupM4bParts(filenames: string[]): { groups: string[][]; single
 
   return { groups, singles: [...remaining] }
 }
+
+/** Alias for grouping sibling directory names ("Disc 1"/"Disc 2", "CD1"/
+ * "CD2") — identical matching/contiguity logic to grouping M4B filenames;
+ * normalizeBase()'s extension-stripping is a harmless no-op on extensionless
+ * directory names. Kept as one implementation, not a fork, so the two use
+ * sites can't silently drift. */
+export const groupSiblingFolders = groupM4bParts

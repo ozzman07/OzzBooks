@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { groupM4bParts } from '../src/ingestion/partGrouping.js'
+import { groupM4bParts, groupSiblingFolders } from '../src/ingestion/partGrouping.js'
 
 describe('groupM4bParts', () => {
   it('groups files that share a title and differ only by a "Part N" keyword marker', () => {
@@ -79,5 +79,13 @@ describe('groupM4bParts', () => {
     const { groups, singles } = groupM4bParts(['Mistborn: The Final Empire.m4b'])
     expect(groups).toEqual([])
     expect(singles).toEqual(['Mistborn: The Final Empire.m4b'])
+  })
+})
+
+describe('groupSiblingFolders', () => {
+  it('groups sibling directory names the same way as filenames (e.g. "Disc 1"/"Disc 2")', () => {
+    const { groups, singles } = groupSiblingFolders(['Disc 1', 'Disc 2', 'Disc 3'])
+    expect(groups).toEqual([['Disc 1', 'Disc 2', 'Disc 3']])
+    expect(singles).toEqual([])
   })
 })

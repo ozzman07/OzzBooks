@@ -15,6 +15,9 @@ export interface TestLibrary {
   splitBookDir: string
   splitBookPart1: string
   splitBookPart2: string
+  discBookDir: string
+  discBookPart1Dir: string
+  discBookPart2Dir: string
   genericBookPart1: string
   genericBookPart2: string
   folderAuthorBookPath: string
@@ -156,6 +159,39 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
 
   await buildPart(splitBookPart1, 'Split Book, Part 1', 'Prologue')
   await buildPart(splitBookPart2, 'Split Book, Part 2', 'Epilogue')
+
+  // --- Book split across two sibling MP3-folder discs ("Disc 1"/"Disc 2"),
+  // not multiple files in one folder — must ingest as ONE book with
+  // chapters spanning both discs, not two separate books. Both discs'
+  // tracks deliberately restart at 1/2 (a common real-world rip pattern)
+  // so a test can prove chapters come out in disc-then-track order, not a
+  // global re-sort by track number (which would produce an ambiguous or
+  // interleaved order given the duplicate track numbers/filenames).
+  const discBookDir = path.join(root, 'Disc Author', 'Disc Book')
+  const discBookPart1Dir = path.join(discBookDir, 'Disc 1')
+  const discBookPart2Dir = path.join(discBookDir, 'Disc 2')
+  await mkdir(discBookPart1Dir, { recursive: true })
+  await mkdir(discBookPart2Dir, { recursive: true })
+  const discChapters = [
+    { dir: discBookPart1Dir, file: '01 - Track.mp3', track: 1, title: 'Disc 1 Chapter One' },
+    { dir: discBookPart1Dir, file: '02 - Track.mp3', track: 2, title: 'Disc 1 Chapter Two' },
+    { dir: discBookPart2Dir, file: '01 - Track.mp3', track: 1, title: 'Disc 2 Chapter One' },
+    { dir: discBookPart2Dir, file: '02 - Track.mp3', track: 2, title: 'Disc 2 Chapter Two' },
+  ]
+  for (const ch of discChapters) {
+    await makeTone(path.join(ch.dir, ch.file), 1, [
+      '-metadata',
+      `title=${ch.title}`,
+      '-metadata',
+      'album=Disc Book',
+      '-metadata',
+      'artist=Disc Author',
+      '-metadata',
+      `track=${ch.track}`,
+      '-c:a',
+      'libmp3lame',
+    ])
+  }
 
   // --- Split book where each part's own embedded chapter is a generic,
   // auto-numbered label ("Part 1" in both files, restarting per file) —
@@ -317,6 +353,9 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     splitBookDir,
     splitBookPart1,
     splitBookPart2,
+    discBookDir,
+    discBookPart1Dir,
+    discBookPart2Dir,
     genericBookPart1,
     genericBookPart2,
     folderAuthorBookPath,

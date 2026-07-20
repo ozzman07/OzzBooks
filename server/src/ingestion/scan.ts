@@ -5,18 +5,30 @@ import { getDb } from '../db/index.js'
 import type { BookRow, SourceRow } from '../types.js'
 import { ingestMp3Folder, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { ingestM4b, isDrmFile } from './m4b.js'
-import { groupM4bParts } from './partGrouping.js'
+import { groupM4bParts, groupSiblingFolders } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork } from './artwork.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
 
 export interface Candidate {
   format: 'm4b' | 'mp3_folder'
-  /** book-level path: the first (or only) .m4b file, or the folder for mp3_folder books */
+  /** book-level path: the first (or only) .m4b file; for mp3_folder, the
+   * folder itself (single-folder case) or the first sibling disc folder
+   * in play order (multi-folder group case). */
   filePath: string
   hashInput: string // file used to compute the dedup content hash
-  /** For m4b: every file that's part of this book, in play order — length 1 in the common single-file case. */
+  /** For m4b: every file that's part of this book, in play order — length
+   * 1 in the common single-file case. For mp3_folder: every sibling disc
+   * folder that's part of this book, in play order — undefined for a
+   * standalone (non-grouped) mp3_folder candidate. */
   parts?: string[]
+  /** Set only for a multi-folder mp3_folder group: the parent directory
+   * containing the sibling disc folders (e.g. the "Book Title" folder
+   * containing "Disc 1"/"Disc 2"). filePath/hashInput point one level
+   * deeper (into the first disc folder) than the book's own folder, so
+   * series-name derivation and local cover-art lookup need this instead.
+   * Undefined everywhere else. */
+  groupFolder?: string
 }
 
 // Folders used to stash the original files a book was combined/converted
@@ -69,6 +81,40 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
     })
   }
 
+  // Some MP3-folder rips split one book across sibling folders instead of
+  // multiple files in one folder (e.g. "Disc 1"/"Disc 2"/"Disc 3") —
+  // groupSiblingFolders identifies those the same way groupM4bParts
+  // identifies multi-part M4B filenames, just applied to directory names.
+  // All-or-nothing: every folder in a matched name-group must
+  // independently qualify (has mp3s, no m4b) or the whole group is
+  // rejected and its folders fall through to ordinary per-folder
+  // recursion below — never a partial group.
+  const claimedDirNames = new Set<string>()
+  const { groups: siblingGroups } = groupSiblingFolders(dirs.map((d) => d.name))
+  for (const group of siblingGroups) {
+    const validated = await Promise.all(
+      group.map(async (name) => {
+        const subDir = path.join(dir, name)
+        const subEntries = await readdir(subDir, { withFileTypes: true })
+        const subFiles = subEntries.filter((e) => e.isFile())
+        const hasM4b = subFiles.some((f) => f.name.toLowerCase().endsWith('.m4b'))
+        const mp3s = subFiles.filter((f) => f.name.toLowerCase().endsWith('.mp3'))
+        return { name, subDir, mp3s, ok: !hasM4b && mp3s.length > 0 }
+      }),
+    )
+    if (!validated.every((v) => v.ok)) continue
+
+    const parts = validated.map((v) => v.subDir)
+    candidates.push({
+      format: 'mp3_folder',
+      filePath: parts[0],
+      hashInput: path.join(parts[0], validated[0].mp3s[0].name),
+      parts,
+      groupFolder: dir,
+    })
+    for (const name of group) claimedDirNames.add(name)
+  }
+
   // Always recurse into subdirectories to support Author/Series/Book
   // nesting — including when this folder *also* has loose audio files
   // directly in it (e.g. a standalone short story .m4b sitting alongside a
@@ -77,8 +123,11 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
   // subdirectory whenever any loose file was present alongside them — the
   // real cause of whole series going missing from the index (found via a
   // folder with one loose novella file plus 21 book subfolders, all 21 of
-  // which were never being scanned at all).
+  // which were never being scanned at all). Folders already claimed by a
+  // sibling group above are skipped here — they're accounted for as part
+  // of that one grouped candidate, not scanned individually.
   for (const d of dirs) {
+    if (claimedDirNames.has(d.name)) continue
     candidates.push(...(await findCandidates(path.join(dir, d.name))))
   }
 
@@ -156,9 +205,17 @@ export async function ingestCandidate(candidate: Candidate): Promise<IngestedBoo
   if (candidate.format === 'm4b') {
     return ingestM4b(candidate.parts ?? [candidate.filePath])
   }
-  const entries = await readdir(candidate.filePath, { withFileTypes: true })
-  const mp3Filenames = entries.filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.mp3')).map((e) => e.name)
-  return ingestMp3Folder(candidate.filePath, mp3Filenames)
+  const folders = candidate.parts ?? [candidate.filePath]
+  const parts = await Promise.all(
+    folders.map(async (dirPath) => {
+      const entries = await readdir(dirPath, { withFileTypes: true })
+      const mp3Filenames = entries
+        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.mp3'))
+        .map((e) => e.name)
+      return { dirPath, mp3Filenames }
+    }),
+  )
+  return ingestMp3Folder(parts)
 }
 
 export interface ScanResult {
@@ -275,10 +332,19 @@ export async function applyIngestedCandidate(
 ): Promise<{ bookId: string; created: boolean }> {
   const ingested = await ingestCandidate(candidate)
   const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
-  const bookOwnFolder = candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath)
+  // groupFolder (set only for a multi-folder mp3_folder group) is the
+  // book's own folder; filePath/hashInput point one level deeper, into the
+  // first disc subfolder, which would otherwise misread as an extra path
+  // segment for series derivation and miss a parent-folder cover.jpg.
+  const bookOwnFolder =
+    candidate.groupFolder ?? (candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath))
   const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
   const bookId = existingBookId ?? randomUUID()
-  const artwork = await extractArtwork(bookId, path.dirname(candidate.hashInput), ingested.artworkMetadata)
+  const artwork = await extractArtwork(
+    bookId,
+    candidate.groupFolder ?? path.dirname(candidate.hashInput),
+    ingested.artworkMetadata,
+  )
 
   return writeBookAndChapters(source, bookId, !existingBookId, {
     filePath: candidate.filePath,
