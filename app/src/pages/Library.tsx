@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchBooks } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
-import { reconcileAllProgress } from '../offline/reconcile'
+import { reconcileAllProgress, removeFromContinueListening } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
@@ -219,6 +219,27 @@ export function Library() {
     scrollYRef,
   } = useLibraryView()
 
+  // Locally hides a shelf entry the instant it's removed, rather than
+  // waiting on (or forcing) a full re-fetch of the library + progress —
+  // removal is a deliberate, infrequent action, so a small client-side
+  // override set is simpler than restructuring the useAsync data flow.
+  const [removedFromShelf, setRemovedFromShelf] = useState<Set<string>>(new Set())
+
+  async function handleRemoveFromContinueListening(e: React.MouseEvent, bookId: string) {
+    e.preventDefault() // don't follow the enclosing Link to the book
+    e.stopPropagation()
+    setRemovedFromShelf((prev) => new Set(prev).add(bookId))
+    try {
+      await removeFromContinueListening(auth.token, bookId)
+    } catch {
+      setRemovedFromShelf((prev) => {
+        const next = new Set(prev)
+        next.delete(bookId)
+        return next
+      })
+    }
+  }
+
   // Captures the scroll position exactly once, at the moment this page is
   // navigated away from (e.g. to play a book) — not on every scroll event,
   // since nothing needs it until then.
@@ -294,23 +315,35 @@ export function Library() {
         </p>
       )}
 
-      {result.status === 'success' && result.data.continueListening.length > 0 && (
-        <section className="mb-6">
-          <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-slate-400">
-            Continue Listening
-          </h2>
-          <ul className="flex gap-3 overflow-x-auto pb-1">
-            {result.data.continueListening.map((book) => (
-              <li key={book.id} className="w-28 shrink-0">
-                <Link to={`/book/${book.id}`}>
-                  <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
-                  <p className="mt-1 truncate text-xs text-slate-300">{book.title}</p>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      {result.status === 'success' &&
+        (() => {
+          const continueListening = result.data.continueListening.filter((b) => !removedFromShelf.has(b.id))
+          if (continueListening.length === 0) return null
+          return (
+            <section className="mb-6">
+              <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-slate-400">
+                Continue Listening
+              </h2>
+              <ul className="flex gap-3 overflow-x-auto pb-1">
+                {continueListening.map((book) => (
+                  <li key={book.id} className="relative w-28 shrink-0">
+                    <button
+                      onClick={(e) => void handleRemoveFromContinueListening(e, book.id)}
+                      aria-label={`Remove ${book.title} from Continue Listening`}
+                      className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/80 text-xs text-slate-300"
+                    >
+                      ✕
+                    </button>
+                    <Link to={`/book/${book.id}`}>
+                      <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
+                      <p className="mt-1 truncate text-xs text-slate-300">{book.title}</p>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )
+        })()}
 
       {result.status === 'success' && result.data.books.length > 0 && (
         <section>

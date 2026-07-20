@@ -12,6 +12,10 @@ export async function putLocalProgress(entry: LocalProgressEntry): Promise<void>
   await (await getDb()).put('progress', entry)
 }
 
+export async function deleteLocalProgress(bookId: string): Promise<void> {
+  await (await getDb()).delete('progress', bookId)
+}
+
 export async function getUnsyncedProgress(): Promise<LocalProgressEntry[]> {
   const all = await getAllLocalProgress()
   return all.filter((e) => !e.synced)

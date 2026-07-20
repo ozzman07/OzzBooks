@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
-import { reconcileProgress } from '../offline/reconcile'
+import { reconcileProgress, removeFromContinueListening } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDownloads } from '../hooks/useDownloads'
@@ -140,6 +140,11 @@ export function BookDetail() {
   const navigate = useNavigate()
   const player = usePlayer()
   const auth = useAuth()
+  // `book.progress` is set by mutating the fetched object in-place below
+  // (see the useAsync fetcher), so it won't trigger a re-render on its own
+  // when cleared — this local flag is what actually drives the UI after a
+  // removal, independent of that object identity.
+  const [progressCleared, setProgressCleared] = useState(false)
   const result = useAsync(async () => {
     const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
@@ -178,11 +183,22 @@ export function BookDetail() {
     navigate('/now-playing')
   }
 
+  const hasProgress = !!book.progress && !progressCleared
+
   function playResume() {
-    if (book.progress && book.progress.position.type === 'timestamp') {
+    if (hasProgress && book.progress && book.progress.position.type === 'timestamp') {
       playFrom(book.progress.chapterId, book.progress.position.value)
     } else {
       playFrom(book.chapters[0].id)
+    }
+  }
+
+  async function handleRemoveFromContinueListening() {
+    setProgressCleared(true)
+    try {
+      await removeFromContinueListening(auth.token, book.id)
+    } catch {
+      setProgressCleared(false)
     }
   }
 
@@ -212,8 +228,17 @@ export function BookDetail() {
         disabled={book.status === 'missing' || book.chapters.length === 0}
         className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
       >
-        {book.progress ? 'Resume' : 'Play'}
+        {hasProgress ? 'Resume' : 'Play'}
       </button>
+
+      {hasProgress && (
+        <button
+          onClick={() => void handleRemoveFromContinueListening()}
+          className="mt-1 w-full text-center text-xs text-slate-500 underline"
+        >
+          Remove from Continue Listening
+        </button>
+      )}
 
       <AddToPlaylist bookId={book.id} />
 
