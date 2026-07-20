@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
@@ -9,7 +10,92 @@ import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
+import {
+  fetchPlaylists,
+  addToPlaylist,
+  findUpNext,
+  CloudApiError,
+  type Playlist,
+} from '../api/cloudClient'
 import type { Book } from '../types'
+
+function AddToPlaylist({ bookId }: { bookId: string }) {
+  const auth = useAuth()
+  const [playlists, setPlaylists] = useState<Playlist[] | null>(null)
+  const [showPicker, setShowPicker] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function ensurePlaylistsLoaded(): Promise<Playlist[] | null> {
+    if (playlists) return playlists
+    if (!auth.token) return null
+    try {
+      const loaded = await fetchPlaylists(auth.token)
+      setPlaylists(loaded)
+      return loaded
+    } catch (err) {
+      setError(err instanceof CloudApiError ? err.message : 'Could not reach the server')
+      return null
+    }
+  }
+
+  async function addTo(playlist: Playlist) {
+    if (!auth.token) return
+    setError(null)
+    try {
+      await addToPlaylist(auth.token, playlist.id, bookId)
+      setFeedback(`Added to ${playlist.name}`)
+      setShowPicker(false)
+    } catch (err) {
+      setError(err instanceof CloudApiError ? err.message : 'Could not reach the server')
+    }
+  }
+
+  async function handleAddToUpNext() {
+    const loaded = await ensurePlaylistsLoaded()
+    const upNext = loaded && findUpNext(loaded)
+    if (upNext) void addTo(upNext)
+  }
+
+  async function togglePicker() {
+    if (!showPicker) await ensurePlaylistsLoaded()
+    setShowPicker((v) => !v)
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => void handleAddToUpNext()}
+          className="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-200"
+        >
+          + Add to Up Next
+        </button>
+        <button onClick={() => void togglePicker()} className="text-sm text-amber-400 underline">
+          Add to a playlist…
+        </button>
+      </div>
+
+      {showPicker && playlists && (
+        <div className="mt-2 rounded-lg border border-slate-700 bg-slate-900 p-2 shadow-lg">
+          {playlists.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => void addTo(p)}
+              className="block w-full rounded px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+            >
+              {p.is_reserved ? '▶️ ' : ''}
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {feedback && <p className="mt-1 text-center text-xs text-emerald-400">{feedback}</p>}
+      {error && <p className="mt-1 text-center text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
 
 function DownloadBadge({
   book,
@@ -128,6 +214,8 @@ export function BookDetail() {
       >
         {book.progress ? 'Resume' : 'Play'}
       </button>
+
+      <AddToPlaylist bookId={book.id} />
 
       <div className="mt-3 flex items-center justify-between">
         <p className="text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>

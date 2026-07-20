@@ -14,7 +14,7 @@ beforeAll(async () => {
   await migrate()
   // Real Postgres test DB, not mocked — clean slate per run.
   await getPool().query(
-    'TRUNCATE users, progress, bookmarks, downloads, user_settings, annotations, reading_prefs, book_position_map CASCADE',
+    'TRUNCATE users, progress, bookmarks, downloads, user_settings, playlists, playlist_items, annotations, reading_prefs, book_position_map CASCADE',
   )
 
   const { createApp } = await import('../src/api/app.js')
@@ -253,5 +253,148 @@ describe('downloads', () => {
     const res = await request(app).get('/sync/downloads').set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(200)
     expect(res.body).toHaveLength(1)
+  })
+})
+
+describe('playlists', () => {
+  let namedPlaylistId: string
+  let upNextId: string
+  let firstItemId: string
+  let secondItemId: string
+
+  it('auto-creates exactly one reserved Up Next playlist at signup', async () => {
+    const res = await request(app).get('/sync/playlists').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    const reserved = res.body.filter((p: any) => p.is_reserved)
+    expect(reserved).toHaveLength(1)
+    expect(reserved[0].name).toBe('Up Next')
+    upNextId = reserved[0].id
+  })
+
+  it('creates a named playlist, listed after Up Next', async () => {
+    const res = await request(app)
+      .post('/sync/playlists')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Bedtime Stories' })
+    expect(res.status).toBe(201)
+    expect(res.body.is_reserved).toBe(false)
+    namedPlaylistId = res.body.id
+
+    const list = await request(app).get('/sync/playlists').set('Authorization', `Bearer ${token}`)
+    expect(list.body[0].is_reserved).toBe(true) // Up Next always first
+    expect(list.body.some((p: any) => p.id === namedPlaylistId)).toBe(true)
+  })
+
+  it('renames the named playlist but rejects renaming Up Next', async () => {
+    const res = await request(app)
+      .patch(`/sync/playlists/${namedPlaylistId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Car Trips' })
+    expect(res.status).toBe(200)
+    expect(res.body.name).toBe('Car Trips')
+
+    const blocked = await request(app)
+      .patch(`/sync/playlists/${upNextId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Not Up Next' })
+    expect(blocked.status).toBe(400)
+  })
+
+  it('quick-adds a book to Up Next', async () => {
+    const res = await request(app)
+      .post(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ bookId: 'book-aaa' })
+    expect(res.status).toBe(201)
+    expect(res.body.position).toBe(0)
+    firstItemId = res.body.id
+
+    const get = await request(app).get(`/sync/playlists/${upNextId}`).set('Authorization', `Bearer ${token}`)
+    expect(get.body.items).toHaveLength(1)
+    expect(get.body.items[0].book_id).toBe('book-aaa')
+  })
+
+  it('adds a second item and reorders them', async () => {
+    const addRes = await request(app)
+      .post(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ bookId: 'book-bbb' })
+    expect(addRes.status).toBe(201)
+    secondItemId = addRes.body.id
+    expect(addRes.body.position).toBe(1)
+
+    const reorder = await request(app)
+      .put(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ itemIds: [secondItemId, firstItemId] })
+    expect(reorder.status).toBe(200)
+    expect(reorder.body.map((i: any) => i.id)).toEqual([secondItemId, firstItemId])
+    expect(reorder.body[0].position).toBe(0)
+    expect(reorder.body[1].position).toBe(1)
+  })
+
+  it('rejects a reorder whose item-id set no longer matches the playlist', async () => {
+    const res = await request(app)
+      .put(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ itemIds: [firstItemId] }) // missing secondItemId
+    expect(res.status).toBe(409)
+  })
+
+  it('removes an item', async () => {
+    const res = await request(app)
+      .delete(`/sync/playlists/${upNextId}/items/${secondItemId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(204)
+
+    const get = await request(app).get(`/sync/playlists/${upNextId}`).set('Authorization', `Bearer ${token}`)
+    expect(get.body.items).toHaveLength(1)
+    expect(get.body.items[0].id).toBe(firstItemId)
+  })
+
+  it('deletes the named playlist but rejects deleting Up Next', async () => {
+    const res = await request(app)
+      .delete(`/sync/playlists/${namedPlaylistId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(204)
+
+    const blocked = await request(app).delete(`/sync/playlists/${upNextId}`).set('Authorization', `Bearer ${token}`)
+    expect(blocked.status).toBe(400)
+  })
+
+  it("can't access another user's playlists", async () => {
+    const otherSignup = await request(app)
+      .post('/auth/signup')
+      .send({ email: `other-playlists-${Date.now()}@example.com`, password: 'correct-horse-battery' })
+    const otherToken = otherSignup.body.token
+
+    const get = await request(app).get(`/sync/playlists/${upNextId}`).set('Authorization', `Bearer ${otherToken}`)
+    expect(get.status).toBe(404)
+
+    const rename = await request(app)
+      .patch(`/sync/playlists/${upNextId}`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ name: 'Hijacked' })
+    expect(rename.status).toBe(404)
+
+    const del = await request(app).delete(`/sync/playlists/${upNextId}`).set('Authorization', `Bearer ${otherToken}`)
+    expect(del.status).toBe(404)
+
+    const addItem = await request(app)
+      .post(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ bookId: 'book-ccc' })
+    expect(addItem.status).toBe(404)
+
+    const reorder = await request(app)
+      .put(`/sync/playlists/${upNextId}/items`)
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ itemIds: [] })
+    expect(reorder.status).toBe(404)
+  })
+
+  it('rejects protected routes with no token', async () => {
+    const res = await request(app).get('/sync/playlists')
+    expect(res.status).toBe(401)
   })
 })

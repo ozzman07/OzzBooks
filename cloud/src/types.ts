@@ -40,3 +40,20 @@ export interface UserSettingsRow {
   skip_silence_enabled: boolean
   updated_at: string
 }
+
+export interface PlaylistRow {
+  id: string
+  owner_id: string
+  name: string
+  is_reserved: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PlaylistItemRow {
+  id: string
+  playlist_id: string
+  book_id: string
+  position: number
+  added_at: string
+}

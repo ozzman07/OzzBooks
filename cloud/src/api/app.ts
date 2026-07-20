@@ -5,6 +5,7 @@ import { progressRouter } from './routes/progress.js'
 import { bookmarksRouter } from './routes/bookmarks.js'
 import { settingsRouter } from './routes/settings.js'
 import { downloadsRouter } from './routes/downloads.js'
+import { playlistsRouter } from './routes/playlists.js'
 
 export function createApp() {
   const app = express()
@@ -18,6 +19,7 @@ export function createApp() {
   app.use('/sync/bookmarks', bookmarksRouter)
   app.use('/sync/settings', settingsRouter)
   app.use('/sync/downloads', downloadsRouter)
+  app.use('/sync/playlists', playlistsRouter)
 
   return app
 }

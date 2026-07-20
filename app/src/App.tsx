@@ -10,6 +10,8 @@ import { BookDetail } from './pages/BookDetail'
 import { RelinkBook } from './pages/RelinkBook'
 import { NowPlaying } from './pages/NowPlaying'
 import { Settings } from './pages/Settings'
+import { Playlists } from './pages/Playlists'
+import { PlaylistDetail } from './pages/PlaylistDetail'
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const auth = useAuth()
@@ -35,6 +37,8 @@ export default function App() {
                 <Route path="/" element={<Library />} />
                 <Route path="/book/:bookId" element={<BookDetail />} />
                 <Route path="/book/:bookId/relink" element={<RelinkBook />} />
+                <Route path="/playlists" element={<Playlists />} />
+                <Route path="/playlists/:playlistId" element={<PlaylistDetail />} />
                 <Route path="/now-playing" element={<NowPlaying />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
