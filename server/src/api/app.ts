@@ -32,6 +32,14 @@ export function createApp() {
   // token. See googleAuth.ts for why this is an acceptable exemption.
   app.use('/api/sources/oauth', googleAuthRouter)
 
+  // API responses are always dynamic (book list, scan status, etc.) — never
+  // let a browser's HTTP cache serve a stale copy across page loads. Static
+  // PWA assets below (served via express.static) are deliberately left
+  // cacheable; only /api/* needs this.
+  app.use('/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store')
+    next()
+  })
   app.use('/api', requireApiToken)
   app.use('/api/sources', sourcesRouter)
   app.use('/api/books', booksRouter)

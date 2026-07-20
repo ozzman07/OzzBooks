@@ -255,7 +255,17 @@ export function BookDetail() {
               disabled={book.status === 'missing'}
               className="flex-1 text-left disabled:opacity-40"
             >
-              <span className="text-sm text-slate-200">{chapter.title}</span>
+              {/* A chapter's embedded title can look exactly like a
+                  standalone filename (e.g. merged multi-part rips that
+                  kept each original part's name as its chapter title,
+                  "Book 10 - Small Favor #01") — easy to mistake for a
+                  separate file rather than a chapter of this book.
+                  Always showing the chapter's own number first makes it
+                  read as "chapter N" no matter what the embedded title
+                  says. */}
+              <span className="text-sm text-slate-200">
+                <span className="text-slate-500">{chapter.index + 1}.</span> {chapter.title}
+              </span>
             </button>
             <span className="text-xs text-slate-500">{formatClock(chapter.duration)}</span>
             {!singleFile && (

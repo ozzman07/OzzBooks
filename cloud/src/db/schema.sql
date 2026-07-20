@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 CREATE INDEX IF NOT EXISTS playlist_items_playlist_id_position
   ON playlist_items (playlist_id, position);
 
+-- Backfill for accounts created before this feature shipped — the
+-- signup handler only creates Up Next for *new* signups (auth.ts), so
+-- every pre-existing user would otherwise have no reserved playlist at
+-- all. Idempotent (WHERE NOT IN excludes anyone already covered), so
+-- safe to run on every boot alongside the rest of this file.
+INSERT INTO playlists (owner_id, name, is_reserved)
+SELECT id, 'Up Next', true FROM users
+WHERE id NOT IN (SELECT owner_id FROM playlists WHERE is_reserved = true);
+
 -- Stubbed ahead of Phase 4 (full e-reader UX) — intentionally scaffolded
 -- now per Claude.md so no migration is needed later. Not wired to any API
 -- endpoint yet.
