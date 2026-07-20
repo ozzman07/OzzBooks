@@ -395,12 +395,21 @@ export function Settings() {
           <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
         ))}
 
-        <button
-          onClick={() => connectGoogleDrive()}
-          className="mt-2 w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300"
-        >
-          Connect Google Drive
-        </button>
+        {/* Hidden once a Google Drive source already exists — clicking this
+            always starts a brand-new connection (no sourceId), which would
+            create a second "OzzBooks Audiobooks" folder + duplicate source
+            rather than reusing the existing one. Re-authorizing an existing
+            but broken connection goes through SourceStatusCard's own
+            "Reconnect" button instead, which does pass the existing
+            sourceId. */}
+        {!sources.some((s) => s.type === 'google_drive') && (
+          <button
+            onClick={() => connectGoogleDrive()}
+            className="mt-2 w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300"
+          >
+            Connect Google Drive
+          </button>
+        )}
 
         <MetadataEnrichmentCard />
       </section>

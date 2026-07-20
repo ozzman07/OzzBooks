@@ -45,6 +45,16 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // Without this, the service worker's default offline/SPA fallback
+        // intercepts EVERY full-page navigation — including ones meant to
+        // reach the server directly, like the Google Drive OAuth flow's
+        // window.location.href to /api/sources/oauth/google/start — and
+        // serves the cached index.html instead. React Router then boots up
+        // at that URL, finds no matching route, and renders blank; the
+        // request never reaches the server at all, so the OAuth redirect to
+        // Google never happens. /api/* is never a client-side route, so it
+        // should always hit the network.
+        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],
