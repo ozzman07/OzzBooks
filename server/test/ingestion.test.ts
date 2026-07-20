@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(11) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book"
-    expect(result.found).toBe(12) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(12) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book"
+    expect(result.found).toBe(13) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,10 +44,10 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(11)
+    expect(books).toHaveLength(12)
 
-    const mp3Book = books.find((b) => b.format === 'mp3_folder')
-    expect(mp3Book.title).toBe('Project Hail Mary')
+    const mp3Book = books.find((b) => b.title === 'Project Hail Mary')
+    expect(mp3Book.format).toBe('mp3_folder')
     expect(mp3Book.author).toBe('Andy Weir')
     expect(mp3Book.status).toBe('active')
 
@@ -55,6 +55,27 @@ describe('ingestion', () => {
     expect(mp3Chapters.map((c) => c.title)).toEqual(['Chapter One', 'Chapter Two', 'Chapter Three'])
     expect(mp3Chapters.every((c) => c.start_time === 0)).toBe(true)
     expect(mp3Chapters.every((c) => c.duration > 0)).toBe(true)
+
+    // A book split across sibling MP3-folder discs ("Disc 1"/"Disc 2") must
+    // ingest as ONE book, not two — with chapters in disc-then-track order.
+    // Both discs' tracks deliberately restart at 1/2 in the fixture, so a
+    // naive global sort-by-track-number (instead of processing folders in
+    // order) would produce an ambiguous/interleaved order here instead of
+    // the correct one.
+    const discBook = books.find((b) => b.title === 'Disc Book')
+    expect(discBook).toBeTruthy()
+    expect(discBook.format).toBe('mp3_folder')
+    expect(discBook.author).toBe('Disc Author')
+    expect(discBook.file_path).toBe(library.discBookPart1Dir)
+
+    const discChapters = db.prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY idx').all(discBook.id) as any[]
+    expect(discChapters.map((c) => c.title)).toEqual([
+      'Disc 1 Chapter One',
+      'Disc 1 Chapter Two',
+      'Disc 2 Chapter One',
+      'Disc 2 Chapter Two',
+    ])
+    expect(discChapters.every((c) => c.start_time === 0)).toBe(true)
 
     const m4bBook = books.find((b) => b.title === 'Mistborn: The Final Empire')
     expect(m4bBook).toBeTruthy()
@@ -307,6 +328,146 @@ describe('ingestion', () => {
     expect(books[0].id).toBe(bookBefore.id) // same book id — progress/bookmarks/downloads stay valid
     expect(books[0].file_path).toBe(movedDir) // mp3_folder format: file_path is the folder itself
     expect(books[0].status).toBe('active')
+  }, 30_000)
+
+  it('auto-relinks a renamed disc-set parent folder by content hash', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, rename } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-disc-relink-'))
+    const bookDir = path.join(tempRoot, 'Disc Relink Author', 'Disc Relink Book')
+    const disc1Dir = path.join(bookDir, 'Disc 1')
+    const disc2Dir = path.join(bookDir, 'Disc 2')
+    await mkdir(disc1Dir, { recursive: true })
+    await mkdir(disc2Dir, { recursive: true })
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=550:duration=1',
+      '-c:a',
+      'libmp3lame',
+      path.join(disc1Dir, '01.mp3'),
+    ])
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=560:duration=1',
+      '-c:a',
+      'libmp3lame',
+      path.join(disc2Dir, '01.mp3'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Disc Relink Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const first = await scanSource(source)
+    expect(first.created).toBe(1) // one grouped book, not two disc books
+    const bookBefore = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookBefore.status).toBe('active')
+    const chaptersBefore = db.prepare('SELECT * FROM chapters WHERE book_id = ?').all(bookBefore.id) as any[]
+    expect(chaptersBefore).toHaveLength(2)
+
+    // Renaming the PARENT folder (not an individual disc) — content is
+    // byte-identical, matching how a user reorganizing their library
+    // actually renames the book-level folder, discs untouched underneath.
+    const renamedBookDir = path.join(tempRoot, 'Disc Relink Author', 'Disc Relink Book Reorganized')
+    await rename(bookDir, renamedBookDir)
+
+    const second = await scanSource(source)
+    expect(second.created).toBe(0) // must NOT create a duplicate
+    expect(second.updated).toBe(1)
+    expect(second.markedMissing).toBe(0)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].id).toBe(bookBefore.id) // same book id — progress/bookmarks/downloads stay valid
+    expect(books[0].file_path).toBe(path.join(renamedBookDir, 'Disc 1')) // parts[0] under the renamed parent
+    expect(books[0].status).toBe('active')
+    const chaptersAfter = db.prepare('SELECT * FROM chapters WHERE book_id = ?').all(bookBefore.id) as any[]
+    expect(chaptersAfter).toHaveLength(2)
+  }, 30_000)
+
+  it('falls back to two ungrouped books when one disc folder fails validation', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-disc-fallback-'))
+    const bookDir = path.join(tempRoot, 'Fallback Author', 'Fallback Book')
+    const disc1Dir = path.join(bookDir, 'Disc 1')
+    const disc2Dir = path.join(bookDir, 'Disc 2')
+    await mkdir(disc1Dir, { recursive: true })
+    await mkdir(disc2Dir, { recursive: true })
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=650:duration=1',
+      '-c:a',
+      'libmp3lame',
+      path.join(disc1Dir, '01.mp3'),
+    ])
+    // "Disc 2" has a real m4b instead of mp3s — the sibling-name match
+    // still fires (the folder names still look like a disc set), but
+    // per-folder validation must reject the whole group rather than
+    // grouping just Disc 1 — no partial grouping. Each folder must then be
+    // scanned and ingested independently.
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=660:duration=1',
+      '-metadata',
+      'title=Disc 2 As Its Own Book',
+      '-metadata',
+      'artist=Fallback Author',
+      '-c:a',
+      'aac',
+      path.join(disc2Dir, 'book.m4b'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Disc Fallback Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(2) // ungrouped: two independent books, not one grouped book
+    expect(result.failed).toBe(0)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(2)
+    const disc1Book = books.find((b) => b.file_path === disc1Dir)
+    expect(disc1Book).toBeTruthy()
+    expect(disc1Book.format).toBe('mp3_folder')
+    const disc2Book = books.find((b) => b.title === 'Disc 2 As Its Own Book')
+    expect(disc2Book).toBeTruthy()
+    expect(disc2Book.format).toBe('m4b')
   }, 30_000)
 
   it('ranks relink candidates by title/author word overlap against the missing book', async () => {
