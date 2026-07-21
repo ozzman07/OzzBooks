@@ -4,6 +4,7 @@ import { getDb } from './db/index.js'
 import { registerProvider, registerScanner } from './integrations/remote/registry.js'
 import { googleDriveProvider } from './integrations/remote/googleDrive/provider.js'
 import { scanGoogleDriveSource } from './integrations/remote/googleDrive/remoteScan.js'
+import { startNightlyRescanScheduler } from './ingestion/nightlyRescan.js'
 
 getDb() // ensure schema is migrated before accepting requests
 
@@ -12,6 +13,10 @@ getDb() // ensure schema is migrated before accepting requests
 // tests that need a registered provider/scanner register one explicitly.
 registerProvider(googleDriveProvider)
 registerScanner('google_drive', scanGoogleDriveSource)
+
+// Same reasoning as above — a background job shouldn't start implicitly
+// just because a test built an app via createApp().
+startNightlyRescanScheduler()
 
 const app = createApp()
 app.listen(config.port, () => {

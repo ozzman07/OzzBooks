@@ -70,3 +70,15 @@ CREATE TABLE IF NOT EXISTS chapters (
 
 CREATE INDEX IF NOT EXISTS idx_books_source ON books(source_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
+
+-- Singleton (id always 1) — app-wide preferences that don't belong on any
+-- one source. Row is seeded below on every startup (idempotent), so
+-- callers can always assume it exists without any app-code seeding logic.
+CREATE TABLE IF NOT EXISTS app_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  nightly_rescan_enabled INTEGER NOT NULL DEFAULT 0,
+  nightly_rescan_time TEXT NOT NULL DEFAULT '02:00', -- HH:MM, 24h, server-local time
+  nightly_rescan_last_run_date TEXT, -- YYYY-MM-DD, server-local; null until it has ever run
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO app_settings (id) VALUES (1);
