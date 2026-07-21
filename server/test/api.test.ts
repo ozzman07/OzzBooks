@@ -115,6 +115,12 @@ describe('sources + ingestion via the API', () => {
     expect(detailRes.body.chapters).toHaveLength(2)
     chapterId = detailRes.body.chapters[0].id
 
+    // Joined from the book's source (see loadBookAndSource in books.ts) —
+    // "Renamed Library" reflects the earlier PATCH-rename test, since these
+    // tests share state sequentially against the same source row.
+    expect(detailRes.body.source_label).toBe('Renamed Library')
+    expect(detailRes.body.source_type).toBe('local')
+
     // last_chapter_id drives the frontend's "finished" status derivation —
     // must point at the actual last chapter (by idx), not just any chapter.
     expect(m4bBook.last_chapter_id).toBe(detailRes.body.chapters[1].id)
@@ -172,5 +178,107 @@ describe('sources + ingestion via the API', () => {
     // book legitimately has none — confirms the "no art" path 404s cleanly
     // rather than crashing, which is what the frontend's placeholder relies on.
     expect(res.status).toBe(404)
+  })
+
+  describe('POST /api/sources/:id/disconnect', () => {
+    it('clears credentials, flips to needs_reconnect, and marks the source\'s active books missing', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { encryptCredentials } = await import('../src/integrations/remote/credentials.js')
+      const { randomUUID } = await import('node:crypto')
+      const db = getDb()
+
+      const disconnectSourceId = randomUUID()
+      db.prepare(
+        `INSERT INTO sources (id, type, label, path_scope, credentials, credentials_status)
+         VALUES (?, 'google_drive', 'To Disconnect', 'some-folder-id', ?, 'ok')`,
+      ).run(disconnectSourceId, encryptCredentials({ accessToken: 'a', refreshToken: 'r' }))
+
+      const activeBookId = randomUUID()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, status)
+         VALUES (?, ?, 'gdrive://some-file-id', 'm4b', 'Disconnect Test Book', 'active')`,
+      ).run(activeBookId, disconnectSourceId)
+
+      const res = await request(app)
+        .post(`/api/sources/${disconnectSourceId}/disconnect`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body.credentials_status).toBe('needs_reconnect')
+
+      const row = db.prepare('SELECT credentials, credentials_status FROM sources WHERE id = ?').get(disconnectSourceId) as any
+      expect(row.credentials).toBeNull()
+      expect(row.credentials_status).toBe('needs_reconnect')
+
+      const book = db.prepare('SELECT status FROM books WHERE id = ?').get(activeBookId) as any
+      expect(book.status).toBe('missing')
+    })
+
+    it('404s for a nonexistent source', async () => {
+      const res = await request(app)
+        .post('/api/sources/does-not-exist/disconnect')
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(404)
+    })
+
+    it('400s for a local source', async () => {
+      const res = await request(app)
+        .post(`/api/sources/${sourceId}/disconnect`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(400)
+    })
+
+    it('is safe to call twice', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { encryptCredentials } = await import('../src/integrations/remote/credentials.js')
+      const { randomUUID } = await import('node:crypto')
+      const db = getDb()
+
+      const twiceSourceId = randomUUID()
+      db.prepare(
+        `INSERT INTO sources (id, type, label, path_scope, credentials, credentials_status)
+         VALUES (?, 'google_drive', 'Disconnect Twice', 'some-folder-id', ?, 'ok')`,
+      ).run(twiceSourceId, encryptCredentials({ accessToken: 'a', refreshToken: 'r' }))
+
+      const first = await request(app)
+        .post(`/api/sources/${twiceSourceId}/disconnect`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(first.status).toBe(200)
+
+      const second = await request(app)
+        .post(`/api/sources/${twiceSourceId}/disconnect`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(second.status).toBe(200)
+      expect(second.body.credentials_status).toBe('needs_reconnect')
+    })
+  })
+})
+
+describe('GET/PATCH /api/settings', () => {
+  it('returns the singleton settings row with sane defaults', async () => {
+    const res = await request(app).get('/api/settings').set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(res.status).toBe(200)
+    expect(typeof res.body.nightly_rescan_enabled).toBe('boolean')
+    expect(typeof res.body.nightly_rescan_time).toBe('string')
+  })
+
+  it('updates in place and only touches the fields sent', async () => {
+    const before = await request(app).get('/api/settings').set('Authorization', `Bearer ${TEST_TOKEN}`)
+
+    const enableRes = await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ nightlyRescanEnabled: true })
+    expect(enableRes.status).toBe(200)
+    expect(enableRes.body.nightly_rescan_enabled).toBe(true)
+    expect(enableRes.body.nightly_rescan_time).toBe(before.body.nightly_rescan_time)
+
+    const timeRes = await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ nightlyRescanTime: '03:30' })
+    expect(timeRes.status).toBe(200)
+    expect(timeRes.body.nightly_rescan_time).toBe('03:30')
+    // Not sent this time — should still be true from the previous PATCH.
+    expect(timeRes.body.nightly_rescan_enabled).toBe(true)
   })
 })

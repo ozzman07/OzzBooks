@@ -214,6 +214,7 @@ export function BookDetail() {
           {book.seriesName} #{book.seriesNumber}
         </p>
       )}
+      {book.sourceLabel && <p className="text-center text-xs text-slate-600">{book.sourceLabel}</p>}
       {book.status === 'missing' && (
         <div className="mt-2 rounded bg-red-900/40 px-3 py-2 text-center text-xs text-red-300">
           <p>This book's source file couldn't be found. Progress and bookmarks are kept.</p>

@@ -48,5 +48,7 @@ export function adaptBookDetail(book: ApiBookDetail): Book {
     ...adaptBookFields(book),
     chapters,
     totalDuration: chapters.reduce((sum, c) => sum + c.duration, 0),
+    sourceLabel: book.source_label,
+    sourceType: book.source_type,
   }
 }

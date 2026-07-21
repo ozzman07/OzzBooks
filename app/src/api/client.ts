@@ -83,6 +83,8 @@ export interface ApiBookListItem extends ApiBook {
 
 export interface ApiBookDetail extends ApiBook {
   chapters: ApiChapter[]
+  source_label: string
+  source_type: string
 }
 
 export interface ApiSource {
@@ -161,6 +163,34 @@ export function scanSource(sourceId: string): Promise<ApiScanState> {
 
 export function fetchScanStatus(sourceId: string): Promise<ApiScanState> {
   return apiFetch<ApiScanState>(`/api/sources/${sourceId}/scan-status`)
+}
+
+// Reuses the same needs_reconnect mechanism as an automatically-revoked
+// grant — the returned source still exists, just with credentials cleared
+// and its books marked missing until reconnected.
+export function disconnectSource(sourceId: string): Promise<ApiSource> {
+  return apiFetch<ApiSource>(`/api/sources/${sourceId}/disconnect`, { method: 'POST' })
+}
+
+// App-wide server settings (this server's own SQLite DB) — distinct from
+// cloudClient.ts's fetchSettings/putSettings, which are per-user
+// preferences (storage budget, etc.) stored in the separate cloud/Postgres
+// account service.
+export interface ApiAppSettings {
+  nightly_rescan_enabled: boolean
+  nightly_rescan_time: string
+  nightly_rescan_last_run_date: string | null
+}
+
+export function fetchAppSettings(): Promise<ApiAppSettings> {
+  return apiFetch<ApiAppSettings>('/api/settings')
+}
+
+export function updateAppSettings(patch: {
+  nightlyRescanEnabled?: boolean
+  nightlyRescanTime?: string
+}): Promise<ApiAppSettings> {
+  return apiFetch<ApiAppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) })
 }
 
 export interface ApiEnrichmentResult {

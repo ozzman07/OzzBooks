@@ -36,6 +36,10 @@ export interface Book {
    * a lightweight "finished" status by comparing against synced progress,
    * without fetching every book's full chapter list. */
   lastChapterId?: string
+  /** Only present on detail-view books (from ApiBookDetail) — shown on
+   * Book Details only, deliberately left off the library grid tile. */
+  sourceLabel?: string
+  sourceType?: string
   chapters: Chapter[]
   progress?: {
     position: Position
