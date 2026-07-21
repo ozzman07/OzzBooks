@@ -7,8 +7,11 @@ import {
   connectGoogleDrive,
   startEnrichment,
   fetchEnrichmentStatus,
+  fetchAppSettings,
+  updateAppSettings,
   type ApiSource,
   type ApiEnrichmentState,
+  type ApiAppSettings,
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
@@ -93,6 +96,62 @@ function MetadataEnrichmentCard() {
       )}
       {state.status === 'failed' && <p className="mt-2 text-xs text-red-400">Failed: {state.error}</p>}
       {triggerError && <p className="mt-2 text-xs text-red-400">{triggerError}</p>}
+    </div>
+  )
+}
+
+// Library-wide, global (not per-source, per the user's explicit choice) —
+// lives alongside MetadataEnrichmentCard for the same reason. Save-on-change,
+// no separate Save button, matching the Storage budget field's pattern.
+function NightlyRescanCard() {
+  const [settings, setSettings] = useState<ApiAppSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchAppSettings()
+      .then(setSettings)
+      .catch(() => {})
+  }, [])
+
+  async function update(patch: { nightlyRescanEnabled?: boolean; nightlyRescanTime?: string }) {
+    setError(null)
+    try {
+      setSettings(await updateAppSettings(patch))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  if (!settings) return null
+
+  return (
+    <div className="mt-3 rounded border border-slate-800 p-3">
+      <label className="flex items-center justify-between text-sm text-slate-300">
+        <span>Nightly reindex</span>
+        <input
+          type="checkbox"
+          checked={settings.nightly_rescan_enabled}
+          onChange={(e) => void update({ nightlyRescanEnabled: e.target.checked })}
+          className="h-4 w-4"
+        />
+      </label>
+
+      <label className="mt-2 flex items-center justify-between text-sm text-slate-300">
+        <span>Time</span>
+        <input
+          type="time"
+          value={settings.nightly_rescan_time}
+          disabled={!settings.nightly_rescan_enabled}
+          onChange={(e) => void update({ nightlyRescanTime: e.target.value })}
+          className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100 disabled:opacity-50"
+        />
+      </label>
+
+      <p className="mt-2 text-xs text-slate-500">
+        {settings.nightly_rescan_last_run_date ? `Last ran ${settings.nightly_rescan_last_run_date}` : 'Never run yet'}
+      </p>
+
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>
   )
 }
@@ -412,6 +471,7 @@ export function Settings() {
         )}
 
         <MetadataEnrichmentCard />
+        <NightlyRescanCard />
       </section>
 
       <section className="mb-6 rounded-lg border border-slate-800 p-4">

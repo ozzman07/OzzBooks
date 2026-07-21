@@ -62,3 +62,11 @@ export interface ChapterRow {
   duration: number
   file_path: string
 }
+
+export interface AppSettingsRow {
+  id: number
+  nightly_rescan_enabled: number // SQLite INTEGER 0/1, not a JS boolean
+  nightly_rescan_time: string
+  nightly_rescan_last_run_date: string | null
+  updated_at: string
+}
