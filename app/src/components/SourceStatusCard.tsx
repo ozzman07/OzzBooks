@@ -4,6 +4,7 @@ import {
   fetchScanStatus,
   scanSource,
   connectGoogleDrive,
+  disconnectSource,
   type ApiScanIssue,
   type ApiScanState,
   type ApiSource,
@@ -32,6 +33,7 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
   const scanning = scanState.status === 'running'
   const failedCount = source.last_scan_failed ?? 0
   const needsReconnect = source.credentials_status === 'needs_reconnect'
+  const canDisconnect = source.type !== 'local'
 
   const poll = useCallback(async () => {
     const state = await fetchScanStatus(source.id).catch((): ApiScanState => ({ status: 'idle' }))
@@ -77,6 +79,17 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
       if (state.status === 'running') {
         pollTimer.current = setTimeout(() => void poll(), POLL_INTERVAL_MS)
       }
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm(`Disconnect ${source.label}? Its books will be marked missing until reconnected.`)) return
+    setTriggerError(null)
+    try {
+      await disconnectSource(source.id)
+      onRescanned()
     } catch (err) {
       setTriggerError(err instanceof Error ? err.message : String(err))
     }
@@ -155,6 +168,14 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
               ))}
             </ul>
           )}
+        </div>
+      )}
+
+      {canDisconnect && (
+        <div className="mt-2 border-t border-slate-800 pt-2">
+          <button onClick={() => void disconnect()} className="text-xs text-slate-500 underline">
+            Disconnect
+          </button>
         </div>
       )}
     </div>

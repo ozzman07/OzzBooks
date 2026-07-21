@@ -123,23 +123,32 @@ function recordScanStats(source: SourceRow, result: ScanResult): void {
     .run(result.found, result.created, result.updated, result.failed, result.skippedDuplicates, source.id)
 }
 
-/** A confirmed revoked/dead grant (credentials_status already flipped by
- * credentials.ts) short-circuits to marking this source's books missing
- * — same "never delete" treatment as a file that disappears from a local
- * scan, reusing the identical UPDATE statement scanSource() runs for
- * that case. Reconnecting reuses this same source row and a normal scan
- * un-misses matching books via the same hash/path matching below. */
-function markAllMissing(source: SourceRow): ScanResult {
+/** Marks every active book for a source missing — same "never delete"
+ * treatment as a file that disappears from a local scan, reusing the
+ * identical UPDATE statement scanSource() runs for that case. Shared by
+ * the automatic needs_reconnect short-circuit below and the deliberate
+ * Disconnect route (sources.ts), which deliberately does NOT also call
+ * recordScanStats since disconnecting isn't a scan. Reconnecting reuses
+ * this same source row and a normal scan un-misses matching books via
+ * the same hash/path matching below. */
+export function markSourceBooksMissing(sourceId: string): number {
   const db = getDb()
-  const previouslyActive = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(source.id) as BookRow[]
+  const previouslyActive = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(sourceId) as BookRow[]
   for (const book of previouslyActive) {
     db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
   }
+  return previouslyActive.length
+}
+
+/** A confirmed revoked/dead grant (credentials_status already flipped by
+ * credentials.ts) short-circuits to marking this source's books missing. */
+function markAllMissing(source: SourceRow): ScanResult {
+  const markedMissing = markSourceBooksMissing(source.id)
   const result: ScanResult = {
     found: 0,
     created: 0,
     updated: 0,
-    markedMissing: previouslyActive.length,
+    markedMissing,
     skippedDuplicates: 0,
     failed: 0,
   }

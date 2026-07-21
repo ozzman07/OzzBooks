@@ -53,4 +53,9 @@ export interface RemoteProvider {
     credentials: DecryptedCredentials,
     fileId: string,
   ): Promise<{ url: string; headers: Record<string, string> }>
+  /** Best-effort: tell the provider to invalidate this token server-side
+   * (e.g. Google's /revoke endpoint), so the app disappears from the
+   * user's "connected apps" list. Optional — not every provider exposes
+   * this, and a disconnect must succeed locally even if this fails. */
+  revokeCredentials?(credentials: DecryptedCredentials): Promise<void>
 }

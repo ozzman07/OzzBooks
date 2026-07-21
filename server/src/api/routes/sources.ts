@@ -4,6 +4,9 @@ import { getDb } from '../../db/index.js'
 import type { SourceRow } from '../../types.js'
 import { browseSourceDirectory } from '../../ingestion/relink.js'
 import { startScan, getScanState } from '../../ingestion/scanStatus.js'
+import { getProvider } from '../../integrations/remote/registry.js'
+import { decryptCredentials } from '../../integrations/remote/credentials.js'
+import { markSourceBooksMissing } from '../../integrations/remote/googleDrive/remoteScan.js'
 
 export const sourcesRouter = Router()
 
@@ -78,6 +81,41 @@ sourcesRouter.patch('/:id', (req, res) => {
 
   getDb().prepare('UPDATE sources SET label = ?, path_scope = ? WHERE id = ?').run(label, pathScope, existing.id)
   const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(existing.id)
+  res.json(row)
+})
+
+// Deliberate disconnect — reuses the exact same needs_reconnect mechanism
+// already built for an automatically-revoked grant (credentials.ts), so
+// reconnecting later relinks books via the same source row instead of
+// creating duplicates (see scan.ts's source_id-scoped content-hash relink).
+sourcesRouter.post('/:id/disconnect', async (req, res) => {
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
+    | SourceRow
+    | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
+  }
+  if (source.type === 'local') {
+    res.status(400).json({ error: 'local sources cannot be disconnected' })
+    return
+  }
+
+  if (source.credentials) {
+    const provider = getProvider(source.type)
+    try {
+      await provider?.revokeCredentials?.(decryptCredentials(source.credentials))
+    } catch {
+      // best-effort — token may already be invalid; proceed regardless
+    }
+  }
+
+  getDb()
+    .prepare("UPDATE sources SET credentials = NULL, credentials_status = 'needs_reconnect' WHERE id = ?")
+    .run(source.id)
+  markSourceBooksMissing(source.id)
+
+  const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(source.id)
   res.json(row)
 })
 
