@@ -28,17 +28,18 @@ booksRouter.get('/', (_req, res) => {
 })
 
 booksRouter.get('/:id', (req, res) => {
-  const book = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
-  if (!book) {
+  const loaded = loadBookAndSource(req.params.id)
+  if (!loaded) {
     res.status(404).json({ error: 'book not found' })
     return
   }
+  const { book, source } = loaded
 
   const chapters = getDb()
     .prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY idx')
     .all(book.id) as ChapterRow[]
 
-  res.json({ ...book, chapters })
+  res.json({ ...book, chapters, source_label: source.label, source_type: source.type })
 })
 
 booksRouter.get('/:id/relink-candidates', async (req, res) => {
