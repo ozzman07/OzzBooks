@@ -1,7 +1,7 @@
 import { extname } from 'node:path'
 import type { SourceRow } from '../../../types.js'
 import type { DecryptedCredentials, RemoteEntry, RemoteProvider } from '../types.js'
-import { refreshAccessToken } from './auth.js'
+import { refreshAccessToken, revokeToken } from './auth.js'
 import { createFolder, listChildren, buildDownloadUrl } from './driveClient.js'
 
 const MANAGED_FOLDER_NAME = 'OzzBooks Audiobooks'
@@ -58,5 +58,9 @@ export const googleDriveProvider: RemoteProvider = {
       url: buildDownloadUrl(fileId),
       headers: { Authorization: `Bearer ${credentials.accessToken}` },
     }
+  },
+
+  async revokeCredentials(credentials) {
+    await revokeToken(credentials.accessToken)
   },
 }

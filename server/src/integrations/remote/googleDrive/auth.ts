@@ -6,6 +6,7 @@ import type { DecryptedCredentials } from '../types.js'
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 const AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
+const REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke'
 
 /**
  * Checked lazily, only when the OAuth flow is actually used — NOT at
@@ -113,5 +114,21 @@ export async function refreshAccessToken(current: DecryptedCredentials): Promise
     refreshToken: json.refresh_token ?? current.refreshToken,
     scope: json.scope ?? current.scope,
     expiresInSeconds: json.expires_in,
+  }
+}
+
+/** Invalidates the grant on Google's side (revoking either token type
+ * revokes the whole grant), so "Disconnect" removes OzzBooks from the
+ * user's Google Account third-party access list, not just locally.
+ * Callers treat this as best-effort — an already-invalid token 400s here,
+ * which shouldn't block the local disconnect from proceeding. */
+export async function revokeToken(token: string): Promise<void> {
+  const res = await fetch(REVOKE_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token }),
+  })
+  if (!res.ok) {
+    throw new Error(`Google token revocation failed: ${res.status}`)
   }
 }

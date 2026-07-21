@@ -123,3 +123,27 @@ describe('refreshAccessToken', () => {
     )
   })
 })
+
+describe('revokeToken', () => {
+  it('posts the token to the revoke endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe('https://oauth2.googleapis.com/revoke')
+      return { ok: true, json: async () => ({}) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { revokeToken } = await import('../src/integrations/remote/googleDrive/auth.js')
+    await revokeToken('some-access-token')
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const body = fetchMock.mock.calls[0][1].body as URLSearchParams
+    expect(body.get('token')).toBe('some-access-token')
+  })
+
+  it('throws on a failed revocation, so callers can treat it as best-effort', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 400, json: async () => ({}) })))
+
+    const { revokeToken } = await import('../src/integrations/remote/googleDrive/auth.js')
+    await expect(revokeToken('already-invalid')).rejects.toThrow('Google token revocation failed')
+  })
+})
