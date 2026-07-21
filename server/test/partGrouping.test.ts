@@ -80,6 +80,35 @@ describe('groupM4bParts', () => {
     expect(groups).toEqual([])
     expect(singles).toEqual(['Mistborn: The Final Empire.m4b'])
   })
+
+  it('groups an unnumbered first part with a "-1" suffixed continuation (real-world rip convention)', () => {
+    const { groups, singles } = groupM4bParts([
+      'Raymond E. Feist - 10 Chaoswar 1 - A Kingdom Besieged.m4b',
+      'Raymond E. Feist - 10 Chaoswar 1 - A Kingdom Besieged-1.m4b',
+    ])
+    expect(groups).toEqual([
+      [
+        'Raymond E. Feist - 10 Chaoswar 1 - A Kingdom Besieged.m4b',
+        'Raymond E. Feist - 10 Chaoswar 1 - A Kingdom Besieged-1.m4b',
+      ],
+    ])
+    expect(singles).toEqual([])
+  })
+
+  it('extends the implicit-part-0 grouping to a 3-part "-1"/"-2" continuation run', () => {
+    const { groups } = groupM4bParts(['Title.m4b', 'Title-1.m4b', 'Title-2.m4b'])
+    expect(groups).toEqual([['Title.m4b', 'Title-1.m4b', 'Title-2.m4b']])
+  })
+
+  it('does NOT admit an implicit part 0 when two unnumbered files would collide on the same base', () => {
+    // "Title.m4b" and "TITLE.m4b" both normalize to the same base — genuinely
+    // ambiguous which one (if either) is really part 0, so reject the whole
+    // group rather than guessing.
+    const files = ['Title.m4b', 'TITLE.m4b', 'Title-1.m4b']
+    const { groups, singles } = groupM4bParts(files)
+    expect(groups).toEqual([])
+    expect(singles).toEqual(files)
+  })
 })
 
 describe('groupSiblingFolders', () => {
