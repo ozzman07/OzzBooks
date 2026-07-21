@@ -424,3 +424,16 @@ Don't remove them for being "unused."
   of `cloud/` off Render+Neon onto the Mac mini is planned as the
   root-cause fix if the client-side mitigation isn't enough — see
   `Ozzbooks_Addendum_CloudMigration` for the full plan, not yet started.
+
+- **Google Drive folder picker (2026-07-20, planned, not started).** The
+  shipped Google Drive integration always auto-creates a fixed
+  "OzzBooks Audiobooks" folder as the scan location, since the
+  deliberately narrow `drive.file` OAuth scope (chosen to avoid Google's
+  paid app-verification review) can't browse a user's existing Drive
+  structure. Letting someone pick an *existing* folder instead requires
+  Google's Picker API (which grants `drive.file` access to whatever gets
+  picked, without a broader scope) — a real feature, not a small tweak:
+  a new client-side widget integration, and a deliberate one-endpoint
+  exception to "the Drive access token never reaches the browser" to
+  hand Picker a short-lived token. See
+  `Ozzbooks_Addendum_GoogleDrivePicker` for the full plan.

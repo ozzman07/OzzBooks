@@ -1,0 +1,182 @@
+# OzzBooks — Addendum: Google Drive folder picker
+
+This addendum extends `Claude.md` with a planned (not yet built)
+enhancement to the Google Drive remote source: letting a user pick an
+*existing* Drive folder to scan, instead of only the app's auto-created
+"OzzBooks Audiobooks" folder. Append this to the main `Claude.md` (or
+keep alongside it, as with the other addenda) so Claude Code has this
+context in future sessions.
+
+**Status: planned, not started.** Current behavior (auto-created managed
+folder) works and ships today — this is a "nice to have," not something
+blocking anyone, raised while setting up the first real Google Drive
+connection.
+
+## Context: why this is being considered
+
+The Google Drive integration (shipped this session — see the OAuth
+routes, `provider.ts`, `driveClient.ts`) deliberately uses the narrow
+`drive.file` OAuth scope specifically to avoid Google's paid third-party
+app verification review, which a broader scope (e.g. `drive.readonly`)
+would trigger. Under `drive.file`, the app can only ever see files/folders
+it created itself, or that the user explicitly "opens" through the app —
+there's no way to browse the user's existing Drive structure.
+
+The current implementation resolves this by always auto-creating one
+fixed folder, `"OzzBooks Audiobooks"`, at the root of the user's Drive
+(`provider.ts`'s `ensureManagedFolder`) and using that as the scan
+location — the user is expected to upload/organize files into that new
+folder. This works, but means someone with an existing audiobook folder
+structure already in Drive has to move/re-upload everything into the new
+app-created folder rather than just pointing the app at what's already
+there.
+
+**The key fact that makes a picker worth considering**: Google's Picker
+API is specifically designed to pair with `drive.file` — when a user
+selects an existing file or folder through the Picker widget, the app is
+automatically granted `drive.file` access to that item (and its
+children, for a folder), without needing a broader scope or triggering
+verification. This is Google's own documented pattern for exactly this
+situation, not a workaround.
+
+## Scope
+
+**Adds:** an optional folder-picker step, offered either right after a
+fresh Google Drive connection (as an alternative to the auto-created
+folder) or later as a "change folder" action on an existing Google Drive
+source.
+
+**Keeps:** the current auto-create-a-managed-folder path stays available
+as the default/simple option — this is additive, not a replacement. Someone who doesn't care and just wants it to work should still be able to skip the picker entirely.
+
+**Does not change:** the OAuth scope, consent screen, or any of the
+already-shipped connect/reconnect flow's credential handling.
+
+## The real architectural wrinkle: getting an access token into the browser
+
+Today, the Drive OAuth access token never reaches the frontend at all —
+it's exchanged server-side (`auth.ts`'s `exchangeCodeForTokens`),
+encrypted at rest (`credentials.ts`'s `encryptCredentials`), and only
+ever decrypted server-side when the backend itself needs to call the
+Drive API (`getValidAccessToken(source, provider)` already handles
+refresh-if-expired and is the natural function to reuse here). This is a
+deliberately tighter security posture than most apps bother with.
+
+Google's Picker widget is a client-side JS component — it needs a live
+OAuth access token in the browser to authenticate its own calls to
+Drive. There's no way around this; it's inherent to how Picker works.
+This means implementing a picker means deliberately punching one
+narrow, justified hole in the "token never leaves the server" rule:
+
+- A new, auth-gated backend endpoint (e.g. `GET
+  /api/sources/:id/drive-picker-token`) that calls the existing
+  `getValidAccessToken()` and returns *only* the short-lived access
+  token (never the refresh token) to the frontend, to be handed directly
+  to the Picker widget and not stored anywhere client-side beyond the
+  Picker's own in-memory use.
+- This is a normal, accepted pattern for Picker integrations generally
+  (there's no alternative), but worth calling out explicitly here since
+  it's a real, deliberate exception to how this codebase has otherwise
+  handled Drive credentials — flag it as such in review rather than
+  letting it slip in silently.
+
+## Target flow
+
+1. **Trigger points**: a "Choose an existing folder instead" link next
+   to (or shown briefly after) the current "Connect Google Drive" flow,
+   *and* a "Change folder" action on an already-connected Google Drive
+   `SourceStatusCard` for someone who wants to switch later.
+2. **Frontend**: on trigger, fetch a short-lived access token from the
+   new backend endpoint, load Google's Picker JS library
+   (`https://apis.google.com/js/api.js`, then `gapi.load('picker', ...)`)
+   if not already loaded, and open a `google.picker.PickerBuilder`
+   scoped to `google.picker.ViewId.FOLDERS` (folder selection only, not
+   individual files).
+3. **On selection**: the picker callback returns the selected folder's
+   Drive file ID. POST it to a new backend endpoint (e.g. `PATCH
+   /api/sources/:id` extended to accept a `pathScope`, or a dedicated
+   `POST /api/sources/:id/folder`) that updates the source's
+   `path_scope` column directly — no new folder gets created in this
+   path, unlike the auto-create flow.
+4. **Backend validation**: before accepting the picked folder id, do one
+   sanity `listChildren`-style call (already exists in `driveClient.ts`)
+   against it to confirm the app genuinely has access (Picker should
+   guarantee this, but a real API call is worth doing to fail clearly
+   rather than silently if something's off) and that it's actually a
+   folder, not a file somehow smuggled through.
+5. **Rescan**: same existing rescan flow works unchanged once
+   `path_scope` points at the new folder id — `remoteScan.ts`/
+   `provider.ts`'s `listTree` don't care how the source's `path_scope`
+   value was set, only that it's a folder id the token can access.
+
+## Backend changes needed
+
+- `server/src/api/routes/sources.ts` (or wherever source-mutation routes
+  live): new endpoint(s) for (a) issuing the short-lived Picker access
+  token, (b) accepting a picked folder id and updating `path_scope`.
+- `provider.ts`: no changes needed to `listTree`/`getMetadataAccess` —
+  they already operate purely on `source.path_scope`, agnostic to how it
+  was set. Only `ensureManagedFolder` stays as the "auto" path,
+  unchanged, still used when the user doesn't pick a folder.
+- No schema changes — `sources.path_scope` already just stores an
+  opaque string; a Picker-selected folder id fits the exact same column.
+
+## Frontend changes needed
+
+- New client functions in `app/src/api/client.ts` mirroring existing
+  source-management calls (`fetchSourceIssues`, etc.): one to fetch the
+  short-lived Picker token, one to submit the picked folder id.
+- A new small component (e.g. `DriveFolderPicker.tsx`) encapsulating the
+  Picker JS library loading + open/callback logic, dynamically imported
+  only when actually triggered (no reason to load Google's Picker script
+  on every page load for everyone, including the majority of users who
+  won't use it).
+- Wiring into `Settings.tsx`'s Google Drive connect flow and
+  `SourceStatusCard.tsx` for the "change folder" case.
+
+## Testing
+
+- Backend: unit-testable normally — the short-lived-token endpoint and
+  the folder-update endpoint are ordinary Express routes, same
+  supertest-based approach already used throughout `server/test/`.
+- Frontend/Picker itself: **not meaningfully unit-testable** — it's a
+  Google-hosted widget loaded from Google's own CDN. Verification here
+  is manual, against a real Google account, the same way the OAuth
+  connect/reconnect flow itself was verified this session (drive directly
+  in a browser, confirm the actual end-to-end behavior).
+
+## Suggested build order
+
+1. Backend: short-lived token endpoint + folder-update endpoint, with
+   normal route tests.
+2. Frontend: `DriveFolderPicker.tsx` component, manually verified against
+   a real Drive account (pick a folder, confirm `path_scope` updates,
+   confirm a subsequent rescan actually finds files in the picked
+   folder).
+3. Wire into `Settings.tsx` (fresh-connect alternative) and
+   `SourceStatusCard.tsx` (change-folder-later action).
+4. Update the in-app copy that currently says "Upload audiobooks into
+   the 'OzzBooks Audiobooks' folder" (`Settings.tsx`'s
+   `justConnected === 'google_drive'` message) to also mention the
+   picker alternative.
+
+## Open questions to settle before implementation (not decided here)
+
+- Should picking a folder happen as a *required* step right after OAuth
+  completes (forcing a choice), or should the current auto-create
+  behavior stay the silent default with the picker purely opt-in later?
+  Leaning toward the latter — keeps the zero-friction path for anyone
+  who doesn't care, matches "additive, not a replacement" in Scope
+  above.
+- What happens to books already ingested under the *old* `path_scope`
+  (the auto-created managed folder) if someone later picks a different
+  folder for the same source? The existing missing-detection logic in
+  `scan.ts` would naturally mark everything under the old folder as
+  missing on the next scan of the new location, same as any other
+  folder-moved-away scenario already handled — likely fine as-is, but
+  worth a deliberate check during implementation rather than assuming.
+- Multiple Google Drive sources per family (e.g. each person's own
+  Drive): out of scope for this addendum, and would interact with the
+  duplicate-connection-prevention fix shipped this session (the
+  "Connect Google Drive" button currently hides once *any* Google Drive
+  source exists) — revisit only if that need actually comes up.
