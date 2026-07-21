@@ -61,6 +61,22 @@ export function groupM4bParts(filenames: string[]): { groups: string[][]; single
       buckets.set(match.base, bucket)
     }
 
+    // Some ripping tools leave the first part completely unnumbered and only
+    // number the continuations (e.g. "Title.m4b" + "Title-1.m4b" — no
+    // "Title-0.m4b"). Admit an otherwise-unmatched sibling whose whole
+    // filename (no trailing number at all) exactly equals a bucket's base,
+    // treating it as an implicit part 0. isContiguousRun's duplicate check
+    // below safely rejects the group if more than one such file exists
+    // (genuinely ambiguous), falling back to singles same as today.
+    for (const [base, bucket] of buckets) {
+      for (const file of remaining) {
+        if (bucket.some((b) => b.file === file)) continue
+        if (normalizeBase(file) === base) {
+          bucket.push({ file, partNumber: 0 })
+        }
+      }
+    }
+
     for (const bucket of buckets.values()) {
       if (bucket.length < 2) continue
       if (!isContiguousRun(bucket.map((b) => b.partNumber))) continue
