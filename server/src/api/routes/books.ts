@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { getDb } from '../../db/index.js'
 import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
+import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
 
 export const booksRouter = Router()
 
@@ -25,6 +26,36 @@ booksRouter.get('/', (_req, res) => {
     )
     .all()
   res.json(rows)
+})
+
+// Deliberately synchronous (200, not 202+poll) — pure local string
+// matching against data already in the DB, no external API/rate limit,
+// so it runs against the whole library in well under a second. See
+// seriesNumberBackfill.ts for why this doesn't mirror the enrichment
+// job's async pattern.
+booksRouter.post('/backfill-series-numbers', (_req, res) => {
+  res.json(backfillSeriesNumbers())
+})
+
+booksRouter.patch('/:id', (req, res) => {
+  const existing = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
+  if (!existing) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const body = req.body ?? {}
+  const seriesName = 'seriesName' in body ? body.seriesName : existing.series_name
+  const seriesNumber = 'seriesNumber' in body ? body.seriesNumber : existing.series_number
+  // Setting a real number locks it against being overwritten by a future
+  // scan/backfill; explicitly clearing it back to null un-locks it instead
+  // of leaving it permanently stuck on whatever guess came before.
+  const seriesNumberSource = 'seriesNumber' in body ? (seriesNumber === null ? null : 'manual') : existing.series_number_source
+
+  getDb()
+    .prepare('UPDATE books SET series_name = ?, series_number = ?, series_number_source = ? WHERE id = ?')
+    .run(seriesName, seriesNumber, seriesNumberSource, existing.id)
+
+  res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))
 })
 
 booksRouter.get('/:id', (req, res) => {

@@ -8,6 +8,7 @@ import { ingestM4b, isDrmFile } from './m4b.js'
 import { groupM4bParts, groupSiblingFolders } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork } from './artwork.js'
+import { deriveSeriesNumberFromName } from './seriesNumber.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
 
 export interface Candidate {
@@ -252,6 +253,7 @@ export interface ResolvedBook {
   author: string | null
   seriesName: string | null
   seriesNumber: number | null
+  seriesNumberSource: 'tag' | 'folder' | 'manual' | null
   artworkThumbPath: string | null
   artworkFullPath: string | null
   contentHash: string
@@ -276,9 +278,9 @@ export function writeBookAndChapters(
 
   const upsert = db.prepare(`
     INSERT INTO books (
-      id, source_id, file_path, format, title, author, series_name, series_number,
+      id, source_id, file_path, format, title, author, series_name, series_number, series_number_source,
       status, artwork_thumb_path, artwork_full_path, content_hash, created_at, updated_at
-    ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number,
+    ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number, @series_number_source,
       'active', @artwork_thumb_path, @artwork_full_path, @content_hash, datetime('now'), datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
@@ -287,6 +289,7 @@ export function writeBookAndChapters(
       author = excluded.author,
       series_name = excluded.series_name,
       series_number = excluded.series_number,
+      series_number_source = excluded.series_number_source,
       status = 'active',
       artwork_thumb_path = excluded.artwork_thumb_path,
       artwork_full_path = excluded.artwork_full_path,
@@ -308,6 +311,7 @@ export function writeBookAndChapters(
     author: resolved.author,
     series_name: resolved.seriesName,
     series_number: resolved.seriesNumber,
+    series_number_source: resolved.seriesNumberSource,
     artwork_thumb_path: resolved.artworkThumbPath,
     artwork_full_path: resolved.artworkFullPath,
     content_hash: resolved.contentHash,
@@ -333,6 +337,42 @@ export function writeBookAndChapters(
   return { bookId, created }
 }
 
+/** series_number's one exception to the "folder always wins, recomputed
+ * fresh every scan" rule author/series_name both follow: once a user has
+ * manually corrected it, that value must survive every future rescan
+ * rather than being silently overwritten by a fresh folder guess. */
+function resolveSeriesNumber(
+  existingBookId: string | undefined,
+  seriesName: string | null,
+  bookOwnFolder: string,
+  candidateFilePath: string,
+  taggedSeriesNumber: number | null,
+): { seriesNumber: number | null; seriesNumberSource: 'tag' | 'folder' | 'manual' | null } {
+  if (existingBookId) {
+    const existing = getDb()
+      .prepare('SELECT series_number, series_number_source FROM books WHERE id = ?')
+      .get(existingBookId) as { series_number: number | null; series_number_source: string | null } | undefined
+    if (existing?.series_number_source === 'manual') {
+      return { seriesNumber: existing.series_number, seriesNumberSource: 'manual' }
+    }
+  }
+
+  if (seriesName) {
+    const folderGuess =
+      deriveSeriesNumberFromName(seriesName, path.basename(bookOwnFolder)) ??
+      deriveSeriesNumberFromName(seriesName, path.basename(candidateFilePath, path.extname(candidateFilePath)))
+    if (folderGuess !== null) {
+      return { seriesNumber: folderGuess, seriesNumberSource: 'folder' }
+    }
+  }
+
+  if (taggedSeriesNumber !== null) {
+    return { seriesNumber: taggedSeriesNumber, seriesNumberSource: 'tag' }
+  }
+
+  return { seriesNumber: null, seriesNumberSource: null }
+}
+
 export async function applyIngestedCandidate(
   source: SourceRow,
   candidate: Candidate,
@@ -348,6 +388,13 @@ export async function applyIngestedCandidate(
   const bookOwnFolder =
     candidate.groupFolder ?? (candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath))
   const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
+  const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
+    existingBookId,
+    seriesName,
+    bookOwnFolder,
+    candidate.filePath,
+    ingested.seriesNumber,
+  )
   const bookId = existingBookId ?? randomUUID()
   const artwork = await extractArtwork(
     bookId,
@@ -361,7 +408,8 @@ export async function applyIngestedCandidate(
     title: ingested.title,
     author,
     seriesName,
-    seriesNumber: ingested.seriesNumber,
+    seriesNumber,
+    seriesNumberSource,
     artworkThumbPath: artwork?.thumbPath ?? null,
     artworkFullPath: artwork?.fullPath ?? null,
     contentHash: hash,

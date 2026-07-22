@@ -282,3 +282,90 @@ describe('GET/PATCH /api/settings', () => {
     expect(timeRes.body.nightly_rescan_enabled).toBe(true)
   })
 })
+
+describe('PATCH /api/books/:id and series-number backfill', () => {
+  it('sets series name/number and locks the source to manual', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesName: 'Manual Series', seriesNumber: 5 })
+    expect(res.status).toBe(200)
+    expect(res.body.series_name).toBe('Manual Series')
+    expect(res.body.series_number).toBe(5)
+    expect(res.body.series_number_source).toBe('manual')
+  })
+
+  it('un-locks the series number when explicitly cleared back to null', async () => {
+    await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesNumber: 7 })
+
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesNumber: null })
+    expect(res.status).toBe(200)
+    expect(res.body.series_number).toBeNull()
+    expect(res.body.series_number_source).toBeNull()
+  })
+
+  it('leaves fields not present in the body untouched', async () => {
+    await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesName: 'Untouched Series', seriesNumber: 1 })
+
+    const res = await request(app).patch(`/api/books/${bookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`).send({})
+    expect(res.status).toBe(200)
+    expect(res.body.series_name).toBe('Untouched Series')
+    expect(res.body.series_number).toBe(1)
+  })
+
+  it('404s for a nonexistent book', async () => {
+    const res = await request(app)
+      .patch('/api/books/does-not-exist')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesNumber: 1 })
+    expect(res.status).toBe(404)
+  })
+
+  it('backfill fills a gap and leaves an already-numbered book untouched', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { randomUUID } = await import('node:crypto')
+    const db = getDb()
+
+    const gapBookId = randomUUID()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, series_name, series_number, status)
+       VALUES (?, ?, 'gap-book-path', 'm4b', 'Gap Book', 'Backfill Series', NULL, 'active')`,
+    ).run(gapBookId, sourceId)
+
+    const alreadyNumberedId = randomUUID()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, series_name, series_number, series_number_source, status)
+       VALUES (?, ?, 'already-numbered-path', 'm4b', 'Already Numbered', 'Backfill Series', 42, 'tag', 'active')`,
+    ).run(alreadyNumberedId, sourceId)
+
+    // "gap-book-path" has no leading/echoed number for the heuristic to
+    // find — update it to something the folder-name heuristic can read.
+    db.prepare('UPDATE books SET file_path = ? WHERE id = ?').run(
+      'Backfill Series/Backfill Series 4 - Gap Book',
+      gapBookId,
+    )
+
+    const res = await request(app)
+      .post('/api/books/backfill-series-numbers')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(res.status).toBe(200)
+    expect(res.body.attempted).toBeGreaterThanOrEqual(1)
+
+    const gapBook = db.prepare('SELECT * FROM books WHERE id = ?').get(gapBookId) as any
+    expect(gapBook.series_number).toBe(4)
+    expect(gapBook.series_number_source).toBe('folder')
+
+    const alreadyNumbered = db.prepare('SELECT * FROM books WHERE id = ?').get(alreadyNumberedId) as any
+    expect(alreadyNumbered.series_number).toBe(42) // untouched
+    expect(alreadyNumbered.series_number_source).toBe('tag')
+  })
+})

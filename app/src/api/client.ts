@@ -225,6 +225,25 @@ export function fetchBook(id: string): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`)
 }
 
+export function updateBook(
+  id: string,
+  patch: { seriesName?: string | null; seriesNumber?: number | null },
+): Promise<ApiBookDetail> {
+  return apiFetch<ApiBookDetail>(`/api/books/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
+export interface ApiSeriesNumberBackfillResult {
+  attempted: number
+  updated: number
+}
+
+// Synchronous (no job-polling type needed) — pure local string matching
+// against data already in the DB, resolves in well under a second even
+// against the whole library.
+export function backfillSeriesNumbers(): Promise<ApiSeriesNumberBackfillResult> {
+  return apiFetch<ApiSeriesNumberBackfillResult>('/api/books/backfill-series-numbers', { method: 'POST' })
+}
+
 // Relinking a missing book: ranked suggestions first, manual folder browse
 // as a fallback, then a parse-only preview (old-vs-new duration/chapter
 // count sanity check) before the confirm step actually writes anything.

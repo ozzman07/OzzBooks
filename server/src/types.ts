@@ -38,6 +38,7 @@ export interface BookRow {
   author: string | null
   series_name: string | null
   series_number: number | null
+  series_number_source: 'tag' | 'folder' | 'manual' | null
   status: BookStatus
   artwork_thumb_path: string | null
   artwork_full_path: string | null
