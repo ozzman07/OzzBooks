@@ -213,6 +213,41 @@ describe('scanGoogleDriveSource', () => {
     }
   }, 30_000)
 
+  it('discovers a .m4a file the same as .m4b — same MPEG-4/AAC container, just a different extension', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanGoogleDriveSource } = await import(
+      '../src/integrations/remote/googleDrive/remoteScan.js'
+    )
+
+    const server = await serveFileWithRanges(library.m4aBookPath)
+    try {
+      const entries: RemoteEntry[] = [
+        { id: 'author-folder', name: 'M4A Author', parentId: null, kind: 'folder' },
+        {
+          id: 'm4a-file-id',
+          name: 'book.m4a',
+          parentId: 'author-folder',
+          kind: 'file',
+          extension: '.m4a',
+          size: statSync(library.m4aBookPath).size,
+        },
+      ]
+      const provider = makeFakeProvider(entries, new Map([['m4a-file-id', server.url]]))
+      const source = await insertSource()
+
+      const result = await scanGoogleDriveSource(source, provider)
+      expect(result.created).toBe(1)
+      expect(result.failed).toBe(0)
+
+      const book = getDb().prepare('SELECT * FROM books WHERE source_id = ?').get(source.id) as any
+      expect(book.format).toBe('m4b')
+      expect(book.title).toBe('M4A Extension Test Book')
+      expect(book.author).toBe('M4A Author')
+    } finally {
+      await server.close()
+    }
+  }, 30_000)
+
   it('short-circuits to marking books missing when credentials_status is needs_reconnect, without calling listTree', async () => {
     const { getDb } = await import('../src/db/index.js')
     const { scanGoogleDriveSource } = await import(

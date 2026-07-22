@@ -2,7 +2,7 @@ import path from 'node:path'
 import { readdir, stat } from 'node:fs/promises'
 import { getDb } from '../db/index.js'
 import type { BookRow, SourceRow } from '../types.js'
-import { findCandidates, ingestCandidate, applyIngestedCandidate, type Candidate } from './scan.js'
+import { findCandidates, ingestCandidate, applyIngestedCandidate, isM4bFile, type Candidate } from './scan.js'
 import { contentHash } from './contentHash.js'
 import { isDrmFile } from './m4b.js'
 
@@ -130,7 +130,7 @@ export async function browseSourceDirectory(source: SourceRow, relativePath: str
         selectable: hasMp3,
         format: hasMp3 ? 'mp3_folder' : undefined,
       })
-    } else if (entry.isFile() && !isDrmFile(entry.name) && entry.name.toLowerCase().endsWith('.m4b')) {
+    } else if (entry.isFile() && !isDrmFile(entry.name) && isM4bFile(entry.name)) {
       results.push({ name: entry.name, path: entryRelative, type: 'file', selectable: true, format: 'm4b' })
     }
   }

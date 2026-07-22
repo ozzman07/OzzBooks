@@ -43,6 +43,15 @@ export interface Candidate {
 // substring, like "Sourcery" or "The Source of Magic".
 export const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
 
+// .m4a and .m4b are the same MPEG-4/AAC container — Apple just uses .m4b as
+// a convention for "this M4A has audiobook chapter markers," not a
+// different format. Treated identically everywhere in this pipeline.
+const M4B_EXTENSIONS = ['.m4b', '.m4a']
+export function isM4bFile(filename: string): boolean {
+  const lower = filename.toLowerCase()
+  return M4B_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
 export async function findCandidates(dir: string): Promise<Candidate[]> {
   if (BACKUP_FOLDER_RE.test(path.basename(dir))) return []
 
@@ -55,7 +64,7 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
     console.warn(`Skipping DRM-encumbered file (out of scope): ${path.join(dir, f.name)}`)
   }
 
-  const m4bFiles = files.filter((f) => f.name.toLowerCase().endsWith('.m4b'))
+  const m4bFiles = files.filter((f) => isM4bFile(f.name))
   const mp3Files = files.filter((f) => f.name.toLowerCase().endsWith('.mp3'))
 
   const candidates: Candidate[] = []
@@ -97,7 +106,7 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
         const subDir = path.join(dir, name)
         const subEntries = await readdir(subDir, { withFileTypes: true })
         const subFiles = subEntries.filter((e) => e.isFile())
-        const hasM4b = subFiles.some((f) => f.name.toLowerCase().endsWith('.m4b'))
+        const hasM4b = subFiles.some((f) => isM4bFile(f.name))
         const mp3s = subFiles.filter((f) => f.name.toLowerCase().endsWith('.mp3'))
         return { name, subDir, mp3s, ok: !hasM4b && mp3s.length > 0 }
       }),

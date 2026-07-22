@@ -29,6 +29,7 @@ export interface TestLibrary {
   toDeleteBookPath: string
   toDeleteBackupFilePath: string
   corruptCoverBookPath: string
+  m4aBookPath: string
 }
 
 async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
@@ -344,6 +345,21 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
   const corruptM4bPath = path.join(corruptDir, 'broken.m4b')
   await writeFile(corruptM4bPath, Buffer.from('not a real m4b container'))
 
+  // --- .m4a extension: same MPEG-4/AAC container as .m4b, just Apple's
+  // non-audiobook-convention extension — must be discovered and ingested
+  // identically to a .m4b file (see isM4bFile in scan.ts) ---
+  const m4aDir = path.join(root, 'M4A Author', 'M4A Extension Test Book')
+  await mkdir(m4aDir, { recursive: true })
+  const m4aBookPath = path.join(m4aDir, 'book.m4a')
+  await makeTone(m4aBookPath, 1, [
+    '-metadata',
+    'title=M4A Extension Test Book',
+    '-metadata',
+    'artist=M4A Author',
+    '-c:a',
+    'aac',
+  ])
+
   return {
     root,
     mp3FolderDir,
@@ -367,5 +383,6 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     toDeleteBookPath,
     toDeleteBackupFilePath,
     corruptCoverBookPath,
+    m4aBookPath,
   }
 }
