@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS books (
   author TEXT,
   series_name TEXT,
   series_number REAL,
+  -- Tracks where series_number came from so a manual correction survives
+  -- future rescans, while an automatic value keeps refreshing on every
+  -- scan (same as author/series_name already do). NULL means "never
+  -- manually touched, free to be (re-)derived."
+  series_number_source TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'missing')),
   artwork_thumb_path TEXT,
   artwork_full_path TEXT,

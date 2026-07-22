@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { fetchBook } from '../api/client'
+import { fetchBook, updateBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { reconcileProgress, removeFromContinueListening } from '../offline/reconcile'
 import { useAuth } from '../auth/AuthContext'
@@ -145,6 +145,10 @@ export function BookDetail() {
   // when cleared — this local flag is what actually drives the UI after a
   // removal, independent of that object identity.
   const [progressCleared, setProgressCleared] = useState(false)
+  const [editingSeries, setEditingSeries] = useState(false)
+  const [seriesNameDraft, setSeriesNameDraft] = useState('')
+  const [seriesNumberDraft, setSeriesNumberDraft] = useState('')
+  const [seriesError, setSeriesError] = useState<string | null>(null)
   const result = useAsync(async () => {
     const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
@@ -202,6 +206,34 @@ export function BookDetail() {
     }
   }
 
+  function startEditingSeries() {
+    setSeriesError(null)
+    setSeriesNameDraft(book.seriesName ?? '')
+    setSeriesNumberDraft(book.seriesNumber !== undefined ? String(book.seriesNumber) : '')
+    setEditingSeries(true)
+  }
+
+  async function saveSeries() {
+    setSeriesError(null)
+    const trimmedName = seriesNameDraft.trim()
+    const parsedNumber = seriesNumberDraft.trim() === '' ? null : Number(seriesNumberDraft)
+    if (parsedNumber !== null && Number.isNaN(parsedNumber)) {
+      setSeriesError('Series number must be a number')
+      return
+    }
+    try {
+      await updateBook(book.id, { seriesName: trimmedName === '' ? null : trimmedName, seriesNumber: parsedNumber })
+      // Mutated in place, same as book.progress above — book is the
+      // useAsync-cached object for this bookId, not re-fetched on every
+      // render, so this is what makes the edit show up immediately.
+      book.seriesName = trimmedName === '' ? undefined : trimmedName
+      book.seriesNumber = parsedNumber ?? undefined
+      setEditingSeries(false)
+    } catch (err) {
+      setSeriesError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
       <div className="mx-auto w-40">
@@ -209,11 +241,44 @@ export function BookDetail() {
       </div>
       <h1 className="mt-4 text-center text-xl font-semibold text-primary">{book.title}</h1>
       <p className="text-center text-sm text-muted">{book.author}</p>
-      {book.seriesName && (
-        <p className="text-center text-xs text-subtle">
-          {book.seriesName} #{book.seriesNumber}
+      {editingSeries ? (
+        <div className="mt-2 flex items-center justify-center gap-2">
+          <input
+            type="text"
+            value={seriesNameDraft}
+            onChange={(e) => setSeriesNameDraft(e.target.value)}
+            placeholder="Series name"
+            className="w-32 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
+          />
+          <input
+            type="number"
+            value={seriesNumberDraft}
+            onChange={(e) => setSeriesNumberDraft(e.target.value)}
+            placeholder="#"
+            className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
+          />
+          <button onClick={() => void saveSeries()} className="text-xs text-amber-400 underline">
+            Save
+          </button>
+          <button onClick={() => setEditingSeries(false)} className="text-xs text-subtle underline">
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <p className="mt-1 text-center text-xs text-subtle">
+          {book.seriesName && (
+            <>
+              {book.seriesName}
+              {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
+              {' · '}
+            </>
+          )}
+          <button onClick={startEditingSeries} className="underline">
+            {book.seriesName ? 'Edit' : '+ Add series info'}
+          </button>
         </p>
       )}
+      {seriesError && <p className="mt-1 text-center text-xs text-red-400">{seriesError}</p>}
       {book.sourceLabel && <p className="text-center text-xs text-subtle">{book.sourceLabel}</p>}
       {book.status === 'missing' && (
         <div className="mt-2 rounded bg-danger-soft px-3 py-2 text-center text-xs text-danger-soft-text">

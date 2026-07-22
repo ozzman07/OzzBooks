@@ -157,6 +157,13 @@ describe('ingestion', () => {
     expect(nestedBook.series_name).toBe('The Series')
     expect(looseBook.series_name).toBeNull()
 
+    // Series number is derived from the book's own folder name once a
+    // series name is known ("The Series 01 - Book One" sits in "The
+    // Series" → position 1), tagged 'folder' so a future rescan keeps it
+    // fresh unless a user manually overrides it.
+    expect(nestedBook.series_number).toBe(1)
+    expect(nestedBook.series_number_source).toBe('folder')
+
     // A book sitting directly under its author folder (no series layer at
     // all) must also get no series.
     expect(folderAuthorBook.series_name).toBeNull()
@@ -584,4 +591,51 @@ describe('ingestion', () => {
     const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
     expect(books).toHaveLength(0)
   })
+
+  it('preserves a manually-set series number across a rescan instead of overwriting it with a fresh folder guess', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-manual-series-'))
+    const bookDir = path.join(tempRoot, 'Manual Author', 'Manual Series', 'Manual Series 3 - Book Three')
+    await mkdir(bookDir, { recursive: true })
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1.2',
+      '-c:a',
+      'libmp3lame',
+      path.join(bookDir, '01.mp3'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Manual Series Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const book = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").get(sourceId) as any
+    // Folder-derived guess should be 3 (from "Manual Series 3 - Book Three").
+    expect(book.series_number).toBe(3)
+    expect(book.series_number_source).toBe('folder')
+
+    // Simulate a manual correction via the PATCH route's effect directly.
+    db.prepare("UPDATE books SET series_number = 99, series_number_source = 'manual' WHERE id = ?").run(book.id)
+
+    await scanSource(source)
+    const afterRescan = db.prepare('SELECT * FROM books WHERE id = ?').get(book.id) as any
+    expect(afterRescan.series_number).toBe(99)
+    expect(afterRescan.series_number_source).toBe('manual')
+  }, 30_000)
 })

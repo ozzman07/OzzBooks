@@ -10,9 +10,11 @@ import {
   fetchEnrichmentStatus,
   fetchAppSettings,
   updateAppSettings,
+  backfillSeriesNumbers,
   type ApiSource,
   type ApiEnrichmentState,
   type ApiAppSettings,
+  type ApiSeriesNumberBackfillResult,
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
@@ -152,6 +154,52 @@ function NightlyRescanCard() {
         {settings.nightly_rescan_last_run_date ? `Last ran ${settings.nightly_rescan_last_run_date}` : 'Never run yet'}
       </p>
 
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+// Library-wide, one-time catch-up (safe to re-run anytime) — deliberately
+// no polling state machine, unlike MetadataEnrichmentCard: this is pure
+// local string matching with no external API, so it resolves immediately.
+function SeriesNumberBackfillCard() {
+  const [result, setResult] = useState<ApiSeriesNumberBackfillResult | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function run() {
+    setRunning(true)
+    setError(null)
+    try {
+      setResult(await backfillSeriesNumbers())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded border border-border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-sm text-primary">Series number backfill</p>
+          <p className="text-xs text-subtle">Fills in missing series positions from folder/file names.</p>
+        </div>
+        <button
+          onClick={() => void run()}
+          disabled={running}
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary disabled:opacity-50"
+        >
+          {running ? 'Running…' : 'Backfill'}
+        </button>
+      </div>
+
+      {result && (
+        <p className="mt-2 text-xs text-emerald-400">
+          Checked {result.attempted}, filled in {result.updated}.
+        </p>
+      )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>
   )
@@ -513,6 +561,7 @@ export function Settings() {
 
           <MetadataEnrichmentCard />
           <NightlyRescanCard />
+          <SeriesNumberBackfillCard />
         </section>
 
         <section className="rounded-lg border border-border p-4">

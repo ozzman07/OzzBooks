@@ -229,13 +229,23 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
       const bookId = existing?.id ?? randomUUID()
       const artwork = await extractArtwork(bookId, NO_LOCAL_FOLDER, ingested.artworkMetadata)
 
+      // Same "manual survives every future rescan" exception as the local
+      // pipeline (scan.ts's resolveSeriesNumber) — no folder-based guess
+      // exists here yet (series_number is tag-only for remote sources), but
+      // a manually-set value must still not get silently cleared back to
+      // whatever (or nothing) the tag says on the next scan.
+      const seriesNumber = existing?.series_number_source === 'manual' ? existing.series_number : ingested.seriesNumber
+      const seriesNumberSource =
+        existing?.series_number_source === 'manual' ? 'manual' : ingested.seriesNumber !== null ? 'tag' : null
+
       const { created } = writeBookAndChapters(source, bookId, !existing, {
         filePath: candidate.id,
         format: candidate.format,
         title: ingested.title,
         author,
         seriesName,
-        seriesNumber: ingested.seriesNumber,
+        seriesNumber,
+        seriesNumberSource,
         artworkThumbPath: artwork?.thumbPath ?? null,
         artworkFullPath: artwork?.fullPath ?? null,
         contentHash: hash,
