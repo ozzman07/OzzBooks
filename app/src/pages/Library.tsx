@@ -356,7 +356,7 @@ export function Library() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search title or author"
-              className="w-full flex-1 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-sm text-primary placeholder:text-subtle sm:w-auto"
+              className="w-full rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-sm text-primary placeholder:text-subtle sm:w-auto sm:flex-1"
             />
             <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
               <button
