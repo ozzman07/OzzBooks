@@ -11,6 +11,9 @@ import {
 
 export type SortOption = 'title' | 'author' | 'series' | 'recent'
 export type ViewMode = 'list' | 'byAuthor' | 'bySeries'
+// Deliberately separate from ViewMode (which means grouping mode) — this is
+// purely how each group of books renders, orthogonal to how they're grouped.
+export type DisplayMode = 'tile' | 'row'
 export type StatusFilter = 'all' | 'not-started' | 'in-progress' | 'finished'
 
 interface LibraryViewContextValue {
@@ -20,6 +23,8 @@ interface LibraryViewContextValue {
   setSortBy: Dispatch<SetStateAction<SortOption>>
   viewMode: ViewMode
   setViewMode: Dispatch<SetStateAction<ViewMode>>
+  displayMode: DisplayMode
+  setDisplayMode: Dispatch<SetStateAction<DisplayMode>>
   statusFilter: StatusFilter
   setStatusFilter: Dispatch<SetStateAction<StatusFilter>>
   needsAttentionOnly: boolean
@@ -42,6 +47,7 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('title')
   const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('tile')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
   const scrollYRef = useRef(0)
@@ -53,6 +59,8 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
     setSortBy,
     viewMode,
     setViewMode,
+    displayMode,
+    setDisplayMode,
     statusFilter,
     setStatusFilter,
     needsAttentionOnly,

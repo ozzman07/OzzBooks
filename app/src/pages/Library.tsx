@@ -10,7 +10,7 @@ import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
-import { useLibraryView, type SortOption, type StatusFilter } from '../library/LibraryViewContext'
+import { useLibraryView, type SortOption, type StatusFilter, type DisplayMode } from '../library/LibraryViewContext'
 
 const SORT_LABELS: Record<SortOption, string> = {
   title: 'Title (A–Z)',
@@ -187,6 +187,60 @@ function BookTile({ book }: { book: Book }) {
   )
 }
 
+function BookRow({ book }: { book: Book }) {
+  return (
+    <Link to={`/book/${book.id}`} className="flex items-center gap-3 py-2">
+      <div className="w-12 shrink-0">
+        <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm text-primary">{book.title}</p>
+          {book.status === 'missing' && (
+            <span className="shrink-0 rounded bg-red-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
+              Needs attention
+            </span>
+          )}
+        </div>
+        <p className="truncate text-xs text-muted">
+          {book.author}
+          {book.seriesName && (
+            <span className="text-subtle">
+              {' '}
+              · {book.seriesName}
+              {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
+            </span>
+          )}
+        </p>
+      </div>
+      <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
+    </Link>
+  )
+}
+
+function BookGrid({ books, displayMode }: { books: Book[]; displayMode: DisplayMode }) {
+  if (displayMode === 'row') {
+    return (
+      <ul className="divide-y divide-border">
+        {books.map((book) => (
+          <li key={book.id}>
+            <BookRow book={book} />
+          </li>
+        ))}
+      </ul>
+    )
+  }
+  return (
+    <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
+      {books.map((book) => (
+        <li key={book.id}>
+          <BookTile book={book} />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function sortBooks(books: Book[], sortBy: SortOption): Book[] {
   return books.slice().sort((a, b) => {
     switch (sortBy) {
@@ -212,6 +266,8 @@ export function Library() {
     setSortBy,
     viewMode,
     setViewMode,
+    displayMode,
+    setDisplayMode,
     statusFilter,
     setStatusFilter,
     needsAttentionOnly,
@@ -378,6 +434,20 @@ export function Library() {
                 By Series
               </button>
             </div>
+            <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
+              <button
+                onClick={() => setDisplayMode('tile')}
+                className={`px-3 py-1.5 ${displayMode === 'tile' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+              >
+                Tiles
+              </button>
+              <button
+                onClick={() => setDisplayMode('row')}
+                className={`px-3 py-1.5 ${displayMode === 'row' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+              >
+                Rows
+              </button>
+            </div>
             {viewMode === 'list' && (
               <select
                 value={sortBy}
@@ -420,13 +490,7 @@ export function Library() {
               {search ? `No books match "${search}".` : 'No books match these filters.'}
             </p>
           ) : viewMode === 'list' ? (
-            <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-              {visibleBooks.map((book) => (
-                <li key={book.id}>
-                  <BookTile book={book} />
-                </li>
-              ))}
-            </ul>
+            <BookGrid books={visibleBooks} displayMode={displayMode} />
           ) : viewMode === 'byAuthor' ? (
             <div className="space-y-6">
               {authorGroups.map((group) => {
@@ -442,23 +506,11 @@ export function Library() {
                           <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-subtle">
                             {seriesGroup.seriesName} · {seriesGroup.books.length}
                           </h4>
-                          <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-                            {seriesGroup.books.map((book) => (
-                              <li key={book.id}>
-                                <BookTile book={book} />
-                              </li>
-                            ))}
-                          </ul>
+                          <BookGrid books={seriesGroup.books} displayMode={displayMode} />
                         </div>
                       ))}
                       {group.standalone.length > 0 && (
-                        <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-                          {group.standalone.map((book) => (
-                            <li key={book.id}>
-                              <BookTile book={book} />
-                            </li>
-                          ))}
-                        </ul>
+                        <BookGrid books={group.standalone} displayMode={displayMode} />
                       )}
                     </div>
                   </div>
@@ -472,13 +524,7 @@ export function Library() {
                   <h3 className="mb-2 text-sm font-medium text-secondary">
                     {group.seriesName} · {group.books.length}
                   </h3>
-                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-                    {group.books.map((book) => (
-                      <li key={book.id}>
-                        <BookTile book={book} />
-                      </li>
-                    ))}
-                  </ul>
+                  <BookGrid books={group.books} displayMode={displayMode} />
                 </div>
               ))}
               {seriesGroups.standalone.length > 0 && (
@@ -486,13 +532,7 @@ export function Library() {
                   <h3 className="mb-2 text-sm font-medium text-secondary">
                     Not part of a series · {seriesGroups.standalone.length}
                   </h3>
-                  <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-                    {seriesGroups.standalone.map((book) => (
-                      <li key={book.id}>
-                        <BookTile book={book} />
-                      </li>
-                    ))}
-                  </ul>
+                  <BookGrid books={seriesGroups.standalone} displayMode={displayMode} />
                 </div>
               )}
             </div>
