@@ -224,6 +224,13 @@ click-through — not worth automating at this scale.
   naturally accessibility-relevant use case, don't leave this implicit
 - Confirm device scope: iPad is in scope by default (PWA behaves
   identically) unless explicitly restricted to iPhone
+- Light/dark theme (2026-07-21): the install splash screen and OS chrome
+  color before JS runs always use the manifest's baked-in dark-slate
+  `theme_color`/`background_color` (`vite.config.ts`'s `VitePWA` config),
+  regardless of the user's in-app theme choice — `vite-plugin-pwa`
+  generates one static manifest at build time, no dual-manifest support.
+  Only the runtime `<meta name="theme-color">` (wired to `ThemeContext`)
+  reflects the live theme after first paint. Not worth solving.
 
 ## Operational notes (not code, but required for the system to work)
 

@@ -67,7 +67,7 @@ function AddToPlaylist({ bookId }: { bookId: string }) {
       <div className="flex items-center gap-2">
         <button
           onClick={() => void handleAddToUpNext()}
-          className="flex-1 rounded-lg border border-slate-700 py-2 text-sm text-slate-200"
+          className="flex-1 rounded-lg border border-border-strong py-2 text-sm text-primary"
         >
           + Add to Up Next
         </button>
@@ -77,12 +77,12 @@ function AddToPlaylist({ bookId }: { bookId: string }) {
       </div>
 
       {showPicker && playlists && (
-        <div className="mt-2 rounded-lg border border-slate-700 bg-slate-900 p-2 shadow-lg">
+        <div className="mt-2 rounded-lg border border-border-strong bg-surface p-2 shadow-lg">
           {playlists.map((p) => (
             <button
               key={p.id}
               onClick={() => void addTo(p)}
-              className="block w-full rounded px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+              className="block w-full rounded px-3 py-2 text-left text-sm text-primary hover:bg-border"
             >
               {p.is_reserved ? '▶️ ' : ''}
               {p.name}
@@ -109,7 +109,7 @@ function DownloadBadge({
     return (
       <button
         onClick={() => void downloads.downloadAll()}
-        className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
       >
         Download whole book
       </button>
@@ -119,7 +119,7 @@ function DownloadBadge({
     return (
       <button
         onClick={() => void downloads.removeAll()}
-        className="rounded border border-slate-700 px-3 py-1.5 text-xs text-amber-400"
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-amber-400"
       >
         Downloaded — remove
       </button>
@@ -128,7 +128,7 @@ function DownloadBadge({
   return (
     <button
       onClick={() => void downloads.downloadAll()}
-      className="rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
+      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
     >
       {cachedCount}/{book.chapters.length} downloaded — finish
     </button>
@@ -159,7 +159,7 @@ export function BookDetail() {
   const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.chapters : [])
 
   if (result.status === 'loading') {
-    return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
+    return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
   }
   if (result.status === 'error') {
     return <LibraryError onRetry={result.retry} />
@@ -207,16 +207,16 @@ export function BookDetail() {
       <div className="mx-auto w-40">
         <CoverArt title={book.title} coverUrl={book.coverFullUrl} />
       </div>
-      <h1 className="mt-4 text-center text-xl font-semibold text-slate-50">{book.title}</h1>
-      <p className="text-center text-sm text-slate-400">{book.author}</p>
+      <h1 className="mt-4 text-center text-xl font-semibold text-primary">{book.title}</h1>
+      <p className="text-center text-sm text-muted">{book.author}</p>
       {book.seriesName && (
-        <p className="text-center text-xs text-slate-500">
+        <p className="text-center text-xs text-subtle">
           {book.seriesName} #{book.seriesNumber}
         </p>
       )}
-      {book.sourceLabel && <p className="text-center text-xs text-slate-600">{book.sourceLabel}</p>}
+      {book.sourceLabel && <p className="text-center text-xs text-subtle">{book.sourceLabel}</p>}
       {book.status === 'missing' && (
-        <div className="mt-2 rounded bg-red-900/40 px-3 py-2 text-center text-xs text-red-300">
+        <div className="mt-2 rounded bg-danger-soft px-3 py-2 text-center text-xs text-danger-soft-text">
           <p>This book's source file couldn't be found. Progress and bookmarks are kept.</p>
           <button onClick={() => navigate(`/book/${bookId}/relink`)} className="mt-2 underline">
             Relink
@@ -235,7 +235,7 @@ export function BookDetail() {
       {hasProgress && (
         <button
           onClick={() => void handleRemoveFromContinueListening()}
-          className="mt-1 w-full text-center text-xs text-slate-500 underline"
+          className="mt-1 w-full text-center text-xs text-subtle underline"
         >
           Remove from Continue Listening
         </button>
@@ -244,11 +244,11 @@ export function BookDetail() {
       <AddToPlaylist bookId={book.id} />
 
       <div className="mt-3 flex items-center justify-between">
-        <p className="text-xs text-slate-500">{formatDuration(book.totalDuration)} total</p>
+        <p className="text-xs text-subtle">{formatDuration(book.totalDuration)} total</p>
         <DownloadBadge book={book} downloads={downloads} />
       </div>
 
-      <ul className="mt-6 divide-y divide-slate-800">
+      <ul className="mt-6 divide-y divide-border">
         {book.chapters.map((chapter) => (
           <li key={chapter.id} className="flex items-center justify-between py-3">
             <button
@@ -264,11 +264,11 @@ export function BookDetail() {
                   Always showing the chapter's own number first makes it
                   read as "chapter N" no matter what the embedded title
                   says. */}
-              <span className="text-sm text-slate-200">
-                <span className="text-slate-500">{chapter.index + 1}.</span> {chapter.title}
+              <span className="text-sm text-primary">
+                <span className="text-subtle">{chapter.index + 1}.</span> {chapter.title}
               </span>
             </button>
-            <span className="text-xs text-slate-500">{formatClock(chapter.duration)}</span>
+            <span className="text-xs text-subtle">{formatClock(chapter.duration)}</span>
             {!singleFile && (
               <button
                 onClick={() =>
@@ -276,7 +276,7 @@ export function BookDetail() {
                 }
                 disabled={downloads.isPending(chapter)}
                 aria-label={downloads.isCached(chapter) ? 'Remove download' : 'Download chapter'}
-                className="ml-3 text-lg text-slate-400 disabled:opacity-40"
+                className="ml-3 text-lg text-muted disabled:opacity-40"
               >
                 {downloads.isPending(chapter) ? '⏳' : downloads.isCached(chapter) ? '✓' : '⬇'}
               </button>

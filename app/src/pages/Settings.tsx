@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { useTheme, type ThemePreference } from '../theme/ThemeContext'
 import {
   fetchBooks,
   fetchSources,
@@ -63,11 +64,11 @@ function MetadataEnrichmentCard() {
   }
 
   return (
-    <div className="mb-3 rounded border border-slate-800 p-3">
+    <div className="mb-3 rounded border border-border p-3">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="text-sm text-slate-200">Genre & cover backfill</p>
-          <p className="text-xs text-slate-500">
+          <p className="text-sm text-primary">Genre & cover backfill</p>
+          <p className="text-xs text-subtle">
             Looks up missing genre and cover art from Open Library. Runs slowly (about one book a second) to stay
             respectful of their free API.
           </p>
@@ -75,7 +76,7 @@ function MetadataEnrichmentCard() {
         <button
           onClick={() => void start()}
           disabled={running}
-          className="shrink-0 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary disabled:opacity-50"
         >
           {running ? 'Running…' : 'Backfill'}
         </button>
@@ -125,8 +126,8 @@ function NightlyRescanCard() {
   if (!settings) return null
 
   return (
-    <div className="mt-3 rounded border border-slate-800 p-3">
-      <label className="flex items-center justify-between text-sm text-slate-300">
+    <div className="mt-3 rounded border border-border p-3">
+      <label className="flex items-center justify-between text-sm text-secondary">
         <span>Nightly reindex</span>
         <input
           type="checkbox"
@@ -136,23 +137,51 @@ function NightlyRescanCard() {
         />
       </label>
 
-      <label className="mt-2 flex items-center justify-between text-sm text-slate-300">
+      <label className="mt-2 flex items-center justify-between text-sm text-secondary">
         <span>Time</span>
         <input
           type="time"
           value={settings.nightly_rescan_time}
           disabled={!settings.nightly_rescan_enabled}
           onChange={(e) => void update({ nightlyRescanTime: e.target.value })}
-          className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100 disabled:opacity-50"
+          className="rounded border border-border-strong bg-surface px-2 py-1 text-primary disabled:opacity-50"
         />
       </label>
 
-      <p className="mt-2 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-subtle">
         {settings.nightly_rescan_last_run_date ? `Last ran ${settings.nightly_rescan_last_run_date}` : 'Never run yet'}
       </p>
 
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>
+  )
+}
+
+const APPEARANCE_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'system', label: 'System' },
+]
+
+function AppearanceCard() {
+  const { preference, setPreference } = useTheme()
+  return (
+    <section className="rounded-lg border border-border p-4">
+      <h2 className="mb-2 text-sm font-medium text-primary">Appearance</h2>
+      <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
+        {APPEARANCE_OPTIONS.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => setPreference(opt.value)}
+            className={`flex-1 px-3 py-1.5 ${
+              preference === opt.value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -191,15 +220,15 @@ function ChangePasswordForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-slate-800 pt-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Change password</p>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-border pt-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">Change password</p>
       <input
         type="password"
         required
         placeholder="Current password"
         value={currentPassword}
         onChange={(e) => setCurrentPassword(e.target.value)}
-        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
       />
       <input
         type="password"
@@ -208,7 +237,7 @@ function ChangePasswordForm() {
         placeholder="New password (min 8 characters)"
         value={newPassword}
         onChange={(e) => setNewPassword(e.target.value)}
-        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
       />
       <input
         type="password"
@@ -216,14 +245,14 @@ function ChangePasswordForm() {
         placeholder="Confirm new password"
         value={confirmPassword}
         onChange={(e) => setConfirmPassword(e.target.value)}
-        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
       />
       {error && <p className="text-xs text-red-400">{error}</p>}
       {success && <p className="text-xs text-emerald-400">Password changed.</p>}
       <button
         type="submit"
         disabled={submitting}
-        className="rounded-lg border border-slate-700 py-2 text-sm text-slate-200 disabled:opacity-40"
+        className="rounded-lg border border-border-strong py-2 text-sm text-primary disabled:opacity-40"
       >
         {submitting ? 'Saving…' : 'Update password'}
       </button>
@@ -257,15 +286,15 @@ function ChangeEmailForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-slate-800 pt-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Change email</p>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2 border-t border-border pt-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">Change email</p>
       <input
         type="email"
         required
         placeholder="New email"
         value={newEmail}
         onChange={(e) => setNewEmail(e.target.value)}
-        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
       />
       <input
         type="password"
@@ -273,14 +302,14 @@ function ChangeEmailForm() {
         placeholder="Current password"
         value={currentPassword}
         onChange={(e) => setCurrentPassword(e.target.value)}
-        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
       />
       {error && <p className="text-xs text-red-400">{error}</p>}
       {success && <p className="text-xs text-emerald-400">Email updated.</p>}
       <button
         type="submit"
         disabled={submitting}
-        className="rounded-lg border border-slate-700 py-2 text-sm text-slate-200 disabled:opacity-40"
+        className="rounded-lg border border-border-strong py-2 text-sm text-primary disabled:opacity-40"
       >
         {submitting ? 'Saving…' : 'Update email'}
       </button>
@@ -381,113 +410,117 @@ export function Settings() {
   const totalDownloadedBytes = downloadedBooks.reduce((sum, b) => sum + b.bytes, 0)
 
   return (
-    <div className="mx-auto max-w-md px-4 pb-24 pt-6">
-      <h1 className="mb-4 text-2xl font-semibold text-slate-50">Settings</h1>
+    <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
+      <h1 className="mb-4 text-2xl font-semibold text-primary">Settings</h1>
 
-      <section className="mb-6 rounded-lg border border-slate-800 p-4">
-        <h2 className="mb-2 text-sm font-medium text-slate-200">Storage</h2>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 lg:grid-flow-row-dense">
+        <section className="rounded-lg border border-border p-4">
+          <h2 className="mb-2 text-sm font-medium text-primary">Storage</h2>
 
-        {estimate && (
-          <p className="mb-2 text-xs text-slate-400">
-            Device storage: {formatBytes(estimate.usage)} used of {formatBytes(estimate.quota)} available
+          {estimate && (
+            <p className="mb-2 text-xs text-muted">
+              Device storage: {formatBytes(estimate.usage)} used of {formatBytes(estimate.quota)} available
+            </p>
+          )}
+          <p className="mb-3 text-xs text-muted">
+            Downloaded for offline: {formatBytes(totalDownloadedBytes)}
           </p>
-        )}
-        <p className="mb-3 text-xs text-slate-400">
-          Downloaded for offline: {formatBytes(totalDownloadedBytes)}
-        </p>
 
-        <label className="mb-3 flex items-center justify-between text-sm text-slate-300">
-          <span>Storage budget</span>
-          <span className="flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              value={budgetMb ?? ''}
-              onChange={(e) => setBudgetMb(Number(e.target.value))}
-              onBlur={saveBudget}
-              className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-right text-slate-100"
-            />
-            <span className="text-xs text-slate-500">MB</span>
-          </span>
-        </label>
+          <label className="mb-3 flex items-center justify-between text-sm text-secondary">
+            <span>Storage budget</span>
+            <span className="flex items-center gap-1">
+              <input
+                type="number"
+                min={0}
+                value={budgetMb ?? ''}
+                onChange={(e) => setBudgetMb(Number(e.target.value))}
+                onBlur={saveBudget}
+                className="w-20 rounded border border-border-strong bg-surface px-2 py-1 text-right text-primary"
+              />
+              <span className="text-xs text-subtle">MB</span>
+            </span>
+          </label>
 
-        {typeof navigator.storage?.persist === 'function' && persisted === false && (
+          {typeof navigator.storage?.persist === 'function' && persisted === false && (
+            <button
+              onClick={requestPersistence}
+              className="mb-3 w-full rounded border border-border-strong py-1.5 text-xs text-secondary"
+            >
+              Request persistent storage
+            </button>
+          )}
+
+          {downloadedBooks.length > 0 && (
+            <ul className="divide-y divide-border border-t border-border pt-2">
+              {downloadedBooks.map((b) => (
+                <li key={b.bookId} className="flex items-center justify-between py-2">
+                  <div>
+                    <p className="text-sm text-primary">{b.title}</p>
+                    <p className="text-xs text-subtle">{formatBytes(b.bytes)}</p>
+                  </div>
+                  <button
+                    onClick={() => void removeBookDownload(b.bookId)}
+                    className="text-xs text-red-400"
+                  >
+                    Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <AppearanceCard />
+
+        <section className="rounded-lg border border-border p-4 lg:col-span-3">
+          <h2 className="mb-2 text-sm font-medium text-primary">Library index</h2>
+
+          {justConnected === 'google_drive' && (
+            <p className="mb-3 rounded bg-success-soft px-3 py-2 text-xs text-success-soft-text">
+              Google Drive connected. Upload audiobooks into the "OzzBooks Audiobooks" folder in your Drive, then
+              rescan below to add them.
+            </p>
+          )}
+
+          {sources.map((source) => (
+            <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
+          ))}
+
+          {/* Hidden once a Google Drive source already exists — clicking this
+              always starts a brand-new connection (no sourceId), which would
+              create a second "OzzBooks Audiobooks" folder + duplicate source
+              rather than reusing the existing one. Re-authorizing an existing
+              but broken connection goes through SourceStatusCard's own
+              "Reconnect" button instead, which does pass the existing
+              sourceId. */}
+          {!sources.some((s) => s.type === 'google_drive') && (
+            <button
+              onClick={() => connectGoogleDrive()}
+              className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
+            >
+              Connect Google Drive
+            </button>
+          )}
+
+          <MetadataEnrichmentCard />
+          <NightlyRescanCard />
+        </section>
+
+        <section className="rounded-lg border border-border p-4">
+          <h2 className="mb-1 text-sm font-medium text-primary">Account</h2>
+          <p className="mb-3 text-sm text-muted">{auth.user?.email}</p>
           <button
-            onClick={requestPersistence}
-            className="mb-3 w-full rounded border border-slate-700 py-1.5 text-xs text-slate-300"
+            onClick={auth.logout}
+            className="mb-1 rounded-lg border border-border-strong px-3 py-2 text-sm text-primary"
           >
-            Request persistent storage
+            Log out
           </button>
-        )}
+          <ChangePasswordForm />
+          <ChangeEmailForm />
+        </section>
+      </div>
 
-        {downloadedBooks.length > 0 && (
-          <ul className="divide-y divide-slate-800 border-t border-slate-800 pt-2">
-            {downloadedBooks.map((b) => (
-              <li key={b.bookId} className="flex items-center justify-between py-2">
-                <div>
-                  <p className="text-sm text-slate-200">{b.title}</p>
-                  <p className="text-xs text-slate-500">{formatBytes(b.bytes)}</p>
-                </div>
-                <button
-                  onClick={() => void removeBookDownload(b.bookId)}
-                  className="text-xs text-red-400"
-                >
-                  Delete
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="mb-6 rounded-lg border border-slate-800 p-4">
-        <h2 className="mb-2 text-sm font-medium text-slate-200">Library index</h2>
-
-        {justConnected === 'google_drive' && (
-          <p className="mb-3 rounded bg-emerald-900/40 px-3 py-2 text-xs text-emerald-300">
-            Google Drive connected. Upload audiobooks into the "OzzBooks Audiobooks" folder in your Drive, then
-            rescan below to add them.
-          </p>
-        )}
-
-        {sources.map((source) => (
-          <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
-        ))}
-
-        {/* Hidden once a Google Drive source already exists — clicking this
-            always starts a brand-new connection (no sourceId), which would
-            create a second "OzzBooks Audiobooks" folder + duplicate source
-            rather than reusing the existing one. Re-authorizing an existing
-            but broken connection goes through SourceStatusCard's own
-            "Reconnect" button instead, which does pass the existing
-            sourceId. */}
-        {!sources.some((s) => s.type === 'google_drive') && (
-          <button
-            onClick={() => connectGoogleDrive()}
-            className="mt-2 w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300"
-          >
-            Connect Google Drive
-          </button>
-        )}
-
-        <MetadataEnrichmentCard />
-        <NightlyRescanCard />
-      </section>
-
-      <section className="mb-6 rounded-lg border border-slate-800 p-4">
-        <h2 className="mb-1 text-sm font-medium text-slate-200">Account</h2>
-        <p className="mb-3 text-sm text-slate-400">{auth.user?.email}</p>
-        <button
-          onClick={auth.logout}
-          className="mb-1 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200"
-        >
-          Log out
-        </button>
-        <ChangePasswordForm />
-        <ChangeEmailForm />
-      </section>
-
-      <p className="text-center text-xs text-slate-600">OzzBooks — Phase 1</p>
+      <p className="mt-6 text-center text-xs text-subtle">OzzBooks — Phase 1</p>
     </div>
   )
 }

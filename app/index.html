@@ -2,6 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Runs before first paint to avoid a flash of the wrong theme — same
+      // storage key/resolution logic as ThemeContext.tsx, so React's mount
+      // just re-applies the already-correct class rather than flashing.
+      ;(function () {
+        try {
+          var pref = localStorage.getItem('ozzbooks_theme_preference')
+          var resolved =
+            pref === 'light' || pref === 'dark'
+              ? pref
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+          if (resolved === 'dark') document.documentElement.classList.add('dark')
+        } catch (e) {}
+      })()
+    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"

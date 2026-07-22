@@ -1,7 +1,63 @@
 @import 'tailwindcss';
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+
+  --app-bg: #ffffff;
+  --surface-bg: #f1f5f9;
+  --border-color: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #334155;
+  --text-muted: #64748b;
+  --text-subtle: #94a3b8;
+
+  --warning-soft-bg: #fef3c7;
+  --warning-soft-text: #92400e;
+  --danger-soft-bg: #fee2e2;
+  --danger-soft-text: #991b1b;
+  --success-soft-bg: #d1fae5;
+  --success-soft-text: #065f46;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --app-bg: #020617;
+  --surface-bg: #0f172a;
+  --border-color: #1e293b;
+  --border-strong: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+
+  --warning-soft-bg: rgb(120 53 15 / 0.4);
+  --warning-soft-text: #fcd34d;
+  --danger-soft-bg: rgb(127 29 29 / 0.4);
+  --danger-soft-text: #fca5a5;
+  --success-soft-bg: rgb(6 78 59 / 0.4);
+  --success-soft-text: #6ee7b7;
+}
+
+@theme inline {
+  --color-app: var(--app-bg);
+  --color-surface: var(--surface-bg);
+  --color-border: var(--border-color);
+  --color-border-strong: var(--border-strong);
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+
+  --color-warning-soft: var(--warning-soft-bg);
+  --color-warning-soft-text: var(--warning-soft-text);
+  --color-danger-soft: var(--danger-soft-bg);
+  --color-danger-soft-text: var(--danger-soft-text);
+  --color-success-soft: var(--success-soft-bg);
+  --color-success-soft-text: var(--success-soft-text);
 }
 
 html,

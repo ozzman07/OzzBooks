@@ -180,9 +180,9 @@ function BookTile({ book }: { book: Book }) {
           </span>
         )}
       </div>
-      <p className="mt-1 truncate text-sm text-slate-100">{book.title}</p>
-      <p className="truncate text-xs text-slate-400">{book.author}</p>
-      <p className="text-xs text-slate-500">{formatDuration(book.totalDuration)}</p>
+      <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
+      <p className="truncate text-xs text-muted">{book.author}</p>
+      <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
     </Link>
   )
 }
@@ -303,14 +303,14 @@ export function Library() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
-      <h1 className="mb-4 text-2xl font-semibold text-slate-50">Your Library</h1>
+      <h1 className="mb-4 text-2xl font-semibold text-primary">Your Library</h1>
 
-      {result.status === 'loading' && <p className="text-center text-slate-400">Loading your library…</p>}
+      {result.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
 
       {result.status === 'error' && <LibraryError onRetry={result.retry} />}
 
       {result.status === 'success' && result.data.books.length === 0 && (
-        <p className="px-2 text-center text-slate-400">
+        <p className="px-2 text-center text-muted">
           No books yet — add a source and scan it to start building your library.
         </p>
       )}
@@ -321,7 +321,7 @@ export function Library() {
           if (continueListening.length === 0) return null
           return (
             <section className="mb-6">
-              <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-slate-400">
+              <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-muted">
                 Continue Listening
               </h2>
               <ul className="flex gap-3 overflow-x-auto pb-1">
@@ -336,7 +336,7 @@ export function Library() {
                     </button>
                     <Link to={`/book/${book.id}`}>
                       <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
-                      <p className="mt-1 truncate text-xs text-slate-300">{book.title}</p>
+                      <p className="mt-1 truncate text-xs text-secondary">{book.title}</p>
                     </Link>
                   </li>
                 ))}
@@ -348,7 +348,7 @@ export function Library() {
       {result.status === 'success' && result.data.books.length > 0 && (
         <section>
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <h2 className="mr-auto text-sm font-medium uppercase tracking-wide text-slate-400">
+            <h2 className="mr-auto text-sm font-medium uppercase tracking-wide text-muted">
               All Books · {filteredBooks.length}
             </h2>
             <input
@@ -356,24 +356,24 @@ export function Library() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search title or author"
-              className="w-full flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 sm:w-auto"
+              className="w-full flex-1 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-sm text-primary placeholder:text-subtle sm:w-auto"
             />
-            <div className="flex overflow-hidden rounded-lg border border-slate-700 text-sm">
+            <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
               <button
                 onClick={() => setViewMode('list')}
-                className={`px-3 py-1.5 ${viewMode === 'list' ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+                className={`px-3 py-1.5 ${viewMode === 'list' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
               >
                 List
               </button>
               <button
                 onClick={() => setViewMode('byAuthor')}
-                className={`px-3 py-1.5 ${viewMode === 'byAuthor' ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+                className={`px-3 py-1.5 ${viewMode === 'byAuthor' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
               >
                 By Author
               </button>
               <button
                 onClick={() => setViewMode('bySeries')}
-                className={`px-3 py-1.5 ${viewMode === 'bySeries' ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+                className={`px-3 py-1.5 ${viewMode === 'bySeries' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
               >
                 By Series
               </button>
@@ -382,7 +382,7 @@ export function Library() {
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as SortOption)}
-                className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100"
+                className="rounded-lg border border-border-strong bg-surface px-2 py-1.5 text-sm text-primary"
               >
                 {(Object.entries(SORT_LABELS) as [SortOption, string][]).map(([value, label]) => (
                   <option key={value} value={value}>
@@ -394,12 +394,12 @@ export function Library() {
           </div>
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <div className="flex overflow-hidden rounded-lg border border-slate-700 text-xs">
+            <div className="flex overflow-hidden rounded-lg border border-border-strong text-xs">
               {(Object.entries(STATUS_LABELS) as [StatusFilter, string][]).map(([value, label]) => (
                 <button
                   key={value}
                   onClick={() => setStatusFilter(value)}
-                  className={`px-2.5 py-1.5 ${statusFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-slate-900 text-slate-300'}`}
+                  className={`px-2.5 py-1.5 ${statusFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
                 >
                   {label}
                 </button>
@@ -407,8 +407,8 @@ export function Library() {
             </div>
             <button
               onClick={() => setNeedsAttentionOnly((v) => !v)}
-              className={`rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs ${
-                needsAttentionOnly ? 'bg-red-600/90 text-white' : 'bg-slate-900 text-slate-300'
+              className={`rounded-lg border border-border-strong px-2.5 py-1.5 text-xs ${
+                needsAttentionOnly ? 'bg-red-600/90 text-white' : 'bg-surface text-secondary'
               }`}
             >
               Needs attention
@@ -416,7 +416,7 @@ export function Library() {
           </div>
 
           {filteredBooks.length === 0 ? (
-            <p className="px-2 text-center text-slate-400">
+            <p className="px-2 text-center text-muted">
               {search ? `No books match "${search}".` : 'No books match these filters.'}
             </p>
           ) : viewMode === 'list' ? (
@@ -433,13 +433,13 @@ export function Library() {
                 const total = group.seriesGroups.reduce((sum, s) => sum + s.books.length, 0) + group.standalone.length
                 return (
                   <div key={group.author}>
-                    <h3 className="mb-2 text-sm font-medium text-slate-300">
+                    <h3 className="mb-2 text-sm font-medium text-secondary">
                       {group.author} · {total}
                     </h3>
                     <div className="space-y-4">
                       {group.seriesGroups.map((seriesGroup) => (
                         <div key={seriesGroup.seriesName}>
-                          <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+                          <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-subtle">
                             {seriesGroup.seriesName} · {seriesGroup.books.length}
                           </h4>
                           <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
@@ -469,7 +469,7 @@ export function Library() {
             <div className="space-y-6">
               {seriesGroups.series.map((group) => (
                 <div key={group.seriesName}>
-                  <h3 className="mb-2 text-sm font-medium text-slate-300">
+                  <h3 className="mb-2 text-sm font-medium text-secondary">
                     {group.seriesName} · {group.books.length}
                   </h3>
                   <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
@@ -483,7 +483,7 @@ export function Library() {
               ))}
               {seriesGroups.standalone.length > 0 && (
                 <div>
-                  <h3 className="mb-2 text-sm font-medium text-slate-300">
+                  <h3 className="mb-2 text-sm font-medium text-secondary">
                     Not part of a series · {seriesGroups.standalone.length}
                   </h3>
                   <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
