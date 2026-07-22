@@ -23,8 +23,8 @@ export function Auth() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-6">
-      <h1 className="mb-1 text-center text-2xl font-semibold text-slate-50">OzzBooks</h1>
-      <p className="mb-8 text-center text-sm text-slate-400">
+      <h1 className="mb-1 text-center text-2xl font-semibold text-primary">OzzBooks</h1>
+      <p className="mb-8 text-center text-sm text-muted">
         {mode === 'login' ? 'Log in to your library' : 'Create your account'}
       </p>
 
@@ -35,7 +35,7 @@ export function Auth() {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 placeholder:text-slate-500"
+          className="rounded-lg border border-border-strong bg-surface px-4 py-3 text-primary placeholder:text-subtle"
         />
         <input
           type="password"
@@ -44,7 +44,7 @@ export function Auth() {
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100 placeholder:text-slate-500"
+          className="rounded-lg border border-border-strong bg-surface px-4 py-3 text-primary placeholder:text-subtle"
         />
 
         {auth.error && <p className="text-sm text-red-400">{auth.error}</p>}
@@ -60,7 +60,7 @@ export function Auth() {
 
       <button
         onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
-        className="mt-4 text-center text-sm text-slate-400"
+        className="mt-4 text-center text-sm text-muted"
       >
         {mode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
       </button>

@@ -92,7 +92,7 @@ export function NowPlaying() {
 
   if (!book || !chapter) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-2 px-4 pb-24 pt-24 text-center text-slate-400">
+      <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-2 px-4 pb-24 pt-24 text-center text-muted">
         <p className="text-lg">Nothing playing</p>
         <p className="text-sm">Pick a book from your library to get started.</p>
       </div>
@@ -103,7 +103,7 @@ export function NowPlaying() {
     <div className="mx-auto max-w-md px-6 pb-28 pt-8">
       <Link
         to={`/book/${book.id}`}
-        className="mb-4 inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300"
+        className="mb-4 inline-flex items-center gap-1 rounded-lg border border-border-strong px-3 py-1.5 text-sm text-secondary"
       >
         <span aria-hidden="true">‹</span> Book details &amp; downloads
       </Link>
@@ -113,20 +113,20 @@ export function NowPlaying() {
       </div>
 
       <div className="mt-6 text-center">
-        <p className="text-lg font-semibold text-slate-50">{book.title}</p>
-        <p className="text-sm text-slate-400">{book.author}</p>
+        <p className="text-lg font-semibold text-primary">{book.title}</p>
+        <p className="text-sm text-muted">{book.author}</p>
         <p className="mt-1 text-sm text-amber-400">{chapter.title}</p>
       </div>
 
       {isBuffering && (
-        <p className="mt-3 text-center text-xs text-slate-400" role="status">
+        <p className="mt-3 text-center text-xs text-muted" role="status">
           Loading…
         </p>
       )}
 
       {streamError && (
-        <div className="mt-3 rounded-lg border border-red-900/60 bg-red-900/20 px-3 py-2 text-center">
-          <p className="text-xs text-red-300">{streamError}</p>
+        <div className="mt-3 rounded-lg border border-danger-soft bg-danger-soft px-3 py-2 text-center">
+          <p className="text-xs text-danger-soft-text">{streamError}</p>
           <button onClick={player.retryLoad} className="mt-1 text-xs font-medium text-amber-400 underline">
             Retry
           </button>
@@ -134,7 +134,7 @@ export function NowPlaying() {
       )}
 
       {finished && (
-        <p className="mt-3 text-center text-xs text-slate-400" role="status">
+        <p className="mt-3 text-center text-xs text-muted" role="status">
           You've finished this book.
         </p>
       )}
@@ -149,24 +149,24 @@ export function NowPlaying() {
           className="w-full accent-amber-400"
           aria-label="Seek"
         />
-        <div className="flex justify-between text-xs text-slate-400">
+        <div className="flex justify-between text-xs text-muted">
           <span>{formatClock(scrubValue ?? player.currentTime)}</span>
           <span>{formatClock(player.duration)}</span>
         </div>
         {book.chapters.length > 1 && bookRemaining !== null && (
-          <p className="mt-1 text-center text-xs text-slate-500">{formatDuration(bookRemaining)} left in book</p>
+          <p className="mt-1 text-center text-xs text-subtle">{formatDuration(bookRemaining)} left in book</p>
         )}
       </div>
 
       <div className="mt-6 flex items-center justify-center gap-6">
         <button
           onClick={player.prevChapter}
-          className="text-2xl text-slate-300"
+          className="text-2xl text-secondary"
           aria-label="Previous chapter"
         >
           ⏮
         </button>
-        <button onClick={() => player.skip(-15)} className="text-xl text-slate-300" aria-label="Back 15 seconds">
+        <button onClick={() => player.skip(-15)} className="text-xl text-secondary" aria-label="Back 15 seconds">
           15↺
         </button>
         <button
@@ -176,18 +176,18 @@ export function NowPlaying() {
         >
           {player.isPlaying ? '⏸' : '▶'}
         </button>
-        <button onClick={() => player.skip(30)} className="text-xl text-slate-300" aria-label="Forward 30 seconds">
+        <button onClick={() => player.skip(30)} className="text-xl text-secondary" aria-label="Forward 30 seconds">
           30↻
         </button>
-        <button onClick={player.nextChapter} className="text-2xl text-slate-300" aria-label="Next chapter">
+        <button onClick={player.nextChapter} className="text-2xl text-secondary" aria-label="Next chapter">
           ⏭
         </button>
       </div>
 
       <div className="mt-8 flex flex-col gap-4">
-        <label className="flex items-center justify-between text-sm text-slate-300">
+        <label className="flex items-center justify-between text-sm text-secondary">
           <span>Speed</span>
-          <span className="tabular-nums text-slate-400">{player.playbackRate.toFixed(2)}x</span>
+          <span className="tabular-nums text-muted">{player.playbackRate.toFixed(2)}x</span>
         </label>
         <input
           type="range"
@@ -200,7 +200,7 @@ export function NowPlaying() {
           aria-label="Playback speed"
         />
 
-        <label className="flex items-center justify-between text-sm text-slate-300">
+        <label className="flex items-center justify-between text-sm text-secondary">
           <span>Skip silence</span>
           <input
             type="checkbox"
@@ -213,7 +213,7 @@ export function NowPlaying() {
         <div className="relative">
           <button
             onClick={() => setShowSleepMenu((v) => !v)}
-            className="w-full rounded-lg border border-slate-700 py-2 text-sm text-slate-300"
+            className="w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
           >
             Sleep timer
             {player.sleepTimer?.kind === 'duration' &&
@@ -221,11 +221,11 @@ export function NowPlaying() {
             {player.sleepTimer?.kind === 'end-of-chapter' && ' — end of chapter'}
           </button>
           {showSleepMenu && (
-            <div className="absolute inset-x-0 z-20 mt-2 rounded-lg border border-slate-700 bg-slate-900 p-2 shadow-lg">
+            <div className="absolute inset-x-0 z-20 mt-2 rounded-lg border border-border-strong bg-surface p-2 shadow-lg">
               {SLEEP_OPTIONS_MIN.map((min) => (
                 <button
                   key={min}
-                  className="block w-full rounded px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+                  className="block w-full rounded px-3 py-2 text-left text-sm text-primary hover:bg-border"
                   onClick={() => {
                     player.startSleepTimer({ kind: 'duration', remainingSeconds: min * 60 })
                     setShowSleepMenu(false)
@@ -235,7 +235,7 @@ export function NowPlaying() {
                 </button>
               ))}
               <button
-                className="block w-full rounded px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-800"
+                className="block w-full rounded px-3 py-2 text-left text-sm text-primary hover:bg-border"
                 onClick={() => {
                   player.startSleepTimer({ kind: 'end-of-chapter' })
                   setShowSleepMenu(false)
@@ -244,7 +244,7 @@ export function NowPlaying() {
                 End of chapter
               </button>
               <button
-                className="block w-full rounded px-3 py-2 text-left text-sm text-red-400 hover:bg-slate-800"
+                className="block w-full rounded px-3 py-2 text-left text-sm text-red-400 hover:bg-border"
                 onClick={() => {
                   player.startSleepTimer(null)
                   setShowSleepMenu(false)

@@ -82,22 +82,22 @@ export function RelinkBook() {
   }
 
   if (loadError) return <LibraryError onRetry={load} />
-  if (!book) return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
+  if (!book) return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
 
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
-      <h1 className="text-xl font-semibold text-slate-50">Relink</h1>
-      <p className="mt-1 text-sm text-slate-400">{book.title}</p>
-      {book.author && <p className="text-xs text-slate-500">{book.author}</p>}
+      <h1 className="text-xl font-semibold text-primary">Relink</h1>
+      <p className="mt-1 text-sm text-muted">{book.title}</p>
+      {book.author && <p className="text-xs text-subtle">{book.author}</p>}
 
       {target && (
-        <div className="mt-6 rounded border border-slate-700 p-4">
-          <p className="text-sm text-slate-200">{target.path}</p>
+        <div className="mt-6 rounded border border-border-strong p-4">
+          <p className="text-sm text-primary">{target.path}</p>
           {previewError && <p className="mt-2 text-xs text-red-400">{previewError}</p>}
           {preview && (
-            <div className="mt-3 text-xs text-slate-400">
+            <div className="mt-3 text-xs text-muted">
               {preview.mismatchWarning && (
-                <p className="mb-2 rounded bg-red-900/40 px-3 py-2 text-red-300">
+                <p className="mb-2 rounded bg-danger-soft px-3 py-2 text-danger-soft-text">
                   This doesn't quite match the original — double-check before confirming.
                 </p>
               )}
@@ -129,7 +129,7 @@ export function RelinkBook() {
                 setPreview(null)
                 setPreviewError(null)
               }}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300"
+              className="rounded-lg border border-border-strong px-4 py-2 text-sm text-secondary"
             >
               Cancel
             </button>
@@ -139,14 +139,14 @@ export function RelinkBook() {
 
       {!target && !browsing && (
         <div className="mt-6">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Suggestions</p>
-          {candidates.length === 0 && <p className="text-sm text-slate-500">No likely matches found.</p>}
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Suggestions</p>
+          {candidates.length === 0 && <p className="text-sm text-subtle">No likely matches found.</p>}
           <ul className="flex flex-col gap-2">
             {candidates.map((c) => (
               <li key={c.path}>
                 <button
                   onClick={() => void selectTarget(c)}
-                  className="w-full rounded border border-slate-700 px-3 py-2 text-left text-sm text-slate-200"
+                  className="w-full rounded border border-border-strong px-3 py-2 text-left text-sm text-primary"
                 >
                   {c.path}
                 </button>
@@ -165,12 +165,12 @@ export function RelinkBook() {
       {!target && browsing && (
         <div className="mt-6">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">
               /{browsePath}
             </p>
             <button
               onClick={() => (browsePath ? setBrowsePath(browsePath.split('/').slice(0, -1).join('/')) : setBrowsing(false))}
-              className="text-xs text-slate-400"
+              className="text-xs text-muted"
             >
               ← Back
             </button>
@@ -182,19 +182,19 @@ export function RelinkBook() {
                 {entry.type === 'folder' ? (
                   <button
                     onClick={() => setBrowsePath(entry.path)}
-                    className="flex-1 rounded border border-slate-700 px-3 py-2 text-left text-sm text-slate-200"
+                    className="flex-1 rounded border border-border-strong px-3 py-2 text-left text-sm text-primary"
                   >
                     {entry.name}/
                   </button>
                 ) : (
-                  <span className="flex-1 rounded border border-slate-800 px-3 py-2 text-sm text-slate-400">
+                  <span className="flex-1 rounded border border-border px-3 py-2 text-sm text-muted">
                     {entry.name}
                   </span>
                 )}
                 {entry.selectable && entry.format && (
                   <button
                     onClick={() => void selectTarget({ path: entry.path, format: entry.format! })}
-                    className="rounded border border-slate-700 px-2 py-2 text-xs text-amber-400"
+                    className="rounded border border-border-strong px-2 py-2 text-xs text-amber-400"
                   >
                     Use this
                   </button>

@@ -47,12 +47,12 @@ export function PlaylistDetail() {
   }, [result.status])
 
   if (result.status === 'loading' || !playlist) {
-    return <p className="px-4 pt-24 text-center text-slate-400">Loading…</p>
+    return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
   }
   if (result.status === 'error') {
     return (
-      <div className="flex flex-col items-center gap-3 px-6 pt-24 text-center text-slate-400">
-        <p className="text-lg text-slate-200">Can't reach this playlist right now</p>
+      <div className="flex flex-col items-center gap-3 px-6 pt-24 text-center text-muted">
+        <p className="text-lg text-primary">Can't reach this playlist right now</p>
         <button
           onClick={result.retry}
           className="mt-2 rounded-lg bg-amber-400 px-4 py-2 text-sm font-medium text-slate-950"
@@ -121,7 +121,7 @@ export function PlaylistDetail() {
 
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
-      <Link to="/playlists" className="mb-4 inline-flex items-center gap-1 text-sm text-slate-400">
+      <Link to="/playlists" className="mb-4 inline-flex items-center gap-1 text-sm text-muted">
         <span aria-hidden="true">‹</span> Playlists
       </Link>
 
@@ -132,7 +132,7 @@ export function PlaylistDetail() {
             type="text"
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
-            className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            className="flex-1 rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary"
           />
           <button onClick={() => void saveRename()} className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-medium text-slate-950">
             Save
@@ -140,13 +140,13 @@ export function PlaylistDetail() {
         </div>
       ) : (
         <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-2xl font-semibold text-slate-50">
+          <h1 className="text-2xl font-semibold text-primary">
             {playlist.is_reserved && <span aria-hidden="true">▶️ </span>}
             {playlist.name}
           </h1>
           {!playlist.is_reserved && (
             <div className="flex gap-3 text-xs">
-              <button onClick={() => setRenaming(true)} className="text-slate-400 underline">
+              <button onClick={() => setRenaming(true)} className="text-muted underline">
                 Rename
               </button>
               <button onClick={() => void handleDelete()} className="text-red-400 underline">
@@ -160,11 +160,11 @@ export function PlaylistDetail() {
       {actionError && <p className="mb-3 text-xs text-red-400">{actionError}</p>}
 
       {playlist.items.length === 0 ? (
-        <p className="px-2 text-center text-sm text-slate-500">
+        <p className="px-2 text-center text-sm text-subtle">
           Nothing here yet — add books from a book's page.
         </p>
       ) : (
-        <ul className="divide-y divide-slate-800 rounded-lg border border-slate-800">
+        <ul className="divide-y divide-border rounded-lg border border-border">
           {playlist.items.map((item, index) => {
             const book = byBookId.get(item.book_id)
             return (
@@ -176,15 +176,15 @@ export function PlaylistDetail() {
                         <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
                       </div>
                       <div className="min-w-0">
-                        <p className="truncate text-sm text-slate-100">{book.title}</p>
-                        <p className="truncate text-xs text-slate-400">{book.author}</p>
-                        <p className="text-xs text-slate-500">{formatDuration(book.totalDuration)}</p>
+                        <p className="truncate text-sm text-primary">{book.title}</p>
+                        <p className="truncate text-xs text-muted">{book.author}</p>
+                        <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
                       </div>
                     </Link>
                   </>
                 ) : (
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm text-slate-500">This book is no longer in your library</p>
+                    <p className="text-sm text-subtle">This book is no longer in your library</p>
                   </div>
                 )}
                 <div className="flex shrink-0 flex-col items-center gap-1">
@@ -192,7 +192,7 @@ export function PlaylistDetail() {
                     onClick={() => void move(index, -1)}
                     disabled={index === 0}
                     aria-label="Move up"
-                    className="text-slate-400 disabled:opacity-20"
+                    className="text-muted disabled:opacity-20"
                   >
                     ▲
                   </button>
@@ -200,7 +200,7 @@ export function PlaylistDetail() {
                     onClick={() => void move(index, 1)}
                     disabled={index === playlist.items.length - 1}
                     aria-label="Move down"
-                    className="text-slate-400 disabled:opacity-20"
+                    className="text-muted disabled:opacity-20"
                   >
                     ▼
                   </button>

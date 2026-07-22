@@ -96,24 +96,24 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
   }
 
   return (
-    <div className="mb-3 rounded border border-slate-800 p-3 last:mb-0">
+    <div className="mb-3 rounded border border-border p-3 last:mb-0">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="text-sm text-slate-200">{source.label}</p>
-          <p className="text-xs text-slate-500">{source.path_scope}</p>
+          <p className="text-sm text-primary">{source.label}</p>
+          <p className="text-xs text-subtle">{source.path_scope}</p>
         </div>
         <button
           onClick={() => void rescan()}
           disabled={scanning || needsReconnect}
-          className="shrink-0 rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-50"
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary disabled:opacity-50"
         >
           {scanning ? 'Scanning…' : 'Rescan'}
         </button>
       </div>
 
       {needsReconnect && (
-        <div className="mt-2 rounded bg-amber-900/40 px-3 py-2">
-          <p className="text-xs text-amber-300">
+        <div className="mt-2 rounded bg-warning-soft px-3 py-2">
+          <p className="text-xs text-warning-soft-text">
             This source needs to be reconnected — access was lost or revoked.
           </p>
           <button
@@ -126,21 +126,21 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
       )}
 
       {source.credentials_account_label && (
-        <p className="mt-1 text-xs text-slate-500">{source.credentials_account_label}</p>
+        <p className="mt-1 text-xs text-subtle">{source.credentials_account_label}</p>
       )}
 
       {scanState.status === 'running' && (
         <p className="mt-2 text-xs text-amber-400">Started {formatStarted(scanState.startedAt)} — this can take a while on a large library.</p>
       )}
 
-      <p className="mt-2 text-xs text-slate-400">{formatWhen(source.last_scanned_at)}</p>
-      <p className="text-xs text-slate-400">
+      <p className="mt-2 text-xs text-muted">{formatWhen(source.last_scanned_at)}</p>
+      <p className="text-xs text-muted">
         {source.book_count} book{source.book_count === 1 ? '' : 's'} indexed
         {source.missing_count > 0 && `, ${source.missing_count} missing`}
       </p>
 
       {source.last_scanned_at && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-subtle">
           Last scan: {source.last_scan_found} found, {source.last_scan_created} new, {source.last_scan_updated}{' '}
           updated
           {failedCount > 0 && `, ${failedCount} failed`}
@@ -159,11 +159,11 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
             {issuesLoading ? 'Loading…' : issues ? 'Hide issues' : `Show ${failedCount} issue${failedCount === 1 ? '' : 's'}`}
           </button>
           {issues && (
-            <ul className="mt-2 space-y-2 border-t border-slate-800 pt-2">
+            <ul className="mt-2 space-y-2 border-t border-border pt-2">
               {issues.map((issue) => (
                 <li key={issue.id} className="text-xs">
-                  <p className="break-all text-slate-300">{issue.file_path}</p>
-                  <p className="break-all text-slate-500">{issue.error}</p>
+                  <p className="break-all text-secondary">{issue.file_path}</p>
+                  <p className="break-all text-subtle">{issue.error}</p>
                 </li>
               ))}
             </ul>
@@ -172,8 +172,8 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
       )}
 
       {canDisconnect && (
-        <div className="mt-2 border-t border-slate-800 pt-2">
-          <button onClick={() => void disconnect()} className="text-xs text-slate-500 underline">
+        <div className="mt-2 border-t border-border pt-2">
+          <button onClick={() => void disconnect()} className="text-xs text-subtle underline">
             Disconnect
           </button>
         </div>
