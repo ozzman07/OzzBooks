@@ -64,6 +64,14 @@ which user is using the app.
   no path into it from a PWA. Bluetooth audio to a car stereo still works
   fine via Media Session — this is specifically about the CarPlay
   screen/UI. This is an accepted platform gap, not something to solve.
+- **No Split View / Slide Over / Stage Manager for the installed PWA.**
+  iOS treats a Home Screen web app as a "Web Clip," and Apple doesn't
+  allow those into any iPadOS multitasking window mode — only true native
+  or App Store apps qualify, and there's no capability a web app can
+  declare to opt in. Using the same URL in a regular Safari tab instead
+  (not installed) supports Split View fine, since that's Safari's own
+  window being resized, not the page's. Accepted platform gap for the
+  installed-icon case, not something fixable in this codebase.
 - **Design priority: short offline gaps, not extended offline.** The
   target scenario is "connection available most of the time, occasional
   brief gaps" (subway, dead zone, Mac mini restart) — not "usable for
