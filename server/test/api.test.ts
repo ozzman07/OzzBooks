@@ -70,7 +70,7 @@ describe('sources + ingestion via the API', () => {
     }
 
     expect(statusRes.body.status).toBe('completed')
-    expect(statusRes.body.result.created).toBe(12)
+    expect(statusRes.body.result.created).toBe(13)
     expect(statusRes.body.result.failed).toBe(1) // the corrupt m4b fixture
   }, 30_000)
 
@@ -78,7 +78,7 @@ describe('sources + ingestion via the API', () => {
     const res = await request(app).get('/api/sources').set('Authorization', `Bearer ${TEST_TOKEN}`)
     expect(res.status).toBe(200)
     const source = res.body.find((s: any) => s.id === sourceId)
-    expect(source.book_count).toBe(12)
+    expect(source.book_count).toBe(13)
     expect(source.last_scan_failed).toBe(1)
     expect(source.last_scanned_at).toBeTruthy()
   })
@@ -105,7 +105,7 @@ describe('sources + ingestion via the API', () => {
   it('lists books and returns a book with its chapters', async () => {
     const listRes = await request(app).get('/api/books').set('Authorization', `Bearer ${TEST_TOKEN}`)
     expect(listRes.status).toBe(200)
-    expect(listRes.body).toHaveLength(12)
+    expect(listRes.body).toHaveLength(13)
 
     const m4bBook = listRes.body.find((b: any) => b.title === 'Mistborn: The Final Empire')
     bookId = m4bBook.id

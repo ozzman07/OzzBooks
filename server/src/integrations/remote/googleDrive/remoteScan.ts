@@ -60,6 +60,11 @@ interface DriveCandidate {
   files: RemoteEntry[]
 }
 
+// Same container as .m4b (Apple's convention for "M4A with chapter
+// markers") — treated identically here, matching scan.ts's local
+// equivalent (isM4bFile).
+const M4B_EXTENSIONS = new Set<string | undefined>(['.m4b', '.m4a'])
+
 function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
   const folderById = new Map(entries.filter((e) => e.kind === 'folder').map((e) => [e.id, e]))
   const filesByParent = new Map<string, RemoteEntry[]>()
@@ -74,7 +79,7 @@ function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
   const candidates: DriveCandidate[] = []
 
   for (const entry of entries) {
-    if (entry.kind !== 'file' || entry.extension !== '.m4b') continue
+    if (entry.kind !== 'file' || !M4B_EXTENSIONS.has(entry.extension)) continue
     if (isUnderExcludedFolder(entry.parentId, folderById)) continue
     const seriesSegments = buildSegmentsToFolder(entry.parentId, folderById)
     candidates.push({
@@ -90,7 +95,7 @@ function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
 
   for (const folder of folderById.values()) {
     const children = filesByParent.get(folder.id) ?? []
-    const hasM4b = children.some((c) => c.extension === '.m4b')
+    const hasM4b = children.some((c) => M4B_EXTENSIONS.has(c.extension))
     const mp3s = children.filter((c) => c.extension === '.mp3')
     if (hasM4b || mp3s.length === 0) continue // matches local: mp3s alongside an m4b are never their own candidate
     if (isUnderExcludedFolder(folder.id, folderById)) continue

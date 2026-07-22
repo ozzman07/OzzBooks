@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(12) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book"
-    expect(result.found).toBe(13) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(13) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book" + ".m4a Extension Test Book"
+    expect(result.found).toBe(14) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,7 +44,16 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(12)
+    expect(books).toHaveLength(13)
+
+    // .m4a is the same MPEG-4/AAC container as .m4b (Apple's convention for
+    // "this M4A has audiobook chapter markers") — must be discovered and
+    // ingested identically, not silently skipped.
+    const m4aBook = books.find((b) => b.title === 'M4A Extension Test Book')
+    expect(m4aBook).toBeTruthy()
+    expect(m4aBook.format).toBe('m4b')
+    expect(m4aBook.author).toBe('M4A Author')
+    expect(m4aBook.file_path).toBe(library.m4aBookPath)
 
     const mp3Book = books.find((b) => b.title === 'Project Hail Mary')
     expect(mp3Book.format).toBe('mp3_folder')
