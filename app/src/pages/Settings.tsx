@@ -336,6 +336,13 @@ export function Settings() {
   const [downloadedBooks, setDownloadedBooks] = useState<DownloadedBook[]>([])
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [sources, setSources] = useState<ApiSource[]>([])
+  // Distinct from `sources.length === 0` — an empty array is ALSO the
+  // initial state before the first fetch resolves, and "Connect Google
+  // Drive" must stay hidden during that window too (not just once we know
+  // a Drive source exists) — otherwise a tap in that brief gap starts a
+  // fresh OAuth flow with no sourceId and creates a duplicate source +
+  // Drive folder, exactly the bug this once already shipped with.
+  const [sourcesLoaded, setSourcesLoaded] = useState(false)
   // Set by the OAuth callback's redirect (?connected=google_drive) — shown
   // once, then stripped from the URL so refreshing the page doesn't keep
   // re-showing it.
@@ -343,6 +350,7 @@ export function Settings() {
 
   const refreshSources = useCallback(async () => {
     setSources(await fetchSources().catch(() => []))
+    setSourcesLoaded(true)
   }, [])
 
   const refreshDownloads = useCallback(async () => {
@@ -486,14 +494,15 @@ export function Settings() {
             <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
           ))}
 
-          {/* Hidden once a Google Drive source already exists — clicking this
+          {/* Hidden once a Google Drive source already exists (or until we've
+              confirmed one doesn't — see sourcesLoaded) — clicking this
               always starts a brand-new connection (no sourceId), which would
               create a second "OzzBooks Audiobooks" folder + duplicate source
               rather than reusing the existing one. Re-authorizing an existing
               but broken connection goes through SourceStatusCard's own
               "Reconnect" button instead, which does pass the existing
               sourceId. */}
-          {!sources.some((s) => s.type === 'google_drive') && (
+          {sourcesLoaded && !sources.some((s) => s.type === 'google_drive') && (
             <button
               onClick={() => connectGoogleDrive()}
               className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
