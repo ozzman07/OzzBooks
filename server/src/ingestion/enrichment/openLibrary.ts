@@ -56,11 +56,17 @@ async function paceRequest(): Promise<void> {
   lastRequestAt = Date.now()
 }
 
+// Open Library's own data is inconsistent about this field's shape across
+// records — sometimes a plain string, sometimes a text-type object with a
+// `value` — both are handled by normalizeDescription below.
+type OpenLibraryDescription = string | { value?: string } | undefined
+
 interface OpenLibrarySearchDoc {
   title?: string
   author_name?: string[]
   subject?: string[]
   cover_i?: number
+  description?: OpenLibraryDescription
 }
 
 interface OpenLibrarySearchResponse {
@@ -70,6 +76,13 @@ interface OpenLibrarySearchResponse {
 export interface OpenLibraryMatch {
   genre: string | null
   coverId: number | null
+  synopsis: string | null
+}
+
+function normalizeDescription(description: OpenLibraryDescription): string | null {
+  if (typeof description === 'string') return description.trim() || null
+  if (description && typeof description.value === 'string') return description.value.trim() || null
+  return null
 }
 
 function matchScore(queryTitle: string, queryAuthor: string, doc: OpenLibrarySearchDoc): number {
@@ -103,7 +116,11 @@ async function runSearch(title: string, author: string | null): Promise<OpenLibr
   // exclusion operator, so appending raw " - Author Name" text into one
   // combined query string (as this used to do) could silently exclude the
   // correct result. `subject` isn't returned by default, hence `fields=`.
-  const params = new URLSearchParams({ q: title, limit: '5', fields: 'title,author_name,subject,cover_i' })
+  const params = new URLSearchParams({
+    q: title,
+    limit: '5',
+    fields: 'title,author_name,subject,cover_i,description',
+  })
   if (author) params.set('author', author)
 
   let res: Response
@@ -148,6 +165,7 @@ export async function searchWork(title: string, author: string | null): Promise<
   return {
     genre: best.doc.subject?.[0] ?? null,
     coverId: best.doc.cover_i ?? null,
+    synopsis: normalizeDescription(best.doc.description),
   }
 }
 

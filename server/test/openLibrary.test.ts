@@ -47,7 +47,7 @@ describe('searchWork', () => {
     vi.stubGlobal('fetch', fetchMock)
     const match = await searchWork('Grantville Gazette Volume IV', 'History')
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(match).toEqual({ genre: 'Alternate history', coverId: 42 })
+    expect(match).toEqual({ genre: 'Alternate history', coverId: 42, synopsis: null })
   })
 
   it('does not retry when no author was supplied in the first place', async () => {
@@ -78,7 +78,7 @@ describe('searchWork', () => {
     await searchWork('Mistborn', 'Brandon Sanderson')
   })
 
-  it('accepts a confident match and returns its genre + cover id', async () => {
+  it('accepts a confident match and returns its genre, cover id, and synopsis', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -88,12 +88,50 @@ describe('searchWork', () => {
             author_name: ['Brandon Sanderson'],
             subject: ['Fantasy fiction', 'Magic', 'Fiction'],
             cover_i: 12345,
+            description: 'A young thief joins a crew to overthrow the immortal Lord Ruler.',
           },
         ]),
       ),
     )
     const match = await searchWork('Mistborn The Final Empire', 'Brandon Sanderson')
-    expect(match).toEqual({ genre: 'Fantasy fiction', coverId: 12345 })
+    expect(match).toEqual({
+      genre: 'Fantasy fiction',
+      coverId: 12345,
+      synopsis: 'A young thief joins a crew to overthrow the immortal Lord Ruler.',
+    })
+  })
+
+  it('handles description as a text-type object ({ value }), not just a plain string', async () => {
+    // Open Library's own data is inconsistent about this field's shape.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        searchResponse([
+          {
+            title: 'Mistborn: The Final Empire',
+            author_name: ['Brandon Sanderson'],
+            subject: ['Fantasy fiction'],
+            cover_i: 12345,
+            description: { type: '/type/text', value: 'A young thief joins a crew to overthrow the Lord Ruler.' },
+          },
+        ]),
+      ),
+    )
+    const match = await searchWork('Mistborn The Final Empire', 'Brandon Sanderson')
+    expect(match?.synopsis).toBe('A young thief joins a crew to overthrow the Lord Ruler.')
+  })
+
+  it('returns a null synopsis when Open Library has no description at all', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        searchResponse([
+          { title: 'Mistborn: The Final Empire', author_name: ['Brandon Sanderson'], subject: ['Fantasy fiction'], cover_i: 12345 },
+        ]),
+      ),
+    )
+    const match = await searchWork('Mistborn The Final Empire', 'Brandon Sanderson')
+    expect(match?.synopsis).toBeNull()
   })
 
   it('picks the best-scoring candidate, not just the first result', async () => {

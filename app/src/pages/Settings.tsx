@@ -95,6 +95,7 @@ function MetadataEnrichmentCard() {
             ? 'Open Library appears unavailable — stopped early, the rest will retry next time. '
             : ''}
           Done: {state.result.genreUpdated} genre{state.result.genreUpdated === 1 ? '' : 's'} added,{' '}
+          {state.result.synopsisUpdated} synopsis{state.result.synopsisUpdated === 1 ? '' : 'es'} added,{' '}
           {state.result.coverUpdated} cover{state.result.coverUpdated === 1 ? '' : 's'} added
           {state.result.skipped > 0 && `, ${state.result.skipped} skipped (no confident match)`}
           {state.result.failed > 0 && `, ${state.result.failed} failed`}.

@@ -26,6 +26,7 @@ export interface Book {
   author: string
   seriesName?: string
   seriesNumber?: number
+  synopsis?: string
   status: 'active' | 'missing'
   coverThumbUrl?: string
   coverFullUrl?: string

@@ -313,6 +313,13 @@ export function BookDetail() {
         <DownloadBadge book={book} downloads={downloads} />
       </div>
 
+      {book.synopsis && (
+        <div className="mt-6">
+          <p className="text-sm font-medium text-primary">Synopsis</p>
+          <p className="mt-2 whitespace-pre-line text-sm text-muted">{book.synopsis}</p>
+        </div>
+      )}
+
       <ul className="mt-6 divide-y divide-border">
         {book.chapters.map((chapter) => (
           <li key={chapter.id} className="flex items-center justify-between py-3">

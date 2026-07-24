@@ -212,6 +212,7 @@ function BookRow({ book }: { book: Book }) {
             </span>
           )}
         </p>
+        {book.synopsis && <p className="line-clamp-2 text-xs text-subtle">{book.synopsis}</p>}
       </div>
       <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
     </Link>
