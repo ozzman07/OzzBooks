@@ -121,6 +121,7 @@ export interface ApiScanResult {
   markedMissing: number
   skippedDuplicates: number
   failed: number
+  removedAsTrash: number
 }
 
 // A scan is fire-and-forget on the server (it can run for well over an

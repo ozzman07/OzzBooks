@@ -156,6 +156,7 @@ function markAllMissing(source: SourceRow): ScanResult {
     markedMissing,
     skippedDuplicates: 0,
     failed: 0,
+    removedAsTrash: 0,
   }
   recordScanStats(source, result)
   return result
@@ -180,7 +181,15 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
     seriesSiblingCounts.set(key, (seriesSiblingCounts.get(key) ?? 0) + 1)
   }
 
-  const result: ScanResult = { found: candidates.length, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 0 }
+  const result: ScanResult = {
+    found: candidates.length,
+    created: 0,
+    updated: 0,
+    markedMissing: 0,
+    skippedDuplicates: 0,
+    failed: 0,
+    removedAsTrash: 0,
+  }
   const seenFilePaths = new Set<string>()
 
   db.prepare('DELETE FROM scan_issues WHERE source_id = ?').run(source.id)
