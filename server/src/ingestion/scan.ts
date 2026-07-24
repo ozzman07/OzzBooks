@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
+import { readdir, unlink } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
 import type { BookRow, SourceRow } from '../types.js'
@@ -51,6 +52,114 @@ const M4B_EXTENSIONS = ['.m4b', '.m4a']
 export function isM4bFile(filename: string): boolean {
   const lower = filename.toLowerCase()
   return M4B_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+/**
+ * Mirror image of findCandidates' BACKUP_FOLDER_RE exclusion — instead of
+ * skipping everything under a zzz/To Delete folder, walks the whole tree
+ * specifically to collect audio files sitting *inside* one. Used to tell
+ * "this book's file genuinely disappeared" apart from "this book's file
+ * was moved into the trash" (see removeTrashedBooks below), which a plain
+ * missing-file check can't distinguish — a move into a trash folder is
+ * usually also a rename, so this only needs to gather candidates here;
+ * the actual matching happens by content hash, not by name.
+ */
+async function findTrashAudioFiles(dir: string, insideExcludedFolder = false): Promise<string[]> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return [] // unreadable dir (permissions, a broken symlink, etc.) — skip rather than fail the scan
+  }
+
+  const results: string[] = []
+  if (insideExcludedFolder) {
+    for (const e of entries) {
+      if (e.isFile() && (isM4bFile(e.name) || e.name.toLowerCase().endsWith('.mp3'))) {
+        results.push(path.join(dir, e.name))
+      }
+    }
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue
+    const subDir = path.join(dir, e.name)
+    results.push(...(await findTrashAudioFiles(subDir, insideExcludedFolder || BACKUP_FOLDER_RE.test(e.name))))
+  }
+  return results
+}
+
+/** Content hash -> file path, for every audio file currently sitting in a
+ * zzz/To Delete-style folder anywhere under pathScope. Only worth the
+ * extra directory walk when there's actually a missing book to check
+ * against — see its one call site in scanSource. */
+async function buildTrashHashIndex(pathScope: string): Promise<Map<string, string>> {
+  const files = await findTrashAudioFiles(pathScope)
+  const index = new Map<string, string>()
+  for (const filePath of files) {
+    try {
+      index.set(await contentHash(filePath), filePath)
+    } catch (err) {
+      console.warn(`Skipping unreadable file while checking trash folders for removable books: ${filePath}`, err)
+    }
+  }
+  return index
+}
+
+/** Deletes a book outright (chapters cascade via ON DELETE CASCADE) plus
+ * its generated artwork files on disk — the one place this app deletes a
+ * book row rather than marking it missing, reserved for the specific case
+ * of its file having moved into a zzz/To Delete folder (see
+ * removeTrashedBooks). Progress/bookmarks live in the separate cloud sync
+ * layer, unaffected either way. */
+async function deleteBookAndArtwork(book: BookRow): Promise<void> {
+  getDb().prepare('DELETE FROM books WHERE id = ?').run(book.id)
+  for (const artworkPath of [book.artwork_thumb_path, book.artwork_full_path]) {
+    if (!artworkPath) continue
+    try {
+      await unlink(artworkPath)
+    } catch {
+      // Already gone or otherwise unreadable — not worth failing the scan over a stale thumbnail file.
+    }
+  }
+}
+
+/**
+ * Books whose file has moved into a zzz/To Delete folder are removed from
+ * the library outright rather than left as a permanent "missing" ghost —
+ * matched by content hash (not path/name, since a move into the trash is
+ * usually also a rename). Checks both books just now going missing this
+ * scan (`newlyMissing`) and books already sitting as missing from a past
+ * scan (`alreadyMissing`), so this also retroactively cleans up anything
+ * that was moved to trash before this check existed — a book with no
+ * recorded content_hash (pre-dating that column) simply never matches,
+ * the safe default.
+ */
+async function removeTrashedBooks(
+  source: SourceRow,
+  newlyMissing: BookRow[],
+  alreadyMissing: BookRow[],
+  result: ScanResult,
+): Promise<void> {
+  if (newlyMissing.length === 0 && alreadyMissing.length === 0) return
+  const db = getDb()
+  const trashHashes = await buildTrashHashIndex(source.path_scope)
+
+  for (const book of newlyMissing) {
+    if (book.content_hash && trashHashes.has(book.content_hash)) {
+      await deleteBookAndArtwork(book)
+      result.removedAsTrash++
+    } else {
+      db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
+      result.markedMissing++
+    }
+  }
+
+  for (const book of alreadyMissing) {
+    if (book.content_hash && trashHashes.has(book.content_hash)) {
+      await deleteBookAndArtwork(book)
+      result.removedAsTrash++
+    }
+  }
 }
 
 export async function findCandidates(dir: string): Promise<Candidate[]> {
@@ -278,6 +387,12 @@ export interface ScanResult {
   markedMissing: number
   skippedDuplicates: number
   failed: number
+  /** Books whose file was found to have moved into a zzz/To Delete-style
+   * folder (matched by content hash, not path — a move is usually also a
+   * rename) rather than genuinely gone missing. Removed outright instead
+   * of left as a permanent "missing" ghost — see removeTrashedBooks. Local
+   * scans only; remote sources have no local trash-folder concept. */
+  removedAsTrash: number
 }
 
 /**
@@ -490,7 +605,15 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
       source.path_scope,
       message,
     )
-    const result: ScanResult = { found: 0, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 1 }
+    const result: ScanResult = {
+      found: 0,
+      created: 0,
+      updated: 0,
+      markedMissing: 0,
+      skippedDuplicates: 0,
+      failed: 1,
+      removedAsTrash: 0,
+    }
     db.prepare(
       `UPDATE sources SET
          last_scanned_at = datetime('now'),
@@ -511,6 +634,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     markedMissing: 0,
     skippedDuplicates: 0,
     failed: 0,
+    removedAsTrash: 0,
   }
   const seenFilePaths = new Set<string>()
 
@@ -575,16 +699,17 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
   // Anything previously indexed under this source but not found this scan
   // is marked missing, never deleted — progress/bookmarks/downloads live
   // in the separate cloud sync layer and are keyed off book_id, which
-  // stays stable.
+  // stays stable. The one exception is a file that moved into a zzz/To
+  // Delete folder specifically — see removeTrashedBooks, which also
+  // sweeps books already sitting as missing from a past scan.
   const previouslyActive = db
     .prepare<[string], BookRow>("SELECT * FROM books WHERE source_id = ? AND status = 'active'")
     .all(source.id)
-  for (const book of previouslyActive) {
-    if (!seenFilePaths.has(book.file_path)) {
-      db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
-      result.markedMissing++
-    }
-  }
+  const newlyMissing = previouslyActive.filter((book) => !seenFilePaths.has(book.file_path))
+  const alreadyMissing = db
+    .prepare<[string], BookRow>("SELECT * FROM books WHERE source_id = ? AND status = 'missing'")
+    .all(source.id)
+  await removeTrashedBooks(source, newlyMissing, alreadyMissing, result)
 
   db.prepare(
     `UPDATE sources SET

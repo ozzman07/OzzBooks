@@ -598,7 +598,15 @@ describe('ingestion', () => {
     const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
 
     const result = await scanSource(source)
-    expect(result).toEqual({ found: 0, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 1 })
+    expect(result).toEqual({
+      found: 0,
+      created: 0,
+      updated: 0,
+      markedMissing: 0,
+      skippedDuplicates: 0,
+      failed: 1,
+      removedAsTrash: 0,
+    })
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
     expect(issues).toHaveLength(1)
