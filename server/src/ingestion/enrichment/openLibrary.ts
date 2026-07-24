@@ -6,6 +6,27 @@ const COVERS_ENDPOINT = 'https://covers.openlibrary.org/b/id'
 // requests" rather than maximizing the allowed rate).
 const USER_AGENT = 'OzzBooks/1.0 (jim@osbornville.com)'
 const MIN_REQUEST_INTERVAL_MS = 1000
+// A real spot-check against Open Library's search endpoint (this session)
+// consistently came back in well under 2 seconds. 8s is comfortably above
+// any normal response — including a slightly slow one — while still
+// bounding the worst case to a single short wait: enrichBooks stops after
+// the *first* request that hits this, rather than letting a real outage
+// or degradation run out the clock on every remaining book in the batch.
+const REQUEST_TIMEOUT_MS = 8000
+
+/** Thrown for a connectivity-level failure — timeout, network error, or a
+ * non-2xx search response — as opposed to a normal "no match" outcome.
+ * Callers (enrichBooks, run unattended as part of the nightly reindex)
+ * use this to tell "Open Library isn't available right now" apart from
+ * "this specific book has no confident match," so an outage stops the
+ * batch early instead of grinding through the rest of a large backlog
+ * with the same failure repeating on every remaining book. */
+export class OpenLibraryUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'OpenLibraryUnavailableError'
+  }
+}
 // At least this many significant words (title + author combined) must
 // match before a candidate is trusted — below this, skip rather than
 // risk attaching a wrong genre/cover to a book.
@@ -85,11 +106,17 @@ async function runSearch(title: string, author: string | null): Promise<OpenLibr
   const params = new URLSearchParams({ q: title, limit: '5', fields: 'title,author_name,subject,cover_i' })
   if (author) params.set('author', author)
 
-  const res = await fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
-    headers: { 'User-Agent': USER_AGENT },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (err) {
+    throw new OpenLibraryUnavailableError('Open Library search request failed or timed out', { cause: err })
+  }
   if (!res.ok) {
-    throw new Error(`Open Library search failed: ${res.status} ${res.statusText}`)
+    throw new OpenLibraryUnavailableError(`Open Library search failed: ${res.status} ${res.statusText}`)
   }
   const body = (await res.json()) as OpenLibrarySearchResponse
   return body.docs ?? []
@@ -126,13 +153,21 @@ export async function searchWork(title: string, author: string | null): Promise<
 
 /** Returns null (rather than throwing) on a missing/failed cover fetch —
  * a book can still get its genre backfilled even if the cover download
- * fails, these are independent outcomes. */
+ * fails, these are independent outcomes. Still throws OpenLibraryUnavailableError
+ * on a timeout/network failure though — that's a connectivity problem, not
+ * "this one cover doesn't exist," and callers need to tell the two apart. */
 export async function fetchCover(coverId: number): Promise<Buffer | null> {
   await paceRequest()
 
-  const res = await fetch(`${COVERS_ENDPOINT}/${coverId}-L.jpg`, {
-    headers: { 'User-Agent': USER_AGENT },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${COVERS_ENDPOINT}/${coverId}-L.jpg`, {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (err) {
+    throw new OpenLibraryUnavailableError('Open Library cover request failed or timed out', { cause: err })
+  }
   if (!res.ok) return null
   return Buffer.from(await res.arrayBuffer())
 }

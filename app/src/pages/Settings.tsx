@@ -90,7 +90,10 @@ function MetadataEnrichmentCard() {
         </p>
       )}
       {state.status === 'completed' && (
-        <p className="mt-2 text-xs text-emerald-400">
+        <p className={`mt-2 text-xs ${state.result.abortedDueToUnavailability ? 'text-amber-400' : 'text-emerald-400'}`}>
+          {state.result.abortedDueToUnavailability
+            ? 'Open Library appears unavailable — stopped early, the rest will retry next time. '
+            : ''}
           Done: {state.result.genreUpdated} genre{state.result.genreUpdated === 1 ? '' : 's'} added,{' '}
           {state.result.coverUpdated} cover{state.result.coverUpdated === 1 ? '' : 's'} added
           {state.result.skipped > 0 && `, ${state.result.skipped} skipped (no confident match)`}

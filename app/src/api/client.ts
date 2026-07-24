@@ -199,6 +199,7 @@ export interface ApiEnrichmentResult {
   coverUpdated: number
   skipped: number
   failed: number
+  abortedDueToUnavailability: boolean
 }
 
 // Same fire-and-forget shape as ApiScanState, but library-wide rather than

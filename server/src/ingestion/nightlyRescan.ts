@@ -1,6 +1,7 @@
 import { getDb } from '../db/index.js'
 import type { AppSettingsRow, SourceRow } from '../types.js'
 import { startScan, getScanState } from './scanStatus.js'
+import { enrichBooks } from './enrichment/enrichBooks.js'
 
 const CHECK_INTERVAL_MS = 60_000
 
@@ -43,8 +44,19 @@ function sleep(ms: number): Promise<void> {
  * Reuses scanStatus.ts's existing state map, so SourceStatusCard's poll
  * loop shows "Scanning…" live during a nightly run exactly as it does for
  * a manually-triggered one — no new UI-facing state needed.
+ *
+ * Metadata enrichment (Open Library genre/cover lookup) runs once
+ * afterward, covering whatever the scan just found — this is deliberately
+ * the *only* place it runs unattended; the alternative (during/interleaved
+ * with each source's scan) would mean file discovery, which matters far
+ * more, waiting on a third-party network service. enrichBooks() already
+ * aborts itself early and gracefully (rather than throwing) the moment
+ * Open Library looks unavailable — leftover books stay un-stamped and get
+ * picked up on the next nightly run — so the try/catch here is only a
+ * backstop against something unrelated breaking; either way, today's scan
+ * is still marked done.
  */
-async function runNightlyRescan(): Promise<void> {
+export async function runNightlyRescan(): Promise<void> {
   const db = getDb()
   const sources = db.prepare('SELECT * FROM sources').all() as SourceRow[]
   for (const source of sources) {
@@ -53,6 +65,13 @@ async function runNightlyRescan(): Promise<void> {
       await sleep(5000)
     }
   }
+
+  try {
+    await enrichBooks()
+  } catch (err) {
+    console.warn('Metadata enrichment failed during nightly rescan:', err)
+  }
+
   db.prepare("UPDATE app_settings SET nightly_rescan_last_run_date = ?, updated_at = datetime('now') WHERE id = 1").run(
     formatLocalDate(new Date()),
   )

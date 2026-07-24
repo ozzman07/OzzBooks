@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { searchWork, fetchCover } from '../src/ingestion/enrichment/openLibrary.js'
+import { searchWork, fetchCover, OpenLibraryUnavailableError } from '../src/ingestion/enrichment/openLibrary.js'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -134,12 +134,29 @@ describe('searchWork', () => {
     expect(match).toBeNull()
   })
 
-  it('throws on a non-ok response', async () => {
+  it('throws OpenLibraryUnavailableError on a non-ok response', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: false, status: 500, statusText: 'Internal Server Error' })),
     )
-    await expect(searchWork('Mistborn', 'Brandon Sanderson')).rejects.toThrow('500')
+    let caught: unknown
+    try {
+      await searchWork('Mistborn', 'Brandon Sanderson')
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(OpenLibraryUnavailableError)
+    expect((caught as Error).message).toContain('500')
+  })
+
+  it('throws OpenLibraryUnavailableError (not the raw fetch error) on a network failure/timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new DOMException('The operation timed out.', 'TimeoutError')
+      }),
+    )
+    await expect(searchWork('Mistborn', 'Brandon Sanderson')).rejects.toBeInstanceOf(OpenLibraryUnavailableError)
   })
 })
 
@@ -162,5 +179,19 @@ describe('fetchCover', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404 })))
     const buffer = await fetchCover(999999)
     expect(buffer).toBeNull()
+  })
+
+  it('throws OpenLibraryUnavailableError (not null) on a network failure/timeout', async () => {
+    // Deliberately distinct from the 404 case above: a missing single
+    // cover image is a normal, expected outcome (return null, keep
+    // going); a connection failure/timeout means Open Library itself
+    // isn't responding, which the caller needs to be able to tell apart.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new DOMException('The operation timed out.', 'TimeoutError')
+      }),
+    )
+    await expect(fetchCover(12345)).rejects.toBeInstanceOf(OpenLibraryUnavailableError)
   })
 })
