@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS books (
   volume_normalization_gain REAL,
   content_hash TEXT, -- for duplicate detection across sources
   genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched
+  synopsis TEXT, -- backfilled alongside genre, same enrichment pass, null until enriched
   -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
   -- doesn't repeatedly re-query the same already-attempted book — a
   -- future "retry failed lookups" action resets this to NULL.

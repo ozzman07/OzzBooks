@@ -47,6 +47,7 @@ describe('enrichment routes', () => {
     expect(statusRes.body.result).toEqual({
       attempted: 0,
       genreUpdated: 0,
+      synopsisUpdated: 0,
       coverUpdated: 0,
       skipped: 0,
       failed: 0,

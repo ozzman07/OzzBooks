@@ -45,6 +45,7 @@ export interface BookRow {
   volume_normalization_gain: number | null
   content_hash: string | null
   genre: string | null
+  synopsis: string | null
   metadata_enrichment_attempted_at: string | null
   created_at: string
   updated_at: string

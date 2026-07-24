@@ -26,6 +26,7 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     author: book.author ?? 'Unknown author',
     seriesName: book.series_name ?? undefined,
     seriesNumber: book.series_number ?? undefined,
+    synopsis: book.synopsis ?? undefined,
     status: book.status,
     coverThumbUrl: book.artwork_thumb_path ? artworkUrl(book.id, 'thumb') : undefined,
     coverFullUrl: book.artwork_full_path ? artworkUrl(book.id, 'full') : undefined,

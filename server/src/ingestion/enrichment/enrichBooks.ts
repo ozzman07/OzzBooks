@@ -48,6 +48,7 @@ function cleanTitleForSearch(title: string): string {
 export interface EnrichmentResult {
   attempted: number
   genreUpdated: number
+  synopsisUpdated: number
   coverUpdated: number
   skipped: number
   failed: number
@@ -84,7 +85,7 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
       `SELECT * FROM books
        WHERE status = 'active'
          AND metadata_enrichment_attempted_at IS NULL
-         AND (genre IS NULL OR (artwork_thumb_path IS NULL AND artwork_full_path IS NULL))
+         AND (genre IS NULL OR synopsis IS NULL OR (artwork_thumb_path IS NULL AND artwork_full_path IS NULL))
        ORDER BY created_at, rowid`,
     )
     .all() as BookRow[]
@@ -92,6 +93,7 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
   const result: EnrichmentResult = {
     attempted: 0,
     genreUpdated: 0,
+    synopsisUpdated: 0,
     coverUpdated: 0,
     skipped: 0,
     failed: 0,
@@ -109,12 +111,18 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
       }
 
       let genre = book.genre
+      let synopsis = book.synopsis
       let artworkThumbPath = book.artwork_thumb_path
       let artworkFullPath = book.artwork_full_path
 
       if (!genre && match.genre) {
         genre = match.genre
         result.genreUpdated++
+      }
+
+      if (!synopsis && match.synopsis) {
+        synopsis = match.synopsis
+        result.synopsisUpdated++
       }
 
       if (!artworkThumbPath && !artworkFullPath && match.coverId) {
@@ -131,10 +139,10 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
 
       result.attempted++
       db.prepare(
-        `UPDATE books SET genre = ?, artwork_thumb_path = ?, artwork_full_path = ?,
+        `UPDATE books SET genre = ?, synopsis = ?, artwork_thumb_path = ?, artwork_full_path = ?,
            metadata_enrichment_attempted_at = datetime('now')
          WHERE id = ?`,
-      ).run(genre, artworkThumbPath, artworkFullPath, book.id)
+      ).run(genre, synopsis, artworkThumbPath, artworkFullPath, book.id)
     } catch (err) {
       if (err instanceof OpenLibraryUnavailableError) {
         // Deliberately leaves this book (and everything after it in

@@ -62,6 +62,7 @@ export interface ApiBook {
   author: string | null
   series_name: string | null
   series_number: number | null
+  synopsis: string | null
   status: 'active' | 'missing'
   artwork_thumb_path: string | null
   artwork_full_path: string | null
@@ -196,6 +197,7 @@ export function updateAppSettings(patch: {
 export interface ApiEnrichmentResult {
   attempted: number
   genreUpdated: number
+  synopsisUpdated: number
   coverUpdated: number
   skipped: number
   failed: number
