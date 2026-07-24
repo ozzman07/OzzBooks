@@ -6,10 +6,14 @@ import request from 'supertest'
 
 const TEST_TOKEN = 'test-token-enrichment'
 
-vi.mock('../src/ingestion/enrichment/openLibrary.js', () => ({
-  searchWork: vi.fn().mockResolvedValue(null),
-  fetchCover: vi.fn(),
-}))
+vi.mock('../src/ingestion/enrichment/openLibrary.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ingestion/enrichment/openLibrary.js')>()
+  return {
+    ...actual,
+    searchWork: vi.fn().mockResolvedValue(null),
+    fetchCover: vi.fn(),
+  }
+})
 
 let app: import('express').Express
 
@@ -40,6 +44,13 @@ describe('enrichment routes', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
     }
     expect(statusRes.body.status).toBe('completed')
-    expect(statusRes.body.result).toEqual({ attempted: 0, genreUpdated: 0, coverUpdated: 0, skipped: 0, failed: 0 })
+    expect(statusRes.body.result).toEqual({
+      attempted: 0,
+      genreUpdated: 0,
+      coverUpdated: 0,
+      skipped: 0,
+      failed: 0,
+      abortedDueToUnavailability: false,
+    })
   })
 })

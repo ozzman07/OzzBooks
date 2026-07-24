@@ -3,7 +3,7 @@
 // year, not a series position — see the documented false positive this
 // guards against: "Odyssey Series/1997 - 3001 The Final Odyssey" would
 // otherwise misread either number as the book's place in the series).
-const MAX_PLAUSIBLE_SERIES_NUMBER = 200
+export const MAX_PLAUSIBLE_SERIES_NUMBER = 200
 
 // "#" doesn't get a \b guard — it's a non-word character, so \b never
 // matches immediately before it at the start of a string (no left

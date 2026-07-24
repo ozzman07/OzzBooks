@@ -4,10 +4,19 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../src/ingestion/enrichment/openLibrary.js', () => ({
-  searchWork: vi.fn(),
-  fetchCover: vi.fn(),
-}))
+// Keeps the real OpenLibraryUnavailableError class (not just searchWork/
+// fetchCover mocked out) — enrichBooks.ts does `err instanceof
+// OpenLibraryUnavailableError` against this same mocked module path, so a
+// mock that dropped the class entirely would make that check see
+// `undefined` and throw a TypeError instead of behaving as tested below.
+vi.mock('../src/ingestion/enrichment/openLibrary.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ingestion/enrichment/openLibrary.js')>()
+  return {
+    ...actual,
+    searchWork: vi.fn(),
+    fetchCover: vi.fn(),
+  }
+})
 
 beforeAll(async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-enrich-'))
@@ -108,6 +117,36 @@ describe('enrichBooks', () => {
     expect(cleanedTitles).toContain('Congo')
   })
 
+  it('strips a leading "Series N -" prefix, keeping the real title after it', async () => {
+    // Confirmed directly against Open Library: the old behavior (stripping
+    // everything AFTER the dash, same regex as the "Congo - Michael
+    // Crichton" case above) queried "Cinder Spires 1" and got zero
+    // results; querying "The Aeronaut's Windlass" found it immediately.
+    // This is this library's dominant series-title tagging convention, the
+    // mirror image of the trailing-suffix case.
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue(null)
+
+    const sourceId = await insertSource()
+    await insertBook(sourceId, { genre: null, title: "Cinder Spires 1 - The Aeronaut's Windlass" })
+    await insertBook(sourceId, { genre: null, title: 'Dresden Files 1 - Storm Front' })
+    // A real in-title number (a year, not a series position) must NOT be
+    // misread as a series-number prefix — same plausibility ceiling as
+    // deriveSeriesNumberFromName's documented "Odyssey Series/1997 - 3001
+    // The Final Odyssey" case.
+    await insertBook(sourceId, { genre: null, title: '1997 - 3001 The Final Odyssey' })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    await enrichBooks()
+
+    const cleanedTitles = vi.mocked(searchWork).mock.calls.map((call) => call[0])
+    // The leading-article strip (already existing behavior, applied last)
+    // still runs on the newly-exposed title, same as any other book's.
+    expect(cleanedTitles).toContain("Aeronaut's Windlass")
+    expect(cleanedTitles).toContain('Storm Front')
+    expect(cleanedTitles).toContain('1997')
+  })
+
   it('populates genre on a confident match and stamps the attempt', async () => {
     const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
     vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null })
@@ -180,5 +219,35 @@ describe('enrichBooks', () => {
     const db = getDb()
     expect((db.prepare('SELECT * FROM books WHERE id = ?').get(failingBook) as any).metadata_enrichment_attempted_at).toBeTruthy()
     expect((db.prepare('SELECT * FROM books WHERE id = ?').get(okBook) as any).genre).toBe('Sci-Fi')
+  })
+
+  it('stops the run early on OpenLibraryUnavailableError, leaving the rest unattempted for next time', async () => {
+    const { searchWork, OpenLibraryUnavailableError } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork)
+      .mockResolvedValueOnce({ genre: 'Fantasy', coverId: null }) // succeeds first
+      .mockRejectedValueOnce(new OpenLibraryUnavailableError('Open Library search request failed or timed out'))
+      .mockResolvedValueOnce({ genre: 'Mystery', coverId: null }) // must never be reached
+
+    const sourceId = await insertSource()
+    const okBook = await insertBook(sourceId, { genre: null, title: 'First Book' })
+    const unreachedBook1 = await insertBook(sourceId, { genre: null, title: 'Second Book' })
+    const unreachedBook2 = await insertBook(sourceId, { genre: null, title: 'Third Book' })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    const result = await enrichBooks()
+
+    expect(result.abortedDueToUnavailability).toBe(true)
+    expect(result.attempted).toBe(1)
+    expect(result.genreUpdated).toBe(1)
+    expect(searchWork).toHaveBeenCalledTimes(2) // never reached the third book
+
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    expect((db.prepare('SELECT * FROM books WHERE id = ?').get(okBook) as any).genre).toBe('Fantasy')
+    // Left un-stamped on purpose so the next run — nightly or a manual
+    // Settings retry — picks these up again instead of treating a
+    // never-actually-attempted book as a settled no-match.
+    expect((db.prepare('SELECT * FROM books WHERE id = ?').get(unreachedBook1) as any).metadata_enrichment_attempted_at).toBeNull()
+    expect((db.prepare('SELECT * FROM books WHERE id = ?').get(unreachedBook2) as any).metadata_enrichment_attempted_at).toBeNull()
   })
 })
