@@ -112,30 +112,41 @@ export interface BrowseEntry {
  * in this folder), not book-candidate discovery, and doesn't need
  * multi-part M4B grouping or DRM warnings beyond filtering DRM files out
  * of the listing entirely.
+ *
+ * The per-folder "does it have mp3s" check runs in parallel (Promise.all),
+ * not sequentially — confirmed against the real library this was built
+ * for: browsing the source root (234 author folders) took ~3s for the
+ * initial listing plus a further ~28s doing that check one folder at a
+ * time over the NAS's network filesystem, all with no loading indicator
+ * on the client — indistinguishable from "Browse instead" doing nothing
+ * at all. Parallelized, the same check takes well under a second.
  */
 export async function browseSourceDirectory(source: SourceRow, relativePath: string): Promise<BrowseEntry[]> {
   const targetDir = resolveWithinScope(source, relativePath)
   const entries = await readdir(targetDir, { withFileTypes: true })
-  const results: BrowseEntry[] = []
 
-  for (const entry of entries) {
-    const entryRelative = path.join(relativePath, entry.name)
-    if (entry.isDirectory()) {
-      const childEntries = await readdir(path.join(targetDir, entry.name), { withFileTypes: true })
-      const hasMp3 = childEntries.some((e) => e.isFile() && e.name.toLowerCase().endsWith('.mp3'))
-      results.push({
-        name: entry.name,
-        path: entryRelative,
-        type: 'folder',
-        selectable: hasMp3,
-        format: hasMp3 ? 'mp3_folder' : undefined,
-      })
-    } else if (entry.isFile() && !isDrmFile(entry.name) && isM4bFile(entry.name)) {
-      results.push({ name: entry.name, path: entryRelative, type: 'file', selectable: true, format: 'm4b' })
-    }
-  }
+  const results = await Promise.all(
+    entries.map(async (entry): Promise<BrowseEntry | null> => {
+      const entryRelative = path.join(relativePath, entry.name)
+      if (entry.isDirectory()) {
+        const childEntries = await readdir(path.join(targetDir, entry.name), { withFileTypes: true })
+        const hasMp3 = childEntries.some((e) => e.isFile() && e.name.toLowerCase().endsWith('.mp3'))
+        return {
+          name: entry.name,
+          path: entryRelative,
+          type: 'folder',
+          selectable: hasMp3,
+          format: hasMp3 ? 'mp3_folder' : undefined,
+        }
+      }
+      if (entry.isFile() && !isDrmFile(entry.name) && isM4bFile(entry.name)) {
+        return { name: entry.name, path: entryRelative, type: 'file', selectable: true, format: 'm4b' }
+      }
+      return null
+    }),
+  )
 
-  return results.sort((a, b) => a.name.localeCompare(b.name))
+  return results.filter((r): r is BrowseEntry => r !== null).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /**
