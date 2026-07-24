@@ -28,6 +28,7 @@ export function RelinkBook() {
   const [browsePath, setBrowsePath] = useState('')
   const [browseEntries, setBrowseEntries] = useState<ApiBrowseEntry[]>([])
   const [browseError, setBrowseError] = useState<string | null>(null)
+  const [browseLoading, setBrowseLoading] = useState(false)
 
   const [target, setTarget] = useState<Target | null>(null)
   const [preview, setPreview] = useState<ApiRelinkPreview | null>(null)
@@ -51,10 +52,27 @@ export function RelinkBook() {
 
   useEffect(() => {
     if (!browsing || !book) return
+    // A large real library's root folder can take a couple of seconds even
+    // parallelized server-side (network filesystem latency) — without
+    // `cancelled`, navigating to a second folder before the first request
+    // resolves could let the stale first response overwrite the second
+    // folder's already-loaded entries.
+    let cancelled = false
     setBrowseError(null)
+    setBrowseLoading(true)
     browseSource(book.source_id, browsePath)
-      .then(setBrowseEntries)
-      .catch((err) => setBrowseError(err instanceof Error ? err.message : String(err)))
+      .then((entries) => {
+        if (!cancelled) setBrowseEntries(entries)
+      })
+      .catch((err) => {
+        if (!cancelled) setBrowseError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => {
+        if (!cancelled) setBrowseLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [browsing, browsePath, book])
 
   async function selectTarget(t: Target) {
@@ -176,8 +194,9 @@ export function RelinkBook() {
             </button>
           </div>
           {browseError && <p className="text-xs text-red-400">{browseError}</p>}
+          {browseLoading && <p className="text-sm text-subtle">Loading…</p>}
           <ul className="flex flex-col gap-2">
-            {browseEntries.map((entry) => (
+            {!browseLoading && browseEntries.map((entry) => (
               <li key={entry.path} className="flex items-center gap-2">
                 {entry.type === 'folder' ? (
                   <button
