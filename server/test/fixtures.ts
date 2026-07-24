@@ -30,6 +30,9 @@ export interface TestLibrary {
   toDeleteBackupFilePath: string
   corruptCoverBookPath: string
   m4aBookPath: string
+  flatSeriesBook1Path: string
+  flatSeriesBook2Path: string
+  loneStandaloneBookPath: string
 }
 
 async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
@@ -360,6 +363,49 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     'aac',
   ])
 
+  // --- Flat series folder: two .m4b files sitting directly inside a series
+  // folder, no per-book subfolder — the real "Codex Alera"/"Jack Reacher"
+  // pattern this session's sibling-counting fix addresses. Sharing that
+  // folder with more than one book is what promotes it to a series name;
+  // see the lone-standalone-in-its-own-folder case right below for the
+  // contrasting one-book case that must NOT become a series. ---
+  const flatSeriesDir = path.join(root, 'Flat Series Author', 'Flat Series')
+  await mkdir(flatSeriesDir, { recursive: true })
+  const flatSeriesBook1Path = path.join(flatSeriesDir, 'Flat Series 1 - Book One.m4b')
+  await makeTone(flatSeriesBook1Path, 1, [
+    '-metadata',
+    'title=Flat Series 1 - Book One',
+    '-metadata',
+    'artist=Flat Series Author',
+    '-c:a',
+    'aac',
+  ])
+  const flatSeriesBook2Path = path.join(flatSeriesDir, 'Flat Series 2 - Book Two.m4b')
+  await makeTone(flatSeriesBook2Path, 1, [
+    '-metadata',
+    'title=Flat Series 2 - Book Two',
+    '-metadata',
+    'artist=Flat Series Author',
+    '-c:a',
+    'aac',
+  ])
+
+  // --- Lone standalone book sitting in its own wrapper folder, structurally
+  // identical (2 path segments) to each of the flat-series files above —
+  // the sibling count is what must tell these apart. Alone in its folder,
+  // so it must NOT be promoted to a series of its own. ---
+  const loneStandaloneDir = path.join(root, 'Flat Series Author', 'Lone Standalone Book')
+  await mkdir(loneStandaloneDir, { recursive: true })
+  const loneStandaloneBookPath = path.join(loneStandaloneDir, 'Lone Standalone Book.m4b')
+  await makeTone(loneStandaloneBookPath, 1, [
+    '-metadata',
+    'title=Lone Standalone Book',
+    '-metadata',
+    'artist=Flat Series Author',
+    '-c:a',
+    'aac',
+  ])
+
   return {
     root,
     mp3FolderDir,
@@ -384,5 +430,8 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     toDeleteBackupFilePath,
     corruptCoverBookPath,
     m4aBookPath,
+    flatSeriesBook1Path,
+    flatSeriesBook2Path,
+    loneStandaloneBookPath,
   }
 }

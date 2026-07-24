@@ -184,31 +184,74 @@ function deriveAuthorFromFolder(pathScope: string, filePath: string): string | n
  * folder sits inside an extra layer between it and the author folder (e.g.
  * "Butcher, Jim/The Dresden Files/The Dresden Files 01.0 - Storm Front/"),
  * that middle folder is a reliable series name for the vast majority of
- * this library's series. Returns null for books that sit directly under
- * their author folder (no series layer) — a stable, low-risk v1 ahead of
- * the planned LLM-assisted extraction, which will also fill in
- * series_number (this only derives the name; a reliable number can't be
- * extracted from folder names alone — e.g. "Odyssey Series/1997 - 3001 The
- * Final Odyssey" would misread the year 1997 as the series position).
+ * this library's series.
+ *
+ * Two segment counts matter:
+ *  - 3+ segments (author/series-folder/book-folder): the folder above the
+ *    book's own folder is always the series, regardless of how many other
+ *    books share it — a "series" folder holding just one book-folder today
+ *    still reads as a series (e.g. a first entry added before its sequel).
+ *  - Exactly 2 segments (author/folder-with-file-directly-inside, no
+ *    separate book folder): ambiguous from the path alone — this could be
+ *    a series folder with several books sitting flat inside it, or just
+ *    one standalone book's own wrapper folder. siblingBookCount (how many
+ *    other candidates share this exact folder, passed in by the caller
+ *    from a full-source scan) breaks the tie: more than one sibling means
+ *    treat the folder as the series name; exactly one means it's just that
+ *    book's own folder, not a series.
+ * Returns null for books that sit directly under their author folder with
+ * no folder layer at all (0-1 segments).
  *
  * Known imperfection, accepted for now: a deep "collected works" folder
  * (e.g. "Brandon Sanderson Cosmere Collection" containing Mistborn,
  * Elantris, Stormlight Archive, etc. each in their own subfolder) reads as
- * one broad "series" rather than each actual sub-series — the LLM pass
- * will disambiguate this later.
+ * one broad "series" rather than each actual sub-series — a future
+ * LLM-assisted pass would be needed to disambiguate this.
  */
 /** Segment-array core — see deriveAuthorFromSegments's docstring above,
- * same reasoning applies here. */
-export function deriveSeriesFromSegments(segments: string[]): string | null {
-  if (segments.length < 3) return null // directly under the author folder — no series layer
+ * same reasoning applies here. siblingBookCount defaults to 1 (no
+ * promotion) for callers with no full-scan sibling context, e.g. a single-
+ * candidate relink. */
+export function deriveSeriesFromSegments(segments: string[], siblingBookCount = 1): string | null {
+  if (segments.length < 2) return null // directly under the author folder — no folder layer at all
+  if (segments.length === 2) {
+    if (siblingBookCount < 2) return null // just this one book's own wrapper folder, not a series
+    const seriesFolder = segments[1]
+    if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
+    return seriesFolder
+  }
   const seriesFolder = segments[segments.length - 2]
   if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
   return seriesFolder
 }
 
-function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string): string | null {
+function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string, siblingBookCount = 1): string | null {
   const relative = path.relative(pathScope, bookOwnFolder)
-  return deriveSeriesFromSegments(relative.split(path.sep))
+  return deriveSeriesFromSegments(relative.split(path.sep), siblingBookCount)
+}
+
+/** The folder that directly contains a book's audio — its own dedicated
+ * folder for a multi-part group, or (for a single file) the folder the
+ * file happens to sit in, which the caller doesn't yet know is the book's
+ * own folder or a flat series folder shared with siblings. Extracted so
+ * both applyIngestedCandidate and the sibling-counting pass in scanSource
+ * compute this identically. */
+export function resolveBookOwnFolder(candidate: Candidate): string {
+  return candidate.groupFolder ?? (candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath))
+}
+
+/** Counts, per book-own-folder (relative to the source root), how many
+ * scan candidates share it — the signal deriveSeriesFromSegments needs to
+ * tell a flat series folder (multiple books sharing it) apart from a
+ * standalone book's own wrapper folder (exactly one). Built once per scan
+ * from the full candidate list, then looked up per-candidate. */
+export function buildSeriesSiblingCounts(source: SourceRow, candidates: Candidate[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const candidate of candidates) {
+    const relative = path.relative(source.path_scope, resolveBookOwnFolder(candidate))
+    counts.set(relative, (counts.get(relative) ?? 0) + 1)
+  }
+  return counts
 }
 
 export async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
@@ -378,6 +421,7 @@ export async function applyIngestedCandidate(
   candidate: Candidate,
   existingBookId: string | undefined,
   hash: string,
+  seriesSiblingCounts?: Map<string, number>,
 ): Promise<{ bookId: string; created: boolean }> {
   const ingested = await ingestCandidate(candidate)
   const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
@@ -385,9 +429,9 @@ export async function applyIngestedCandidate(
   // book's own folder; filePath/hashInput point one level deeper, into the
   // first disc subfolder, which would otherwise misread as an extra path
   // segment for series derivation and miss a parent-folder cover.jpg.
-  const bookOwnFolder =
-    candidate.groupFolder ?? (candidate.format === 'mp3_folder' ? candidate.filePath : path.dirname(candidate.filePath))
-  const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder)
+  const bookOwnFolder = resolveBookOwnFolder(candidate)
+  const siblingBookCount = seriesSiblingCounts?.get(path.relative(source.path_scope, bookOwnFolder)) ?? 1
+  const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder, siblingBookCount)
   const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
     existingBookId,
     seriesName,
@@ -458,6 +502,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
   }
 
   const candidates = await findCandidates(source.path_scope)
+  const seriesSiblingCounts = buildSeriesSiblingCounts(source, candidates)
 
   const result: ScanResult = {
     found: candidates.length,
@@ -511,7 +556,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         }
       }
 
-      const { created } = await applyIngestedCandidate(source, candidate, existing?.id, hash)
+      const { created } = await applyIngestedCandidate(source, candidate, existing?.id, hash, seriesSiblingCounts)
       if (created) result.created++
       else result.updated++
     } catch (err) {

@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(13) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book" + ".m4a Extension Test Book"
-    expect(result.found).toBe(14) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(16) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book" + ".m4a Extension Test Book" + 2 flat-series books + lone standalone book
+    expect(result.found).toBe(17) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,7 +44,7 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(13)
+    expect(books).toHaveLength(16)
 
     // .m4a is the same MPEG-4/AAC container as .m4b (Apple's convention for
     // "this M4A has audiobook chapter markers") — must be discovered and
@@ -167,6 +167,28 @@ describe('ingestion', () => {
     // A book sitting directly under its author folder (no series layer at
     // all) must also get no series.
     expect(folderAuthorBook.series_name).toBeNull()
+
+    // Flat series folder (Codex Alera/Jack Reacher pattern): two .m4b files
+    // sitting directly in "Flat Series", no per-book subfolder. Sharing
+    // that folder with a sibling is what promotes it to a series — both
+    // books must pick it up, and the series number must still come from
+    // the filename via the existing heuristic.
+    const flatBook1 = books.find((b) => b.title === 'Flat Series 1 - Book One')
+    const flatBook2 = books.find((b) => b.title === 'Flat Series 2 - Book Two')
+    expect(flatBook1).toBeTruthy()
+    expect(flatBook2).toBeTruthy()
+    expect(flatBook1.series_name).toBe('Flat Series')
+    expect(flatBook2.series_name).toBe('Flat Series')
+    expect(flatBook1.series_number).toBe(1)
+    expect(flatBook2.series_number).toBe(2)
+
+    // A lone standalone book sitting alone in its own wrapper folder is
+    // structurally identical (2 path segments) to each flat-series book
+    // above — no sibling sharing that folder is what must keep it un-
+    // promoted, unlike its neighbors.
+    const loneBook = books.find((b) => b.title === 'Lone Standalone Book')
+    expect(loneBook).toBeTruthy()
+    expect(loneBook.series_name).toBeNull()
 
     // "zzzSource files" backup folders (kept as a just-in-case original
     // when combining files into one audiobook — the endorsed naming
