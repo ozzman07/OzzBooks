@@ -171,6 +171,14 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
   const credentials = await getValidAccessToken(source, provider)
   const entries = await provider.listTree(source, credentials)
   const candidates = discoverCandidates(entries)
+  // Same tie-breaker as the local pipeline's buildSeriesSiblingCounts: a
+  // flat folder (file/group sitting directly under it, no separate book
+  // folder) only reads as a series if more than one candidate shares it.
+  const seriesSiblingCounts = new Map<string, number>()
+  for (const candidate of candidates) {
+    const key = candidate.seriesSegments.join('/')
+    seriesSiblingCounts.set(key, (seriesSiblingCounts.get(key) ?? 0) + 1)
+  }
 
   const result: ScanResult = { found: candidates.length, created: 0, updated: 0, markedMissing: 0, skippedDuplicates: 0, failed: 0 }
   const seenFilePaths = new Set<string>()
@@ -225,7 +233,8 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
             )
 
       const author = deriveAuthorFromSegments(candidate.authorSegments) ?? ingested.author
-      const seriesName = deriveSeriesFromSegments(candidate.seriesSegments)
+      const siblingBookCount = seriesSiblingCounts.get(candidate.seriesSegments.join('/')) ?? 1
+      const seriesName = deriveSeriesFromSegments(candidate.seriesSegments, siblingBookCount)
       const bookId = existing?.id ?? randomUUID()
       const artwork = await extractArtwork(bookId, NO_LOCAL_FOLDER, ingested.artworkMetadata)
 
