@@ -366,6 +366,12 @@ describe('ingestion', () => {
     expect(books[0].id).toBe(bookBefore.id) // same book id — progress/bookmarks/downloads stay valid
     expect(books[0].file_path).toBe(movedDir) // mp3_folder format: file_path is the folder itself
     expect(books[0].status).toBe('active')
+
+    const createdLog = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'created'").get(bookBefore.id) as any
+    expect(createdLog).toBeTruthy()
+    const relinkedLog = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'relinked'").get(bookBefore.id) as any
+    expect(relinkedLog).toBeTruthy()
+    expect(relinkedLog.detail).toContain(originalDir)
   }, 30_000)
 
   it('auto-relinks a renamed disc-set parent folder by content hash', async () => {

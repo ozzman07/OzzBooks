@@ -12,6 +12,7 @@ import { artworkRouter } from './routes/artwork.js'
 import { googleAuthRouter } from './routes/googleAuth.js'
 import { enrichmentRouter } from './routes/enrichment.js'
 import { settingsRouter } from './routes/settings.js'
+import { activityLogRouter } from './routes/activityLog.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // server/src/api -> repo root -> app/dist
@@ -48,6 +49,7 @@ export function createApp() {
   app.use('/api/chapters', streamRouter)
   app.use('/api/enrichment', enrichmentRouter)
   app.use('/api/settings', settingsRouter)
+  app.use('/api/activity-log', activityLogRouter)
 
   // Serves the built PWA from the same origin as the API when present, so
   // the whole app is one Tailscale Serve endpoint in production — no CORS

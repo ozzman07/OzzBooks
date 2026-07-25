@@ -293,6 +293,11 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
     expect(res.body.series_name).toBe('Manual Series')
     expect(res.body.series_number).toBe(5)
     expect(res.body.series_number_source).toBe('manual')
+
+    const { getDb } = await import('../src/db/index.js')
+    const logEntry = getDb().prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'series_updated'").get(bookId) as any
+    expect(logEntry).toBeTruthy()
+    expect(logEntry.detail).toContain('Manual Series')
   })
 
   it('un-locks the series number when explicitly cleared back to null', async () => {
@@ -316,10 +321,18 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
       .set('Authorization', `Bearer ${TEST_TOKEN}`)
       .send({ seriesName: 'Untouched Series', seriesNumber: 1 })
 
+    const { getDb } = await import('../src/db/index.js')
+    const logCountBefore = (getDb().prepare('SELECT COUNT(*) AS n FROM activity_log WHERE book_id = ?').get(bookId) as any).n
+
     const res = await request(app).patch(`/api/books/${bookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`).send({})
     expect(res.status).toBe(200)
     expect(res.body.series_name).toBe('Untouched Series')
     expect(res.body.series_number).toBe(1)
+
+    // A no-op PATCH (nothing in the body, everything left as-is) must not
+    // log a phantom "series_updated" event.
+    const logCountAfter = (getDb().prepare('SELECT COUNT(*) AS n FROM activity_log WHERE book_id = ?').get(bookId) as any).n
+    expect(logCountAfter).toBe(logCountBefore)
   })
 
   it('404s for a nonexistent book', async () => {

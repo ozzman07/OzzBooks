@@ -90,3 +90,58 @@ describe('browseSourceDirectory', () => {
     ])
   })
 })
+
+describe('confirmRelink', () => {
+  it('relinks a missing book to a real file and logs it as manually relinked', async () => {
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const root = await mkdtemp(path.join(tmpdir(), 'ozzbooks-confirm-relink-'))
+    const authorDir = path.join(root, 'Some Author')
+    await mkdir(authorDir, { recursive: true })
+    const newFilePath = path.join(authorDir, 'Book One (found).m4b')
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=1',
+      '-metadata',
+      'title=Book One',
+      '-metadata',
+      'artist=Some Author',
+      '-c:a',
+      'aac',
+      newFilePath,
+    ])
+
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    const source = await insertSource(root)
+
+    // A missing book, simulating one whose original file is gone — no
+    // content_hash yet, matching what a book row looks like before its
+    // very first successful scan/relink.
+    const bookId = randomUUID()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, author, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'm4b', 'Book One', 'Some Author', 'missing', datetime('now'), datetime('now'))`,
+    ).run(bookId, source.id, path.join(authorDir, 'Book One (gone).m4b'))
+    const book = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+
+    const { confirmRelink } = await import('../src/ingestion/relink.js')
+    const relativePath = path.join('Some Author', 'Book One (found).m4b')
+    const result = await confirmRelink(source, book, relativePath, 'm4b')
+    expect(result.bookId).toBe(bookId)
+
+    const bookAfter = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    expect(bookAfter.status).toBe('active')
+    expect(bookAfter.file_path).toBe(newFilePath)
+
+    const logEntry = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'relinked'").get(bookId) as any
+    expect(logEntry).toBeTruthy()
+    expect(logEntry.detail).toContain('Manually relinked')
+    expect(logEntry.detail).toContain(relativePath)
+  })
+})

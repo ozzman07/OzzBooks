@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { readdir, stat } from 'node:fs/promises'
 import { getDb } from '../db/index.js'
+import { logActivity } from '../db/activityLog.js'
 import type { BookRow, SourceRow } from '../types.js'
 import { findCandidates, ingestCandidate, applyIngestedCandidate, isM4bFile, type Candidate } from './scan.js'
 import { contentHash } from './contentHash.js'
@@ -230,5 +231,6 @@ export async function confirmRelink(
   const candidate = await buildCandidate(source, relativePath, format)
   const hash = await contentHash(candidate.hashInput)
   const { bookId } = await applyIngestedCandidate(source, candidate, book.id, hash)
+  logActivity(bookId, book.title, book.author, 'relinked', `Manually relinked to ${relativePath}`)
   return { bookId }
 }

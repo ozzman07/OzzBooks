@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { useTheme, type ThemePreference } from '../theme/ThemeContext'
 import {
@@ -11,10 +11,12 @@ import {
   fetchAppSettings,
   updateAppSettings,
   backfillSeriesNumbers,
+  fetchActivityLogSummary,
   type ApiSource,
   type ApiEnrichmentState,
   type ApiAppSettings,
   type ApiSeriesNumberBackfillResult,
+  type ApiActivityLogSummary,
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
@@ -205,6 +207,36 @@ function SeriesNumberBackfillCard() {
         </p>
       )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+// Just a snapshot + link — the actual list lives on its own page
+// (ActivityLog.tsx), same "card summarizes, dedicated page has the
+// detail" split as the Needs Attention page will follow next.
+function ActivityLogCard() {
+  const [summary, setSummary] = useState<ApiActivityLogSummary | null>(null)
+
+  useEffect(() => {
+    fetchActivityLogSummary()
+      .then(setSummary)
+      .catch(() => setSummary(null))
+  }, [])
+
+  return (
+    <div className="mt-3 rounded border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm text-primary">Activity log</p>
+          <p className="text-xs text-subtle">Books added, relinked, removed, or updated automatically.</p>
+        </div>
+        <Link
+          to="/activity-log"
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary"
+        >
+          {summary ? `${summary.new} new · ${summary.total} total` : 'View'}
+        </Link>
+      </div>
     </div>
   )
 }
@@ -566,6 +598,7 @@ export function Settings() {
           <MetadataEnrichmentCard />
           <NightlyRescanCard />
           <SeriesNumberBackfillCard />
+          <ActivityLogCard />
         </section>
 
         <section className="rounded-lg border border-border p-4">

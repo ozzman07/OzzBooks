@@ -195,6 +195,35 @@ export function updateAppSettings(patch: {
   return apiFetch<ApiAppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) })
 }
 
+export type ActivityAction = 'created' | 'relinked' | 'missing' | 'removed' | 'metadata_updated' | 'series_updated'
+
+export interface ApiActivityLogEntry {
+  id: string
+  book_id: string | null
+  title: string
+  author: string | null
+  action: ActivityAction
+  detail: string | null
+  created_at: string
+}
+
+export interface ApiActivityLogSummary {
+  total: number
+  new: number
+}
+
+export function fetchActivityLog(): Promise<ApiActivityLogEntry[]> {
+  return apiFetch<ApiActivityLogEntry[]>('/api/activity-log')
+}
+
+export function fetchActivityLogSummary(): Promise<ApiActivityLogSummary> {
+  return apiFetch<ApiActivityLogSummary>('/api/activity-log/summary')
+}
+
+export function markActivityLogViewed(): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>('/api/activity-log/mark-viewed', { method: 'POST' })
+}
+
 export interface ApiEnrichmentResult {
   attempted: number
   genreUpdated: number

@@ -73,6 +73,13 @@ function migrate(db: Database.Database): void {
       db.exec(`ALTER TABLE books ADD COLUMN ${name} ${type}`)
     }
   }
+
+  const appSettingsColumns = new Set(
+    (db.prepare('PRAGMA table_info(app_settings)').all() as { name: string }[]).map((c) => c.name),
+  )
+  if (!appSettingsColumns.has('activity_log_last_viewed_at')) {
+    db.exec('ALTER TABLE app_settings ADD COLUMN activity_log_last_viewed_at TEXT')
+  }
 }
 
 export function closeDb(): void {

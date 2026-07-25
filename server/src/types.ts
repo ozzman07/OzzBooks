@@ -70,5 +70,18 @@ export interface AppSettingsRow {
   nightly_rescan_enabled: number // SQLite INTEGER 0/1, not a JS boolean
   nightly_rescan_time: string
   nightly_rescan_last_run_date: string | null
+  activity_log_last_viewed_at: string | null
   updated_at: string
+}
+
+export type ActivityAction = 'created' | 'relinked' | 'missing' | 'removed' | 'metadata_updated' | 'series_updated'
+
+export interface ActivityLogRow {
+  id: string
+  book_id: string | null
+  title: string
+  author: string | null
+  action: ActivityAction
+  detail: string | null
+  created_at: string
 }

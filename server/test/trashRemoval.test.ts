@@ -94,6 +94,11 @@ describe('removeTrashedBooks', () => {
 
       await expect(access(thumbPath)).rejects.toThrow()
       await expect(access(fullPath)).rejects.toThrow()
+
+      const logEntry = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'removed'").get(bookBefore.id) as any
+      expect(logEntry).toBeTruthy()
+      expect(logEntry.title).toBe('Book One')
+      expect(logEntry.detail).toContain('trash folder')
     },
     30_000,
   )
@@ -123,6 +128,9 @@ describe('removeTrashedBooks', () => {
 
       const bookAfter = db.prepare('SELECT * FROM books WHERE id = ?').get(bookBefore.id) as any
       expect(bookAfter.status).toBe('missing')
+
+      const logEntry = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'missing'").get(bookBefore.id) as any
+      expect(logEntry).toBeTruthy()
     },
     30_000,
   )
