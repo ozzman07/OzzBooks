@@ -3,6 +3,7 @@ import { readdir, unlink } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
+import { logActivity } from '../db/activityLog.js'
 import type { BookRow, SourceRow } from '../types.js'
 import { ingestMp3Folder, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { ingestM4b, isDrmFile } from './m4b.js'
@@ -146,18 +147,23 @@ async function removeTrashedBooks(
 
   for (const book of newlyMissing) {
     if (book.content_hash && trashHashes.has(book.content_hash)) {
+      const trashPath = trashHashes.get(book.content_hash)
       await deleteBookAndArtwork(book)
       result.removedAsTrash++
+      logActivity(book.id, book.title, book.author, 'removed', `Same content found in a trash folder: ${trashPath}`)
     } else {
       db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
       result.markedMissing++
+      logActivity(book.id, book.title, book.author, 'missing', `File no longer found at ${book.file_path}`)
     }
   }
 
   for (const book of alreadyMissing) {
     if (book.content_hash && trashHashes.has(book.content_hash)) {
+      const trashPath = trashHashes.get(book.content_hash)
       await deleteBookAndArtwork(book)
       result.removedAsTrash++
+      logActivity(book.id, book.title, book.author, 'removed', `Same content found in a trash folder: ${trashPath}`)
     }
   }
 }
@@ -680,9 +686,25 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         }
       }
 
-      const { created } = await applyIngestedCandidate(source, candidate, existing?.id, hash, seriesSiblingCounts)
-      if (created) result.created++
-      else result.updated++
+      const wasHashRelink = Boolean(existing && existing.file_path !== candidate.filePath)
+      const previousPath = existing?.file_path
+
+      const { bookId, created } = await applyIngestedCandidate(source, candidate, existing?.id, hash, seriesSiblingCounts)
+      if (created) {
+        result.created++
+        const book = db.prepare('SELECT title, author FROM books WHERE id = ?').get(bookId) as
+          | { title: string; author: string | null }
+          | undefined
+        if (book) logActivity(bookId, book.title, book.author, 'created')
+      } else {
+        result.updated++
+        if (wasHashRelink) {
+          const book = db.prepare('SELECT title, author FROM books WHERE id = ?').get(bookId) as
+            | { title: string; author: string | null }
+            | undefined
+          if (book) logActivity(bookId, book.title, book.author, 'relinked', `Same content found at a new path — moved from ${previousPath}`)
+        }
+      }
     } catch (err) {
       // A single unreadable/corrupt file (e.g. a truncated M4B with no moov
       // atom) shouldn't abort ingestion for the rest of the library — log

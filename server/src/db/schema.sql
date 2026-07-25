@@ -85,6 +85,32 @@ CREATE TABLE IF NOT EXISTS app_settings (
   nightly_rescan_enabled INTEGER NOT NULL DEFAULT 0,
   nightly_rescan_time TEXT NOT NULL DEFAULT '02:00', -- HH:MM, 24h, server-local time
   nightly_rescan_last_run_date TEXT, -- YYYY-MM-DD, server-local; null until it has ever run
+  -- Drives the Activity Log's "N new" count on Settings — set to now()
+  -- whenever the Activity Log page is opened, null until first visited
+  -- (everything counts as new until then).
+  activity_log_last_viewed_at TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 INSERT OR IGNORE INTO app_settings (id) VALUES (1);
+
+-- A running record of book-level events worth surfacing to the user —
+-- deliberately not a generic audit-everything table (routine "still here,
+-- nothing changed" refreshes on every scan are NOT logged, only genuine
+-- state changes), so this stays a signal, not noise. No FK to books(id):
+-- a 'removed' entry must outlive the book row it describes, hence title/
+-- author are snapshotted here rather than joined at read time.
+CREATE TABLE IF NOT EXISTS activity_log (
+  id TEXT PRIMARY KEY,
+  book_id TEXT,
+  title TEXT NOT NULL,
+  author TEXT,
+  action TEXT NOT NULL CHECK (action IN ('created', 'relinked', 'missing', 'removed', 'metadata_updated', 'series_updated')),
+  detail TEXT,
+  -- Millisecond precision ('subsec'), not just datetime('now')'s default
+  -- whole-second — the "N new" summary compares this against
+  -- app_settings.activity_log_last_viewed_at with a strict >, and several
+  -- events logged in the same second as a page view is a realistic case,
+  -- not just a test artifact.
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC);

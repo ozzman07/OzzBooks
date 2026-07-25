@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from '../../../db/index.js'
+import { logActivity } from '../../../db/activityLog.js'
 import { extractArtwork } from '../../../ingestion/artwork.js'
 import { remoteContentHash } from '../../../ingestion/contentHash.js'
 import {
@@ -256,6 +257,9 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
       const seriesNumberSource =
         existing?.series_number_source === 'manual' ? 'manual' : ingested.seriesNumber !== null ? 'tag' : null
 
+      const wasHashRelink = Boolean(existing && existing.file_path !== candidate.id)
+      const previousPath = existing?.file_path
+
       const { created } = writeBookAndChapters(source, bookId, !existing, {
         filePath: candidate.id,
         format: candidate.format,
@@ -270,8 +274,15 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
         chapters: ingested.chapters,
       })
 
-      if (created) result.created++
-      else result.updated++
+      if (created) {
+        result.created++
+        logActivity(bookId, ingested.title, author, 'created')
+      } else {
+        result.updated++
+        if (wasHashRelink) {
+          logActivity(bookId, ingested.title, author, 'relinked', `Same content found at a new path — moved from ${previousPath}`)
+        }
+      }
     } catch (err) {
       // A single inaccessible/corrupt remote file shouldn't abort the
       // whole scan — same treatment as a corrupt local file.
@@ -293,6 +304,7 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
     if (!seenFilePaths.has(book.file_path)) {
       db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
       result.markedMissing++
+      logActivity(book.id, book.title, book.author, 'missing', `File no longer found in Drive`)
     }
   }
 

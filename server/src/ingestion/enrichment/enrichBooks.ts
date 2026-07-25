@@ -1,4 +1,5 @@
 import { getDb } from '../../db/index.js'
+import { logActivity } from '../../db/activityLog.js'
 import { saveArtworkBuffer } from '../artwork.js'
 import type { BookRow } from '../../types.js'
 import { searchWork, fetchCover, OpenLibraryUnavailableError } from './openLibrary.js'
@@ -114,15 +115,18 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
       let synopsis = book.synopsis
       let artworkThumbPath = book.artwork_thumb_path
       let artworkFullPath = book.artwork_full_path
+      const changedFields: string[] = []
 
       if (!genre && match.genre) {
         genre = match.genre
         result.genreUpdated++
+        changedFields.push('genre')
       }
 
       if (!synopsis && match.synopsis) {
         synopsis = match.synopsis
         result.synopsisUpdated++
+        changedFields.push('synopsis')
       }
 
       if (!artworkThumbPath && !artworkFullPath && match.coverId) {
@@ -133,8 +137,13 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
             artworkThumbPath = saved.thumbPath
             artworkFullPath = saved.fullPath
             result.coverUpdated++
+            changedFields.push('cover')
           }
         }
+      }
+
+      if (changedFields.length > 0) {
+        logActivity(book.id, book.title, book.author, 'metadata_updated', `Backfilled from Open Library: ${changedFields.join(', ')}`)
       }
 
       result.attempted++

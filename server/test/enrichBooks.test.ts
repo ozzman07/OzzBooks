@@ -166,9 +166,14 @@ describe('enrichBooks', () => {
 
     expect(result.genreUpdated).toBe(1)
     const { getDb } = await import('../src/db/index.js')
-    const row = getDb().prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    const db = getDb()
+    const row = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
     expect(row.genre).toBe('Fantasy fiction')
     expect(row.metadata_enrichment_attempted_at).toBeTruthy()
+
+    const logEntry = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'metadata_updated'").get(bookId) as any
+    expect(logEntry).toBeTruthy()
+    expect(logEntry.detail).toContain('genre')
   })
 
   it('populates synopsis on a confident match, same as genre', async () => {
@@ -243,9 +248,15 @@ describe('enrichBooks', () => {
 
     expect(result.skipped).toBe(1)
     const { getDb } = await import('../src/db/index.js')
-    const row = getDb().prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    const db = getDb()
+    const row = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
     expect(row.genre).toBeNull()
     expect(row.metadata_enrichment_attempted_at).toBeTruthy()
+
+    // A skip (no confident match) is a routine outcome, not an event — must
+    // not clutter the activity log.
+    const logEntry = db.prepare('SELECT * FROM activity_log WHERE book_id = ?').get(bookId)
+    expect(logEntry).toBeUndefined()
   })
 
   it('counts a failure and still stamps the attempt when the lookup throws, without stopping the batch', async () => {

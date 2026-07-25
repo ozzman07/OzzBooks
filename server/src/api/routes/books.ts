@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { getDb } from '../../db/index.js'
+import { logActivity } from '../../db/activityLog.js'
 import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
@@ -54,6 +55,19 @@ booksRouter.patch('/:id', (req, res) => {
   getDb()
     .prepare('UPDATE books SET series_name = ?, series_number = ?, series_number_source = ? WHERE id = ?')
     .run(seriesName, seriesNumber, seriesNumberSource, existing.id)
+
+  // Only a genuine change is worth a log entry — e.g. the "leave fields
+  // not present in the body untouched" call pattern (an empty PATCH to
+  // read back the current row) is a no-op and shouldn't show up as one.
+  if (seriesName !== existing.series_name || seriesNumber !== existing.series_number) {
+    logActivity(
+      existing.id,
+      existing.title,
+      existing.author,
+      'series_updated',
+      `Series set to ${seriesName ?? '(none)'}${seriesNumber !== null ? ` #${seriesNumber}` : ''}`,
+    )
+  }
 
   res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))
 })
