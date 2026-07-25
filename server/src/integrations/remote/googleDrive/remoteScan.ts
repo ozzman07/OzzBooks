@@ -158,6 +158,7 @@ function markAllMissing(source: SourceRow): ScanResult {
     skippedDuplicates: 0,
     failed: 0,
     removedAsTrash: 0,
+    autoReplaced: 0,
   }
   recordScanStats(source, result)
   return result
@@ -190,6 +191,7 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
     skippedDuplicates: 0,
     failed: 0,
     removedAsTrash: 0,
+    autoReplaced: 0,
   }
   const seenFilePaths = new Set<string>()
 

@@ -107,11 +107,11 @@ async function buildTrashHashIndex(pathScope: string): Promise<Map<string, strin
 }
 
 /** Deletes a book outright (chapters cascade via ON DELETE CASCADE) plus
- * its generated artwork files on disk — the one place this app deletes a
- * book row rather than marking it missing, reserved for the specific case
- * of its file having moved into a zzz/To Delete folder (see
- * removeTrashedBooks). Progress/bookmarks live in the separate cloud sync
- * layer, unaffected either way. */
+ * its generated artwork files on disk — reserved for the specific cases of
+ * a file having moved into a zzz/To Delete folder (removeTrashedBooks) or
+ * a just-created duplicate row being folded into an auto-replaced book's
+ * identity (autoReplaceMissingBooks). Progress/bookmarks live in the
+ * separate cloud sync layer, unaffected either way. */
 async function deleteBookAndArtwork(book: BookRow): Promise<void> {
   getDb().prepare('DELETE FROM books WHERE id = ?').run(book.id)
   for (const artworkPath of [book.artwork_thumb_path, book.artwork_full_path]) {
@@ -122,6 +122,143 @@ async function deleteBookAndArtwork(book: BookRow): Promise<void> {
       // Already gone or otherwise unreadable — not worth failing the scan over a stale thumbnail file.
     }
   }
+}
+
+interface NewlyCreatedBook {
+  bookId: string
+  candidate: Candidate
+  hash: string
+  title: string
+  author: string | null
+}
+
+// Deliberately conservative — this acts with no human review, so a false
+// positive would silently graft one book's identity onto a completely
+// different one. Same word-overlap approach as relink.ts's manual-
+// suggestion ranking, just held to a stricter bar and required to be an
+// unambiguous single winner (see autoReplaceMissingBooks).
+const AUTO_REPLACE_MIN_SCORE = 3
+
+function normalizeWordsForMatch(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(' ')
+    .filter((w) => w.length > 2)
+}
+
+// Title words only — deliberately ignores author. Candidates are already
+// scoped to the same top-level (author) folder before this is called, so
+// author words would just double-count a signal the folder scoping already
+// guarantees, and can trivially clear AUTO_REPLACE_MIN_SCORE on their own
+// for any multi-word author name (e.g. "Ursula K Le Guin" contributes 3
+// matching words with zero title overlap) — a false-positive match between
+// two otherwise-unrelated books by the same author.
+function titleMatchScore(aTitle: string, bTitle: string): number {
+  const aWords = new Set(normalizeWordsForMatch(aTitle))
+  const bWords = new Set(normalizeWordsForMatch(bTitle))
+  let score = 0
+  for (const w of aWords) if (bWords.has(w)) score++
+  return score
+}
+
+function topLevelFolderOf(pathScope: string, filePath: string): string | undefined {
+  return path.relative(pathScope, filePath).split(path.sep)[0]
+}
+
+/**
+ * A book that was re-encoded (not just renamed — a genuine content-hash
+ * change, since a rename alone already auto-relinks by hash above) shows
+ * up as two disconnected things after a plain scan: the old book stuck
+ * missing forever, and the new file sitting as an unrelated brand-new
+ * book. This finds the confident case and merges them — the new file's
+ * data gets written under the OLD book's id (same mechanism as a manual
+ * relink), and the redundant just-created duplicate row is removed —
+ * so the book's identity carries forward onto its replacement instead of
+ * needing a manual relink every time.
+ *
+ * Deliberately narrow: scoped to the same top-level (author) folder —
+ * author itself is deliberately excluded from the match score, since local
+ * candidates always derive author from that same folder name, so it would
+ * just double-count what the folder scoping already guarantees — requires
+ * a title word-overlap score at or above AUTO_REPLACE_MIN_SCORE (capped to
+ * the missing title's own word count for short titles), and only acts when
+ * that's an unambiguous single
+ * winner — no tie for the missing book's best match, and no OTHER missing
+ * book scoring as well or better against the same candidate. Anything
+ * less confident is left for removeTrashedBooks / plain missing-marking,
+ * and ultimately manual relink, rather than guessed at automatically.
+ */
+async function autoReplaceMissingBooks(
+  source: SourceRow,
+  missingBooks: BookRow[],
+  newlyCreated: NewlyCreatedBook[],
+  seriesSiblingCounts: Map<string, number>,
+  result: ScanResult,
+): Promise<Set<string>> {
+  const replacedIds = new Set<string>()
+  if (missingBooks.length === 0 || newlyCreated.length === 0) return replacedIds
+
+  const db = getDb()
+  const claimedCandidateIds = new Set<string>()
+
+  for (const missing of missingBooks) {
+    const authorFolder = topLevelFolderOf(source.path_scope, missing.file_path)
+    if (!authorFolder) continue
+
+    const sameFolderCandidates = newlyCreated.filter(
+      (c) => !claimedCandidateIds.has(c.bookId) && topLevelFolderOf(source.path_scope, c.candidate.filePath) === authorFolder,
+    )
+    if (sameFolderCandidates.length === 0) continue
+
+    // AUTO_REPLACE_MIN_SCORE is a ceiling, not a flat floor — cap it at the
+    // missing title's own significant-word count so short titles (e.g. a
+    // two-word title) can still clear the bar on a full match, rather than
+    // being permanently unmatchable because they never reach 3 words.
+    const requiredScore = Math.max(1, Math.min(AUTO_REPLACE_MIN_SCORE, normalizeWordsForMatch(missing.title).length))
+
+    const scored = sameFolderCandidates
+      .map((c) => ({ candidate: c, score: titleMatchScore(missing.title, c.title) }))
+      .sort((a, b) => b.score - a.score)
+
+    const best = scored[0]
+    if (best.score < requiredScore) continue
+    if (scored.length > 1 && scored[1].score === best.score) continue // ambiguous — two equally good matches, don't guess
+
+    // A candidate can only replace one book — make sure no OTHER missing
+    // book scores as well or better against this same new file.
+    const rivalScore = missingBooks
+      .filter((m) => m.id !== missing.id)
+      .reduce((max, m) => Math.max(max, titleMatchScore(m.title, best.candidate.title)), -1)
+    if (rivalScore >= best.score) continue
+
+    const duplicate = db.prepare('SELECT * FROM books WHERE id = ?').get(best.candidate.bookId) as BookRow | undefined
+    if (!duplicate) continue // already claimed/removed by an earlier iteration somehow — skip defensively
+
+    await applyIngestedCandidate(source, best.candidate.candidate, missing.id, best.candidate.hash, seriesSiblingCounts)
+    // The just-created duplicate's own "created" log entry is now
+    // misleading (it's not a separate book after all) — remove it before
+    // logging the merge itself.
+    db.prepare("DELETE FROM activity_log WHERE book_id = ? AND action = 'created'").run(duplicate.id)
+    await deleteBookAndArtwork(duplicate)
+
+    // The duplicate's original "created" no longer represents a real,
+    // still-existing book — this scan's counts should reflect that it
+    // ended up being a replace, not a distinct new addition.
+    result.created--
+    result.autoReplaced++
+    claimedCandidateIds.add(best.candidate.bookId)
+    replacedIds.add(missing.id)
+    logActivity(
+      missing.id,
+      best.candidate.title,
+      best.candidate.author,
+      'relinked',
+      `Auto-replaced with a re-encoded/changed file (confident match, score ${best.score}) — was ${missing.file_path}`,
+    )
+  }
+
+  return replacedIds
 }
 
 /**
@@ -399,6 +536,15 @@ export interface ScanResult {
    * of left as a permanent "missing" ghost — see removeTrashedBooks. Local
    * scans only; remote sources have no local trash-folder concept. */
   removedAsTrash: number
+  /** A missing book whose replacement (re-encoded, so a different content
+   * hash — a rename alone would have hash-relinked already) was
+   * confidently identified among this scan's newly-created books and
+   * merged onto the old book's identity instead of sitting as two
+   * separate rows (one missing, one new) — see autoReplaceMissingBooks.
+   * Counted separately from `created`, even though the replacement file
+   * technically passed through candidate ingestion once as a plain
+   * create before being merged. */
+  autoReplaced: number
 }
 
 /**
@@ -619,6 +765,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
       skippedDuplicates: 0,
       failed: 1,
       removedAsTrash: 0,
+    autoReplaced: 0,
     }
     db.prepare(
       `UPDATE sources SET
@@ -641,8 +788,10 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     skippedDuplicates: 0,
     failed: 0,
     removedAsTrash: 0,
+    autoReplaced: 0,
   }
   const seenFilePaths = new Set<string>()
+  const newlyCreated: NewlyCreatedBook[] = []
 
   // Issues reflect the current scan only — clear stale ones from last time
   // so a fixed file drops off the list instead of lingering forever.
@@ -695,7 +844,10 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         const book = db.prepare('SELECT title, author FROM books WHERE id = ?').get(bookId) as
           | { title: string; author: string | null }
           | undefined
-        if (book) logActivity(bookId, book.title, book.author, 'created')
+        if (book) {
+          logActivity(bookId, book.title, book.author, 'created')
+          newlyCreated.push({ bookId, candidate, hash, title: book.title, author: book.author })
+        }
       } else {
         result.updated++
         if (wasHashRelink) {
@@ -731,7 +883,20 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
   const alreadyMissing = db
     .prepare<[string], BookRow>("SELECT * FROM books WHERE source_id = ? AND status = 'missing'")
     .all(source.id)
-  await removeTrashedBooks(source, newlyMissing, alreadyMissing, result)
+
+  const autoReplacedIds = await autoReplaceMissingBooks(
+    source,
+    [...newlyMissing, ...alreadyMissing],
+    newlyCreated,
+    seriesSiblingCounts,
+    result,
+  )
+  await removeTrashedBooks(
+    source,
+    newlyMissing.filter((b) => !autoReplacedIds.has(b.id)),
+    alreadyMissing.filter((b) => !autoReplacedIds.has(b.id)),
+    result,
+  )
 
   db.prepare(
     `UPDATE sources SET

@@ -612,6 +612,7 @@ describe('ingestion', () => {
       skippedDuplicates: 0,
       failed: 1,
       removedAsTrash: 0,
+      autoReplaced: 0,
     })
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -673,5 +674,149 @@ describe('ingestion', () => {
     const afterRescan = db.prepare('SELECT * FROM books WHERE id = ?').get(book.id) as any
     expect(afterRescan.series_number).toBe(99)
     expect(afterRescan.series_number_source).toBe('manual')
+  }, 30_000)
+
+  it('auto-replaces a missing book with a re-encoded file that has a different content hash', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, rm } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    async function makeTone(outPath: string, frequency: number, title: string, artist: string) {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=${frequency}:duration=1`,
+        '-metadata',
+        `title=${title}`,
+        '-metadata',
+        `artist=${artist}`,
+        '-c:a',
+        'aac',
+        outPath,
+      ])
+    }
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-autoreplace-'))
+    const authorDir = path.join(tempRoot, 'Reencode Author')
+    await mkdir(authorDir, { recursive: true })
+    const originalPath = path.join(authorDir, 'Original Rip.m4b')
+    await makeTone(originalPath, 210, 'Great Adventure', 'Reencode Author')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Auto-Replace Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const bookBefore = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookBefore.status).toBe('active')
+
+    // Deleted and replaced with a genuinely different file (different
+    // audio, hence a different content hash — a real re-encode, not a
+    // rename) sharing the author folder and a matching title/author.
+    await rm(originalPath)
+    const reencodedPath = path.join(authorDir, 'Great Adventure (Remastered).m4b')
+    await makeTone(reencodedPath, 440, 'Great Adventure', 'Reencode Author')
+
+    const result = await scanSource(source)
+    expect(result.autoReplaced).toBe(1)
+    expect(result.markedMissing).toBe(0)
+    expect(result.created).toBe(0) // the duplicate's initial +1 is canceled back out
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1) // no leftover duplicate row
+    expect(books[0].id).toBe(bookBefore.id) // same identity carried forward
+    expect(books[0].status).toBe('active')
+    expect(books[0].file_path).toBe(reencodedPath)
+    expect(books[0].content_hash).not.toBe(bookBefore.content_hash)
+
+    const relinkedLog = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'relinked'").get(bookBefore.id) as any
+    expect(relinkedLog).toBeTruthy()
+    expect(relinkedLog.detail).toContain('Auto-replaced')
+
+    // The duplicate's own transient "created" entry must not linger —
+    // it was never a real, separate book from the user's perspective.
+    // Only the original book's own "created" entry (from the first scan)
+    // should remain, scoped by book_id since other tests in this file
+    // share the same activity_log table and may reuse this title.
+    const createdLogs = db
+      .prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'created'")
+      .all(bookBefore.id)
+    expect(createdLogs).toHaveLength(1)
+  }, 30_000)
+
+  it('leaves a missing book alone when a new file in the same folder is too weak a match to auto-replace', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, rm } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    async function makeTone(outPath: string, frequency: number, title: string, artist: string) {
+      await execFileAsync('ffmpeg', [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=${frequency}:duration=1`,
+        '-metadata',
+        `title=${title}`,
+        '-metadata',
+        `artist=${artist}`,
+        '-c:a',
+        'aac',
+        outPath,
+      ])
+    }
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-autoreplace-weak-'))
+    const authorDir = path.join(tempRoot, 'Weak Match Author')
+    await mkdir(authorDir, { recursive: true })
+    const originalPath = path.join(authorDir, 'Original.m4b')
+    await makeTone(originalPath, 250, 'The Long Voyage Home', 'Weak Match Author')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Auto-Replace Weak Match Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const bookBefore = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+
+    await rm(originalPath)
+    // A different book entirely — unrelated title AND author (still
+    // physically dropped in the same folder, which is all the folder-name
+    // scoping cares about) — must not be mistaken for a replacement.
+    const unrelatedPath = path.join(authorDir, 'Completely Different Story.m4b')
+    await makeTone(unrelatedPath, 300, 'Completely Different Story', 'Someone Else Entirely')
+
+    const result = await scanSource(source)
+    expect(result.autoReplaced).toBe(0)
+    expect(result.markedMissing).toBe(1)
+    expect(result.created).toBe(1) // the unrelated book is its own new entry
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(2)
+    const oldBook = books.find((b) => b.id === bookBefore.id)
+    expect(oldBook.status).toBe('missing')
+    const newBook = books.find((b) => b.id !== bookBefore.id)
+    expect(newBook.status).toBe('active')
+    expect(newBook.title).toBe('Completely Different Story')
   }, 30_000)
 })
