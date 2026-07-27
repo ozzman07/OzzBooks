@@ -172,14 +172,7 @@ function groupByAuthor(books: Book[]): AuthorGroup[] {
 function BookTile({ book }: { book: Book }) {
   return (
     <Link to={`/book/${book.id}`} className="block">
-      <div className="relative">
-        <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
-        {book.status === 'missing' && (
-          <span className="absolute right-1 top-1 rounded bg-red-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
-            Needs attention
-          </span>
-        )}
-      </div>
+      <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
       <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
       <p className="truncate text-xs text-muted">{book.author}</p>
       <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
@@ -194,14 +187,7 @@ function BookRow({ book }: { book: Book }) {
         <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="truncate text-sm text-primary">{book.title}</p>
-          {book.status === 'missing' && (
-            <span className="shrink-0 rounded bg-red-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
-              Needs attention
-            </span>
-          )}
-        </div>
+        <p className="truncate text-sm text-primary">{book.title}</p>
         <p className="truncate text-xs text-muted">
           {book.author}
           {book.seriesName && (
@@ -271,8 +257,6 @@ export function Library() {
     setDisplayMode,
     statusFilter,
     setStatusFilter,
-    needsAttentionOnly,
-    setNeedsAttentionOnly,
     scrollYRef,
   } = useLibraryView()
 
@@ -308,8 +292,11 @@ export function Library() {
   }, [])
 
   const result = useAsync(async () => {
+    // Missing books live exclusively on the Needs Attention page now — the
+    // server excludes them here so a book that needs relinking never shows
+    // up as a dead tile/row in the main grid.
     const [books, progressEntries] = await Promise.all([
-      fetchBooks().then((rows) => rows.map(adaptBookListItem)),
+      fetchBooks('active').then((rows) => rows.map(adaptBookListItem)),
       reconcileAllProgress(auth.token),
     ])
 
@@ -331,11 +318,10 @@ export function Library() {
 
     return books.filter((b) => {
       if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
-      if (needsAttentionOnly && b.status !== 'missing') return false
       if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
       return true
     })
-  }, [result, search, statusFilter, needsAttentionOnly])
+  }, [result, search, statusFilter])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
 
@@ -476,14 +462,6 @@ export function Library() {
                 </button>
               ))}
             </div>
-            <button
-              onClick={() => setNeedsAttentionOnly((v) => !v)}
-              className={`rounded-lg border border-border-strong px-2.5 py-1.5 text-xs ${
-                needsAttentionOnly ? 'bg-red-600/90 text-white' : 'bg-surface text-secondary'
-              }`}
-            >
-              Needs attention
-            </button>
           </div>
 
           {filteredBooks.length === 0 ? (

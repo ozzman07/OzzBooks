@@ -12,6 +12,7 @@ import { RelinkBook } from './pages/RelinkBook'
 import { NowPlaying } from './pages/NowPlaying'
 import { Settings } from './pages/Settings'
 import { ActivityLog } from './pages/ActivityLog'
+import { NeedsAttention } from './pages/NeedsAttention'
 import { Playlists } from './pages/Playlists'
 import { PlaylistDetail } from './pages/PlaylistDetail'
 
@@ -45,6 +46,7 @@ export default function App() {
                   <Route path="/now-playing" element={<NowPlaying />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/activity-log" element={<ActivityLog />} />
+                  <Route path="/needs-attention" element={<NeedsAttention />} />
                 </Routes>
                 <BottomNav />
               </div>

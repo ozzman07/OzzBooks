@@ -108,11 +108,12 @@ async function buildTrashHashIndex(pathScope: string): Promise<Map<string, strin
 
 /** Deletes a book outright (chapters cascade via ON DELETE CASCADE) plus
  * its generated artwork files on disk — reserved for the specific cases of
- * a file having moved into a zzz/To Delete folder (removeTrashedBooks) or
- * a just-created duplicate row being folded into an auto-replaced book's
- * identity (autoReplaceMissingBooks). Progress/bookmarks live in the
- * separate cloud sync layer, unaffected either way. */
-async function deleteBookAndArtwork(book: BookRow): Promise<void> {
+ * a file having moved into a zzz/To Delete folder (removeTrashedBooks), a
+ * just-created duplicate row being folded into an auto-replaced book's
+ * identity (autoReplaceMissingBooks), or a user manually clearing a missing
+ * book from the Needs Attention page (DELETE /api/books/:id). Progress/
+ * bookmarks live in the separate cloud sync layer, unaffected either way. */
+export async function deleteBookAndArtwork(book: BookRow): Promise<void> {
   getDb().prepare('DELETE FROM books WHERE id = ?').run(book.id)
   for (const artworkPath of [book.artwork_thumb_path, book.artwork_full_path]) {
     if (!artworkPath) continue
