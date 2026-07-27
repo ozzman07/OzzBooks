@@ -122,6 +122,7 @@ export interface ApiScanResult {
   skippedDuplicates: number
   failed: number
   removedAsTrash: number
+  autoReplaced: number
 }
 
 // A scan is fire-and-forget on the server (it can run for well over an
@@ -250,8 +251,8 @@ export function fetchEnrichmentStatus(): Promise<ApiEnrichmentState> {
   return apiFetch<ApiEnrichmentState>('/api/enrichment/status')
 }
 
-export function fetchBooks(): Promise<ApiBookListItem[]> {
-  return apiFetch<ApiBookListItem[]>('/api/books')
+export function fetchBooks(status?: 'active' | 'missing'): Promise<ApiBookListItem[]> {
+  return apiFetch<ApiBookListItem[]>(`/api/books${status ? `?status=${status}` : ''}`)
 }
 
 export function fetchBook(id: string): Promise<ApiBookDetail> {
@@ -263,6 +264,12 @@ export function updateBook(
   patch: { seriesName?: string | null; seriesNumber?: number | null },
 ): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
+// Only valid for a book already flagged missing — see the route's own
+// guard on the server side.
+export function removeMissingBook(id: string): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>(`/api/books/${id}`, { method: 'DELETE' })
 }
 
 export interface ApiSeriesNumberBackfillResult {

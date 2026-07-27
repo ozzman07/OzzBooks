@@ -3,6 +3,7 @@ import { getDb } from '../../db/index.js'
 import { logActivity } from '../../db/activityLog.js'
 import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
+import { deleteBookAndArtwork } from '../../ingestion/scan.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
 
 export const booksRouter = Router()
@@ -15,17 +16,23 @@ function loadBookAndSource(bookId: string): { book: BookRow; source: SourceRow }
   return { book, source }
 }
 
-booksRouter.get('/', (_req, res) => {
+// ?status= lets the Library page ask for active books only (missing ones
+// live exclusively on the Needs Attention page now, not mixed into the
+// main grid) and the Needs Attention page ask for missing ones only,
+// without either page having to filter a full-library payload client-side.
+booksRouter.get('/', (req, res) => {
+  const status = req.query.status === 'active' || req.query.status === 'missing' ? req.query.status : undefined
   const rows = getDb()
     .prepare(
       `SELECT books.*, COALESCE(SUM(chapters.duration), 0) AS total_duration,
          (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id
        FROM books
        LEFT JOIN chapters ON chapters.book_id = books.id
+       ${status ? 'WHERE books.status = ?' : ''}
        GROUP BY books.id
        ORDER BY books.title`,
     )
-    .all()
+    .all(...(status ? [status] : []))
   res.json(rows)
 })
 
@@ -70,6 +77,25 @@ booksRouter.patch('/:id', (req, res) => {
   }
 
   res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))
+})
+
+// Only ever offered from the Needs Attention page, and only ever for a
+// book already flagged missing — an active, playable book can't be deleted
+// through this route, so a stray/misdirected call can't destroy real
+// progress-bearing data by accident.
+booksRouter.delete('/:id', async (req, res) => {
+  const book = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
+  if (!book) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  if (book.status !== 'missing') {
+    res.status(400).json({ error: 'only a missing book can be removed this way' })
+    return
+  }
+  await deleteBookAndArtwork(book)
+  logActivity(book.id, book.title, book.author, 'removed', 'Manually removed from Needs Attention')
+  res.json({ ok: true })
 })
 
 booksRouter.get('/:id', (req, res) => {

@@ -27,8 +27,6 @@ interface LibraryViewContextValue {
   setDisplayMode: Dispatch<SetStateAction<DisplayMode>>
   statusFilter: StatusFilter
   setStatusFilter: Dispatch<SetStateAction<StatusFilter>>
-  needsAttentionOnly: boolean
-  setNeedsAttentionOnly: Dispatch<SetStateAction<boolean>>
   /** A ref rather than state — scroll position only needs to be *read* once
    * (to restore it) and *written* once (on leaving the page), so tracking
    * it as state would just cause pointless re-renders on every scroll
@@ -49,7 +47,6 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('tile')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [needsAttentionOnly, setNeedsAttentionOnly] = useState(false)
   const scrollYRef = useRef(0)
 
   const value: LibraryViewContextValue = {
@@ -63,8 +60,6 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
     setDisplayMode,
     statusFilter,
     setStatusFilter,
-    needsAttentionOnly,
-    setNeedsAttentionOnly,
     scrollYRef,
   }
 

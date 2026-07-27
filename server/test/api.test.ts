@@ -180,6 +180,72 @@ describe('sources + ingestion via the API', () => {
     expect(res.status).toBe(404)
   })
 
+  describe('GET /api/books?status= and DELETE /api/books/:id', () => {
+    let missingBookId: string
+
+    it('inserts a directly-crafted missing book for these tests to target', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      missingBookId = randomUUID()
+      getDb()
+        .prepare(
+          `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+           VALUES (?, ?, '/nowhere/Gone Book.m4b', 'm4b', 'Gone Book', 'Some Author', 'missing')`,
+        )
+        .run(missingBookId, sourceId)
+    })
+
+    it('?status=missing returns only the missing book', async () => {
+      const res = await request(app).get('/api/books?status=missing').set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body.map((b: any) => b.id)).toEqual([missingBookId])
+    })
+
+    it('?status=active excludes the missing book', async () => {
+      const [activeRes, allRes] = await Promise.all([
+        request(app).get('/api/books?status=active').set('Authorization', `Bearer ${TEST_TOKEN}`),
+        request(app).get('/api/books').set('Authorization', `Bearer ${TEST_TOKEN}`),
+      ])
+      expect(activeRes.status).toBe(200)
+      expect(activeRes.body.some((b: any) => b.id === missingBookId)).toBe(false)
+      // One less than the unfiltered total (this file also inserts its own
+      // extra active book in an earlier test, so an exact count here would
+      // be fragile to that shared state) — the missing book is the only one
+      // status=active should be excluding.
+      expect(activeRes.body).toHaveLength(allRes.body.length - 1)
+    })
+
+    it('with no status filter, returns both active and missing books', async () => {
+      const res = await request(app).get('/api/books').set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body.some((b: any) => b.id === missingBookId)).toBe(true)
+    })
+
+    it('refuses to delete an active book', async () => {
+      const res = await request(app).delete(`/api/books/${bookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(400)
+
+      const stillThere = await request(app).get(`/api/books/${bookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(stillThere.status).toBe(200)
+    })
+
+    it('deletes a missing book and logs the removal', async () => {
+      const res = await request(app).delete(`/api/books/${missingBookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({ ok: true })
+
+      const gone = await request(app).get(`/api/books/${missingBookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(gone.status).toBe(404)
+
+      const { getDb } = await import('../src/db/index.js')
+      const logEntry = getDb()
+        .prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'removed'")
+        .get(missingBookId) as any
+      expect(logEntry).toBeTruthy()
+      expect(logEntry.detail).toContain('Manually removed')
+    })
+  })
+
   describe('POST /api/sources/:id/disconnect', () => {
     it('clears credentials, flips to needs_reconnect, and marks the source\'s active books missing', async () => {
       const { getDb } = await import('../src/db/index.js')

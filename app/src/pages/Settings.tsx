@@ -211,9 +211,41 @@ function SeriesNumberBackfillCard() {
   )
 }
 
+// Same snapshot-card pattern as ActivityLogCard below — fetches the
+// missing-books list just to get its count. No separate summary endpoint:
+// this library's scale (a personal collection, not a catalog) makes a
+// full fetch-and-count trivially fast, and it's the same request the
+// Needs Attention page itself makes.
+function NeedsAttentionCard() {
+  const [count, setCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    fetchBooks('missing')
+      .then((rows) => setCount(rows.length))
+      .catch(() => setCount(null))
+  }, [])
+
+  return (
+    <div className="mt-3 rounded border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm text-primary">Needs attention</p>
+          <p className="text-xs text-subtle">Books whose source file couldn't be found on the last scan.</p>
+        </div>
+        <Link
+          to="/needs-attention"
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary"
+        >
+          {count !== null ? `${count} book${count === 1 ? '' : 's'}` : 'View'}
+        </Link>
+      </div>
+    </div>
+  )
+}
+
 // Just a snapshot + link — the actual list lives on its own page
 // (ActivityLog.tsx), same "card summarizes, dedicated page has the
-// detail" split as the Needs Attention page will follow next.
+// detail" split as NeedsAttentionCard above.
 function ActivityLogCard() {
   const [summary, setSummary] = useState<ApiActivityLogSummary | null>(null)
 
@@ -598,6 +630,7 @@ export function Settings() {
           <MetadataEnrichmentCard />
           <NightlyRescanCard />
           <SeriesNumberBackfillCard />
+          <NeedsAttentionCard />
           <ActivityLogCard />
         </section>
 
