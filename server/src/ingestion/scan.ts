@@ -290,7 +290,9 @@ async function removeTrashedBooks(
       result.removedAsTrash++
       logActivity(book.id, book.title, book.author, 'removed', `Same content found in a trash folder: ${trashPath}`)
     } else {
-      db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
+      db.prepare(
+        "UPDATE books SET status = 'missing', missing_since = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+      ).run(book.id)
       result.markedMissing++
       logActivity(book.id, book.title, book.author, 'missing', `File no longer found at ${book.file_path}`)
     }
@@ -602,6 +604,7 @@ export function writeBookAndChapters(
       series_number = excluded.series_number,
       series_number_source = excluded.series_number_source,
       status = 'active',
+      missing_since = NULL,
       artwork_thumb_path = excluded.artwork_thumb_path,
       artwork_full_path = excluded.artwork_full_path,
       content_hash = excluded.content_hash,

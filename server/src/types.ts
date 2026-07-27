@@ -47,6 +47,7 @@ export interface BookRow {
   genre: string | null
   synopsis: string | null
   metadata_enrichment_attempted_at: string | null
+  missing_since: string | null
   created_at: string
   updated_at: string
 }
@@ -71,6 +72,8 @@ export interface AppSettingsRow {
   nightly_rescan_time: string
   nightly_rescan_last_run_date: string | null
   activity_log_last_viewed_at: string | null
+  auto_purge_enabled: number // SQLite INTEGER 0/1, not a JS boolean
+  auto_purge_after_days: number
   updated_at: string
 }
 

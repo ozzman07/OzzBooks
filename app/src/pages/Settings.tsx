@@ -243,6 +243,67 @@ function NeedsAttentionCard() {
   )
 }
 
+// The final tier of the missing-book handling: a book that sits in Needs
+// Attention past this many days with nobody relinking or removing it gets
+// deleted automatically during the nightly rescan (see autoPurge.ts) —
+// same checkbox + numeric-field pattern as NightlyRescanCard above.
+function AutoPurgeCard() {
+  const [settings, setSettings] = useState<ApiAppSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetchAppSettings()
+      .then(setSettings)
+      .catch(() => {})
+  }, [])
+
+  async function update(patch: { autoPurgeEnabled?: boolean; autoPurgeAfterDays?: number }) {
+    setError(null)
+    try {
+      setSettings(await updateAppSettings(patch))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  if (!settings) return null
+
+  return (
+    <div className="mt-3 rounded border border-border p-3">
+      <label className="flex items-center justify-between text-sm text-secondary">
+        <span>Auto-remove long-missing books</span>
+        <input
+          type="checkbox"
+          checked={settings.auto_purge_enabled}
+          onChange={(e) => void update({ autoPurgeEnabled: e.target.checked })}
+          className="h-4 w-4"
+        />
+      </label>
+
+      <label className="mt-2 flex items-center justify-between text-sm text-secondary">
+        <span>After this many days missing</span>
+        <input
+          type="number"
+          min={1}
+          value={settings.auto_purge_after_days}
+          disabled={!settings.auto_purge_enabled}
+          onChange={(e) => {
+            const days = Number(e.target.value)
+            if (Number.isFinite(days) && days >= 1) void update({ autoPurgeAfterDays: days })
+          }}
+          className="w-16 rounded border border-border-strong bg-surface px-2 py-1 text-primary disabled:opacity-50"
+        />
+      </label>
+
+      <p className="mt-2 text-xs text-subtle">
+        Removed books stay in the activity log, just like a manual removal from Needs Attention.
+      </p>
+
+      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
 // Just a snapshot + link — the actual list lives on its own page
 // (ActivityLog.tsx), same "card summarizes, dedicated page has the
 // detail" split as NeedsAttentionCard above.
@@ -631,6 +692,7 @@ export function Settings() {
           <NightlyRescanCard />
           <SeriesNumberBackfillCard />
           <NeedsAttentionCard />
+          <AutoPurgeCard />
           <ActivityLogCard />
         </section>
 

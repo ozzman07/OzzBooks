@@ -183,6 +183,8 @@ export interface ApiAppSettings {
   nightly_rescan_enabled: boolean
   nightly_rescan_time: string
   nightly_rescan_last_run_date: string | null
+  auto_purge_enabled: boolean
+  auto_purge_after_days: number
 }
 
 export function fetchAppSettings(): Promise<ApiAppSettings> {
@@ -192,6 +194,8 @@ export function fetchAppSettings(): Promise<ApiAppSettings> {
 export function updateAppSettings(patch: {
   nightlyRescanEnabled?: boolean
   nightlyRescanTime?: string
+  autoPurgeEnabled?: boolean
+  autoPurgeAfterDays?: number
 }): Promise<ApiAppSettings> {
   return apiFetch<ApiAppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) })
 }
