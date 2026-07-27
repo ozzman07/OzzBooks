@@ -141,7 +141,9 @@ export function markSourceBooksMissing(sourceId: string): number {
   const db = getDb()
   const previouslyActive = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(sourceId) as BookRow[]
   for (const book of previouslyActive) {
-    db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
+    db.prepare(
+      "UPDATE books SET status = 'missing', missing_since = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+    ).run(book.id)
   }
   return previouslyActive.length
 }
@@ -304,7 +306,9 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
     .all(source.id)
   for (const book of previouslyActive) {
     if (!seenFilePaths.has(book.file_path)) {
-      db.prepare("UPDATE books SET status = 'missing', updated_at = datetime('now') WHERE id = ?").run(book.id)
+      db.prepare(
+        "UPDATE books SET status = 'missing', missing_since = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+      ).run(book.id)
       result.markedMissing++
       logActivity(book.id, book.title, book.author, 'missing', `File no longer found in Drive`)
     }

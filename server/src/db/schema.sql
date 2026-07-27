@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS books (
   -- manually touched, free to be (re-)derived."
   series_number_source TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'missing')),
+  -- Stamped the moment a book flips active -> missing, cleared back to
+  -- NULL the moment it's reactivated (relink, auto-replace, or a plain
+  -- rescan finding the file again) — see writeBookAndChapters. Drives the
+  -- auto-purge safety net (ingestion/autoPurge.ts): a dedicated column
+  -- rather than reading it back out of activity_log, since not every
+  -- "marked missing" path (e.g. a Google Drive disconnect) logs an entry.
+  missing_since TEXT,
   artwork_thumb_path TEXT,
   artwork_full_path TEXT,
   volume_normalization_gain REAL,
@@ -89,6 +96,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
   -- whenever the Activity Log page is opened, null until first visited
   -- (everything counts as new until then).
   activity_log_last_viewed_at TEXT,
+  -- Safety-net cleanup for the Needs Attention list: a book missing for
+  -- longer than auto_purge_after_days gets deleted automatically during
+  -- the nightly rescan, same as removeTrashedBooks/autoReplaceMissingBooks
+  -- (see ingestion/autoPurge.ts) — defaults on since the whole point of
+  -- this 3-tier design is to keep the list from growing forever with no
+  -- attention required, but stays configurable/disable-able for anyone
+  -- who wants to review every missing book by hand instead.
+  auto_purge_enabled INTEGER NOT NULL DEFAULT 1 CHECK (auto_purge_enabled IN (0, 1)),
+  auto_purge_after_days INTEGER NOT NULL DEFAULT 60,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 INSERT OR IGNORE INTO app_settings (id) VALUES (1);

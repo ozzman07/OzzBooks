@@ -2,6 +2,7 @@ import { getDb } from '../db/index.js'
 import type { AppSettingsRow, SourceRow } from '../types.js'
 import { startScan, getScanState } from './scanStatus.js'
 import { enrichBooks } from './enrichment/enrichBooks.js'
+import { runAutoPurge } from './autoPurge.js'
 
 const CHECK_INTERVAL_MS = 60_000
 
@@ -55,6 +56,10 @@ function sleep(ms: number): Promise<void> {
  * picked up on the next nightly run — so the try/catch here is only a
  * backstop against something unrelated breaking; either way, today's scan
  * is still marked done.
+ *
+ * Auto-purge (deleting books missing longer than auto_purge_after_days,
+ * see autoPurge.ts) runs last, once every source's missing_since is
+ * current.
  */
 export async function runNightlyRescan(): Promise<void> {
   const db = getDb()
@@ -70,6 +75,15 @@ export async function runNightlyRescan(): Promise<void> {
     await enrichBooks()
   } catch (err) {
     console.warn('Metadata enrichment failed during nightly rescan:', err)
+  }
+
+  // Runs last, after every source's missing_since is up to date from the
+  // scans above — same defensive backstop as enrichment above, since a
+  // purge failure shouldn't stop today's scan from being marked done.
+  try {
+    await runAutoPurge()
+  } catch (err) {
+    console.warn('Auto-purge failed during nightly rescan:', err)
   }
 
   db.prepare("UPDATE app_settings SET nightly_rescan_last_run_date = ?, updated_at = datetime('now') WHERE id = 1").run(

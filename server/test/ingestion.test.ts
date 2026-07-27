@@ -312,6 +312,16 @@ describe('ingestion', () => {
     const bookAfter = db.prepare('SELECT * FROM books WHERE id = ?').get(bookBefore.id) as any
     expect(bookAfter.status).toBe('missing')
     expect(bookAfter.id).toBe(bookBefore.id) // same row, not deleted/recreated
+    expect(bookAfter.missing_since).toBeTruthy() // drives the auto-purge safety net, see autoPurge.ts
+
+    // Restoring the file and rescanning should clear missing_since again —
+    // otherwise a book that comes back would still look purge-eligible.
+    await mkdir(bookDir, { recursive: true })
+    await execFileAsync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=1', '-c:a', 'libmp3lame', mp3Path])
+    await scanSource(source)
+    const bookRestored = db.prepare('SELECT * FROM books WHERE id = ?').get(bookBefore.id) as any
+    expect(bookRestored.status).toBe('active')
+    expect(bookRestored.missing_since).toBeNull()
   }, 30_000)
 
   it('auto-relinks a same-source file move by content hash instead of creating a duplicate', async () => {

@@ -325,6 +325,24 @@ describe('GET/PATCH /api/settings', () => {
     expect(res.status).toBe(200)
     expect(typeof res.body.nightly_rescan_enabled).toBe('boolean')
     expect(typeof res.body.nightly_rescan_time).toBe('string')
+    expect(res.body.auto_purge_enabled).toBe(true) // on by default
+    expect(res.body.auto_purge_after_days).toBe(60)
+  })
+
+  it('updates auto-purge settings independently of the nightly rescan ones', async () => {
+    const res = await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ autoPurgeEnabled: false, autoPurgeAfterDays: 30 })
+    expect(res.status).toBe(200)
+    expect(res.body.auto_purge_enabled).toBe(false)
+    expect(res.body.auto_purge_after_days).toBe(30)
+
+    // Re-enable so this doesn't leak into other tests in this shared-DB file.
+    await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ autoPurgeEnabled: true, autoPurgeAfterDays: 60 })
   })
 
   it('updates in place and only touches the fields sent', async () => {

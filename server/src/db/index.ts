@@ -67,6 +67,7 @@ function migrate(db: Database.Database): void {
     ['synopsis', 'TEXT'],
     ['metadata_enrichment_attempted_at', 'TEXT'],
     ['series_number_source', "TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual'))"],
+    ['missing_since', 'TEXT'],
   ]
   for (const [name, type] of booksTextColumns) {
     if (!booksColumns.has(name)) {
@@ -79,6 +80,14 @@ function migrate(db: Database.Database): void {
   )
   if (!appSettingsColumns.has('activity_log_last_viewed_at')) {
     db.exec('ALTER TABLE app_settings ADD COLUMN activity_log_last_viewed_at TEXT')
+  }
+  if (!appSettingsColumns.has('auto_purge_enabled')) {
+    db.exec(
+      'ALTER TABLE app_settings ADD COLUMN auto_purge_enabled INTEGER NOT NULL DEFAULT 1 CHECK (auto_purge_enabled IN (0, 1))',
+    )
+  }
+  if (!appSettingsColumns.has('auto_purge_after_days')) {
+    db.exec('ALTER TABLE app_settings ADD COLUMN auto_purge_after_days INTEGER NOT NULL DEFAULT 60')
   }
 }
 
