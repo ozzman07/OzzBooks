@@ -9,6 +9,7 @@ import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
+import { companionLibraryIds, bookInLibrary } from '../library/companion'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
 import {
@@ -336,7 +337,7 @@ function BookGrid({
   displayMode: DisplayMode
   /** Only passed in Store mode — presence (even an empty Set) is what turns on the add/remove affordance. */
   myLibraryIds?: Set<string>
-  onToggleLibrary?: (bookId: string, currentlyIn: boolean) => void
+  onToggleLibrary?: (book: Book, currentlyIn: boolean) => void
 }) {
   const showToggle = myLibraryIds !== undefined && onToggleLibrary !== undefined
   if (displayMode === 'row') {
@@ -346,8 +347,10 @@ function BookGrid({
           <li key={book.id}>
             <BookRow
               book={book}
-              inMyLibrary={myLibraryIds?.has(book.id)}
-              onToggleLibrary={showToggle ? () => onToggleLibrary!(book.id, myLibraryIds!.has(book.id)) : undefined}
+              inMyLibrary={myLibraryIds ? bookInLibrary(book, myLibraryIds) : undefined}
+              onToggleLibrary={
+                showToggle ? () => onToggleLibrary!(book, bookInLibrary(book, myLibraryIds!)) : undefined
+              }
             />
           </li>
         ))}
@@ -360,8 +363,10 @@ function BookGrid({
         <li key={book.id}>
           <BookTile
             book={book}
-            inMyLibrary={myLibraryIds?.has(book.id)}
-            onToggleLibrary={showToggle ? () => onToggleLibrary!(book.id, myLibraryIds!.has(book.id)) : undefined}
+            inMyLibrary={myLibraryIds ? bookInLibrary(book, myLibraryIds) : undefined}
+            onToggleLibrary={
+              showToggle ? () => onToggleLibrary!(book, bookInLibrary(book, myLibraryIds!)) : undefined
+            }
           />
         </li>
       ))}
@@ -431,18 +436,24 @@ export function Library() {
     }
   }
 
-  async function handleToggleLibrary(bookId: string, currentlyIn: boolean) {
+  async function handleToggleLibrary(book: Book, currentlyIn: boolean) {
     if (!auth.token) return
-    setLibraryOverrides((prev) => new Map(prev).set(bookId, !currentlyIn))
+    const ids = companionLibraryIds(book)
+    const next = !currentlyIn
+    setLibraryOverrides((prev) => {
+      const nextMap = new Map(prev)
+      for (const id of ids) nextMap.set(id, next)
+      return nextMap
+    })
     try {
-      if (currentlyIn) {
-        await removeFromLibrary(auth.token, bookId)
-      } else {
-        await addToLibrary(auth.token, bookId)
-      }
+      await Promise.all(ids.map((id) => (next ? addToLibrary(auth.token!, id) : removeFromLibrary(auth.token!, id))))
     } catch {
       // Revert — the request failed, so the toggle didn't actually happen.
-      setLibraryOverrides((prev) => new Map(prev).set(bookId, currentlyIn))
+      setLibraryOverrides((prev) => {
+        const nextMap = new Map(prev)
+        for (const id of ids) nextMap.set(id, currentlyIn)
+        return nextMap
+      })
     }
   }
 
@@ -468,7 +479,16 @@ export function Library() {
     const books = dedupeCompanionPairs(fetchedBooks)
     const myLibraryIds = new Set(libraryItems.map((i) => i.book_id))
 
-    const byBookId = new Map(books.map((b) => [b.id, b]))
+    // A companion pair's epub-side row is deduped out of `books` above, but
+    // its progress can be keyed to *either* id (audio listening is always
+    // the audio id; ebook reading is the epub's own id — see BookDetail's
+    // read-navigation fix). Registering both ids against the one displayed
+    // tile means a progress row for either format still resolves to it.
+    const canonicalBookFor = new Map<string, Book>()
+    for (const b of books) {
+      canonicalBookFor.set(b.id, b)
+      if (b.companionBookId) canonicalBookFor.set(b.companionBookId, b)
+    }
     const progressByBookId = new Map(progressEntries.map((p) => [p.bookId, p]))
     // A malformed/missing updatedAt on any single progress row (local or
     // cloud) shouldn't take down the whole library fetch — treat it as
@@ -479,7 +499,7 @@ export function Library() {
     const continueListeningCandidates = progressEntries
       .slice()
       .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
-      .map((p) => byBookId.get(p.bookId))
+      .map((p) => canonicalBookFor.get(p.bookId))
       .filter((b): b is Book => b !== undefined)
 
     return { books, continueListeningCandidates, progressByBookId, myLibraryIds }
@@ -509,7 +529,7 @@ export function Library() {
       if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
       if (formatFilter === 'audio' && !isAudioFormat(b)) return false
       if (formatFilter === 'ebook' && !(b.format === 'epub' || b.companionBookId)) return false
-      if (libraryViewMode === 'mine' && !effectiveMyLibraryIds.has(b.id)) return false
+      if (libraryViewMode === 'mine' && !bookInLibrary(b, effectiveMyLibraryIds)) return false
       return true
     })
   }, [result, search, statusFilter, formatFilter, libraryViewMode, effectiveMyLibraryIds])
@@ -572,7 +592,7 @@ export function Library() {
         (() => {
           const continueListening = result.data.continueListeningCandidates
             .filter((b) => !removedFromShelf.has(b.id))
-            .filter((b) => effectiveMyLibraryIds.has(b.id))
+            .filter((b) => bookInLibrary(b, effectiveMyLibraryIds))
           if (continueListening.length === 0) return null
           return (
             <section className="mb-6">
