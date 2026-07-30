@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { fetchBooks } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
 import { reconcileAllProgress, removeFromContinueListening } from '../offline/reconcile'
@@ -392,6 +392,14 @@ function sortBooks(books: Book[], sortBy: SortOption): Book[] {
 
 export function Library() {
   const auth = useAuth()
+  const location = useLocation()
+  // "My Library" and "Store" are two routes sharing this one component
+  // (/library, /store — see App.tsx) rather than a toggle within a single
+  // page, so the bottom nav can surface Store as its own always-visible
+  // tab. Derived from the URL rather than stored as its own piece of
+  // context state, since the URL is already the source of truth for which
+  // page this is.
+  const libraryViewMode: LibraryViewMode = location.pathname === '/store' ? 'store' : 'mine'
   const {
     search,
     setSearch,
@@ -405,9 +413,7 @@ export function Library() {
     setStatusFilter,
     formatFilter,
     setFormatFilter,
-    libraryViewMode,
-    setLibraryViewMode,
-    scrollYRef,
+    scrollPositionsRef,
   } = useLibraryView()
 
   // Locally hides a shelf entry the instant it's removed, rather than
@@ -458,14 +464,18 @@ export function Library() {
   }
 
   // Captures the scroll position exactly once, at the moment this page is
-  // navigated away from (e.g. to play a book) — not on every scroll event,
-  // since nothing needs it until then.
+  // navigated away from (e.g. to play a book, or to the other of
+  // /library|/store — switching between those two fully unmounts and
+  // remounts this component, same as leaving to any other page) — not on
+  // every scroll event, since nothing needs it until then. Keyed by
+  // pathname so /library and /store each keep their own remembered
+  // position instead of clobbering each other's.
   useEffect(() => {
+    const pathname = location.pathname
     return () => {
-      scrollYRef.current = window.scrollY
+      scrollPositionsRef.current.set(pathname, window.scrollY)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [location.pathname, scrollPositionsRef])
 
   const result = useAsync(async () => {
     // Missing books live exclusively on the Needs Attention page now — the
@@ -557,25 +567,21 @@ export function Library() {
   // paints this render, avoiding a visible flash at the top first.
   useLayoutEffect(() => {
     if (result.status !== 'success') return
-    window.scrollTo(0, scrollYRef.current)
+    window.scrollTo(0, scrollPositionsRef.current.get(location.pathname) ?? 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result.status])
+  }, [result.status, location.pathname])
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold text-primary">Your Library</h1>
-        <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
-          {(Object.entries(LIBRARY_VIEW_LABELS) as [LibraryViewMode, string][]).map(([value, label]) => (
-            <button
-              key={value}
-              onClick={() => setLibraryViewMode(value)}
-              className={`px-3 py-1.5 ${libraryViewMode === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <h1 className="flex items-center gap-2 text-2xl font-semibold text-primary">
+          {/* Echoes the bottom nav's own icon for this tab (🛍️/📚) — a
+              second, glanceable confirmation of which page this is beyond
+              the text, since Store and My Library otherwise share the
+              exact same grid/toolbar layout. */}
+          <span aria-hidden="true">{libraryViewMode === 'store' ? '🛍️' : '📚'}</span>
+          {libraryViewMode === 'store' ? 'Store' : 'Your Library'}
+        </h1>
       </div>
 
       {result.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
@@ -712,7 +718,7 @@ export function Library() {
               {search
                 ? `No books match "${search}".`
                 : libraryViewMode === 'mine'
-                  ? "Nothing on your shelf yet — switch to Store to browse and add books."
+                  ? 'Nothing on your shelf yet — check the Store tab to browse and add books.'
                   : 'No books match these filters.'}
             </p>
           ) : viewMode === 'list' ? (
