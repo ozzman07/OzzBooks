@@ -35,8 +35,16 @@ CREATE INDEX IF NOT EXISTS idx_scan_issues_source ON scan_issues(source_id);
 CREATE TABLE IF NOT EXISTS books (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES sources(id),
-  file_path TEXT NOT NULL,
-  format TEXT NOT NULL CHECK (format IN ('m4b', 'mp3_folder')),
+  file_path TEXT NOT NULL, -- the primary content file: audio for m4b/mp3_folder, the epub itself for format='epub'
+  format TEXT NOT NULL CHECK (format IN ('m4b', 'mp3_folder', 'epub')),
+  -- Links an ebook-primary row to its audiobook-primary counterpart (or
+  -- vice versa) when the two were ingested from separate sources (e.g. a
+  -- NAS folder of audiobooks and a separate NAS folder of ebooks) — see
+  -- ingestion/companionLink.ts. Nullable and only ever set on one side of
+  -- the pair; read as bidirectional. Not a second file column on the same
+  -- row, since either side of the pair is itself a fully independent book
+  -- (own id, own missing/status tracking, own relink flow).
+  companion_book_id TEXT REFERENCES books(id),
   title TEXT NOT NULL,
   author TEXT,
   series_name TEXT,

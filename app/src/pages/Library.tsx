@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { fetchBooks } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
 import { reconcileAllProgress, removeFromContinueListening } from '../offline/reconcile'
+import { fetchMyLibrary, addToLibrary, removeFromLibrary } from '../api/cloudClient'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
@@ -10,7 +11,14 @@ import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
-import { useLibraryView, type SortOption, type StatusFilter, type DisplayMode } from '../library/LibraryViewContext'
+import {
+  useLibraryView,
+  type SortOption,
+  type StatusFilter,
+  type FormatFilter,
+  type DisplayMode,
+  type LibraryViewMode,
+} from '../library/LibraryViewContext'
 
 const SORT_LABELS: Record<SortOption, string> = {
   title: 'Title (A–Z)',
@@ -24,6 +32,32 @@ const STATUS_LABELS: Record<StatusFilter, string> = {
   'not-started': 'Not started',
   'in-progress': 'In progress',
   finished: 'Finished',
+}
+
+const FORMAT_LABELS: Record<FormatFilter, string> = {
+  all: 'All',
+  audio: '🎧 Audio',
+  ebook: '📖 Ebook',
+}
+
+const LIBRARY_VIEW_LABELS: Record<LibraryViewMode, string> = {
+  mine: 'My Library',
+  store: 'Store',
+}
+
+function isAudioFormat(book: Book): boolean {
+  return book.format === 'm4b' || book.format === 'mp3_folder'
+}
+
+// A companion pair (an audiobook and an ebook linked to each other — see
+// companionLink.ts server-side) exists as two separate book rows, one per
+// format. Shown as a single tile with a combo badge rather than two
+// separate tiles for what a person thinks of as one book: drops the
+// ebook-side row whenever its audio companion is also in this list, which
+// then carries both badges instead.
+function dedupeCompanionPairs(books: Book[]): Book[] {
+  const audioIds = new Set(books.filter(isAudioFormat).map((b) => b.id))
+  return books.filter((b) => !(b.format === 'epub' && b.companionBookId && audioIds.has(b.companionBookId)))
 }
 
 // Reached-the-last-chapter is a proxy for "finished," not literally
@@ -169,10 +203,75 @@ function groupByAuthor(books: Book[]): AuthorGroup[] {
     .sort((a, b) => collateByAuthor(a.author, b.author))
 }
 
-function BookTile({ book }: { book: Book }) {
+// Shown on every tile/row, not just the ebook-capable exceptions, per the
+// user's explicit ask — a badge that only appears sometimes reads as an
+// error state at a glance; always showing one makes "what can I do with
+// this book" consistent to scan across a mixed audio/ebook library.
+function FormatBadge({ book, className = '' }: { book: Book; className?: string }) {
+  const hasAudio = isAudioFormat(book)
+  const hasEbook = book.format === 'epub' || Boolean(book.companionBookId)
+  return (
+    <span className={`whitespace-nowrap ${className}`} title={hasAudio && hasEbook ? 'Audiobook + ebook' : hasAudio ? 'Audiobook' : 'Ebook'}>
+      {hasAudio && '🎧'}
+      {hasEbook && '📖'}
+    </span>
+  )
+}
+
+// Only rendered in Store mode (see BookGrid) — lets someone shelve a book
+// straight from the grid without drilling into BookDetail first. Sits
+// outside the tile/row's own <Link> (same pattern as the existing
+// Continue Listening ✕ button) so tapping it doesn't also navigate.
+function LibraryToggleButton({
+  inMyLibrary,
+  onToggle,
+  className,
+}: {
+  inMyLibrary: boolean
+  onToggle: (e: React.MouseEvent) => void
+  className: string
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-label={inMyLibrary ? 'Remove from My Library' : 'Add to My Library'}
+      title={inMyLibrary ? 'Remove from My Library' : 'Add to My Library'}
+      className={className}
+    >
+      {inMyLibrary ? '✓' : '+'}
+    </button>
+  )
+}
+
+function BookTile({
+  book,
+  inMyLibrary,
+  onToggleLibrary,
+}: {
+  book: Book
+  inMyLibrary?: boolean
+  onToggleLibrary?: (e: React.MouseEvent) => void
+}) {
   return (
     <Link to={`/book/${book.id}`} className="block">
-      <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
+      <div className="relative">
+        <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
+        <FormatBadge
+          book={book}
+          className="absolute right-1 top-1 rounded bg-slate-950/70 px-1 py-0.5 text-xs leading-none text-white"
+        />
+        {onToggleLibrary && (
+          <LibraryToggleButton
+            inMyLibrary={inMyLibrary ?? false}
+            onToggle={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onToggleLibrary(e)
+            }}
+            className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/70 text-xs text-white"
+          />
+        )}
+      </div>
       <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
       <p className="truncate text-xs text-muted">{book.author}</p>
       <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
@@ -180,14 +279,25 @@ function BookTile({ book }: { book: Book }) {
   )
 }
 
-function BookRow({ book }: { book: Book }) {
+function BookRow({
+  book,
+  inMyLibrary,
+  onToggleLibrary,
+}: {
+  book: Book
+  inMyLibrary?: boolean
+  onToggleLibrary?: (e: React.MouseEvent) => void
+}) {
   return (
     <Link to={`/book/${book.id}`} className="flex items-center gap-3 py-2">
       <div className="w-12 shrink-0">
         <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm text-primary">{book.title}</p>
+        <p className="flex items-center gap-1.5 truncate text-sm text-primary">
+          <FormatBadge book={book} className="text-xs" />
+          {book.title}
+        </p>
         <p className="truncate text-xs text-muted">
           {book.author}
           {book.seriesName && (
@@ -200,18 +310,45 @@ function BookRow({ book }: { book: Book }) {
         </p>
         {book.synopsis && <p className="line-clamp-2 text-xs text-subtle">{book.synopsis}</p>}
       </div>
+      {onToggleLibrary && (
+        <LibraryToggleButton
+          inMyLibrary={inMyLibrary ?? false}
+          onToggle={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onToggleLibrary(e)
+          }}
+          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary"
+        />
+      )}
       <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
     </Link>
   )
 }
 
-function BookGrid({ books, displayMode }: { books: Book[]; displayMode: DisplayMode }) {
+function BookGrid({
+  books,
+  displayMode,
+  myLibraryIds,
+  onToggleLibrary,
+}: {
+  books: Book[]
+  displayMode: DisplayMode
+  /** Only passed in Store mode — presence (even an empty Set) is what turns on the add/remove affordance. */
+  myLibraryIds?: Set<string>
+  onToggleLibrary?: (bookId: string, currentlyIn: boolean) => void
+}) {
+  const showToggle = myLibraryIds !== undefined && onToggleLibrary !== undefined
   if (displayMode === 'row') {
     return (
       <ul className="divide-y divide-border">
         {books.map((book) => (
           <li key={book.id}>
-            <BookRow book={book} />
+            <BookRow
+              book={book}
+              inMyLibrary={myLibraryIds?.has(book.id)}
+              onToggleLibrary={showToggle ? () => onToggleLibrary!(book.id, myLibraryIds!.has(book.id)) : undefined}
+            />
           </li>
         ))}
       </ul>
@@ -221,7 +358,11 @@ function BookGrid({ books, displayMode }: { books: Book[]; displayMode: DisplayM
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
       {books.map((book) => (
         <li key={book.id}>
-          <BookTile book={book} />
+          <BookTile
+            book={book}
+            inMyLibrary={myLibraryIds?.has(book.id)}
+            onToggleLibrary={showToggle ? () => onToggleLibrary!(book.id, myLibraryIds!.has(book.id)) : undefined}
+          />
         </li>
       ))}
     </ul>
@@ -257,6 +398,10 @@ export function Library() {
     setDisplayMode,
     statusFilter,
     setStatusFilter,
+    formatFilter,
+    setFormatFilter,
+    libraryViewMode,
+    setLibraryViewMode,
     scrollYRef,
   } = useLibraryView()
 
@@ -265,6 +410,11 @@ export function Library() {
   // removal is a deliberate, infrequent action, so a small client-side
   // override set is simpler than restructuring the useAsync data flow.
   const [removedFromShelf, setRemovedFromShelf] = useState<Set<string>>(new Set())
+  // Same idea, for the Store grid's Add/Remove My Library button — `true`
+  // means locally added, `false` locally removed, absence means "trust
+  // the fetched value." Layered on top of result.data.myLibraryIds (see
+  // effectiveMyLibraryIds below) rather than refetching on every toggle.
+  const [libraryOverrides, setLibraryOverrides] = useState<Map<string, boolean>>(new Map())
 
   async function handleRemoveFromContinueListening(e: React.MouseEvent, bookId: string) {
     e.preventDefault() // don't follow the enclosing Link to the book
@@ -278,6 +428,21 @@ export function Library() {
         next.delete(bookId)
         return next
       })
+    }
+  }
+
+  async function handleToggleLibrary(bookId: string, currentlyIn: boolean) {
+    if (!auth.token) return
+    setLibraryOverrides((prev) => new Map(prev).set(bookId, !currentlyIn))
+    try {
+      if (currentlyIn) {
+        await removeFromLibrary(auth.token, bookId)
+      } else {
+        await addToLibrary(auth.token, bookId)
+      }
+    } catch {
+      // Revert — the request failed, so the toggle didn't actually happen.
+      setLibraryOverrides((prev) => new Map(prev).set(bookId, currentlyIn))
     }
   }
 
@@ -295,21 +460,44 @@ export function Library() {
     // Missing books live exclusively on the Needs Attention page now — the
     // server excludes them here so a book that needs relinking never shows
     // up as a dead tile/row in the main grid.
-    const [books, progressEntries] = await Promise.all([
+    const [fetchedBooks, progressEntries, libraryItems] = await Promise.all([
       fetchBooks('active').then((rows) => rows.map(adaptBookListItem)),
       reconcileAllProgress(auth.token),
+      auth.token ? fetchMyLibrary(auth.token) : Promise.resolve([]),
     ])
+    const books = dedupeCompanionPairs(fetchedBooks)
+    const myLibraryIds = new Set(libraryItems.map((i) => i.book_id))
 
     const byBookId = new Map(books.map((b) => [b.id, b]))
     const progressByBookId = new Map(progressEntries.map((p) => [p.bookId, p]))
-    const continueListening = progressEntries
+    // A malformed/missing updatedAt on any single progress row (local or
+    // cloud) shouldn't take down the whole library fetch — treat it as
+    // "oldest" rather than letting .localeCompare on undefined throw.
+    // Not yet filtered to shelf-only here — that happens at render time
+    // against effectiveMyLibraryIds, so a live Add/Remove toggle updates
+    // this shelf without needing a full re-fetch.
+    const continueListeningCandidates = progressEntries
       .slice()
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
       .map((p) => byBookId.get(p.bookId))
       .filter((b): b is Book => b !== undefined)
 
-    return { books, continueListening, progressByBookId }
+    return { books, continueListeningCandidates, progressByBookId, myLibraryIds }
   }, [])
+
+  // Fetched shelf membership with any local Add/Remove overrides applied
+  // on top (see handleToggleLibrary) — the single source of truth for
+  // "is this book on my shelf" used by both the My Library filter and the
+  // Continue Listening shelf below.
+  const effectiveMyLibraryIds = useMemo(() => {
+    if (result.status !== 'success') return new Set<string>()
+    const ids = new Set(result.data.myLibraryIds)
+    for (const [bookId, inLibrary] of libraryOverrides) {
+      if (inLibrary) ids.add(bookId)
+      else ids.delete(bookId)
+    }
+    return ids
+  }, [result, libraryOverrides])
 
   const filteredBooks = useMemo(() => {
     if (result.status !== 'success') return []
@@ -319,9 +507,12 @@ export function Library() {
     return books.filter((b) => {
       if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
       if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
+      if (formatFilter === 'audio' && !isAudioFormat(b)) return false
+      if (formatFilter === 'ebook' && !(b.format === 'epub' || b.companionBookId)) return false
+      if (libraryViewMode === 'mine' && !effectiveMyLibraryIds.has(b.id)) return false
       return true
     })
-  }, [result, search, statusFilter])
+  }, [result, search, statusFilter, formatFilter, libraryViewMode, effectiveMyLibraryIds])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
 
@@ -332,6 +523,12 @@ export function Library() {
   // for the flat list.
   const authorGroups = useMemo(() => groupByAuthor(filteredBooks), [filteredBooks])
   const seriesGroups = useMemo(() => groupBySeries(filteredBooks), [filteredBooks])
+
+  // Spread onto every BookGrid call below — only in Store mode does the
+  // Add/Remove My Library affordance make sense (in My Library mode,
+  // everything shown is already added, so there's nothing to toggle).
+  const storeToggleProps =
+    libraryViewMode === 'store' ? { myLibraryIds: effectiveMyLibraryIds, onToggleLibrary: handleToggleLibrary } : {}
 
   // Restores the scroll position captured above, once the book grid has
   // actually rendered (not before — restoring against an empty "Loading…"
@@ -346,11 +543,24 @@ export function Library() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
-      <h1 className="mb-4 text-2xl font-semibold text-primary">Your Library</h1>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold text-primary">Your Library</h1>
+        <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
+          {(Object.entries(LIBRARY_VIEW_LABELS) as [LibraryViewMode, string][]).map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setLibraryViewMode(value)}
+              className={`px-3 py-1.5 ${libraryViewMode === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {result.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
 
-      {result.status === 'error' && <LibraryError onRetry={result.retry} />}
+      {result.status === 'error' && <LibraryError onRetry={result.retry} error={result.error} />}
 
       {result.status === 'success' && result.data.books.length === 0 && (
         <p className="px-2 text-center text-muted">
@@ -360,7 +570,9 @@ export function Library() {
 
       {result.status === 'success' &&
         (() => {
-          const continueListening = result.data.continueListening.filter((b) => !removedFromShelf.has(b.id))
+          const continueListening = result.data.continueListeningCandidates
+            .filter((b) => !removedFromShelf.has(b.id))
+            .filter((b) => effectiveMyLibraryIds.has(b.id))
           if (continueListening.length === 0) return null
           return (
             <section className="mb-6">
@@ -392,7 +604,7 @@ export function Library() {
         <section>
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <h2 className="mr-auto text-sm font-medium uppercase tracking-wide text-muted">
-              All Books · {filteredBooks.length}
+              {LIBRARY_VIEW_LABELS[libraryViewMode]} · {filteredBooks.length}
             </h2>
             <input
               type="search"
@@ -462,14 +674,29 @@ export function Library() {
                 </button>
               ))}
             </div>
+            <div className="flex overflow-hidden rounded-lg border border-border-strong text-xs">
+              {(Object.entries(FORMAT_LABELS) as [FormatFilter, string][]).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setFormatFilter(value)}
+                  className={`px-2.5 py-1.5 ${formatFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {filteredBooks.length === 0 ? (
             <p className="px-2 text-center text-muted">
-              {search ? `No books match "${search}".` : 'No books match these filters.'}
+              {search
+                ? `No books match "${search}".`
+                : libraryViewMode === 'mine'
+                  ? "Nothing on your shelf yet — switch to Store to browse and add books."
+                  : 'No books match these filters.'}
             </p>
           ) : viewMode === 'list' ? (
-            <BookGrid books={visibleBooks} displayMode={displayMode} />
+            <BookGrid books={visibleBooks} displayMode={displayMode} {...storeToggleProps} />
           ) : viewMode === 'byAuthor' ? (
             <div className="space-y-6">
               {authorGroups.map((group) => {
@@ -485,11 +712,11 @@ export function Library() {
                           <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-subtle">
                             {seriesGroup.seriesName} · {seriesGroup.books.length}
                           </h4>
-                          <BookGrid books={seriesGroup.books} displayMode={displayMode} />
+                          <BookGrid books={seriesGroup.books} displayMode={displayMode} {...storeToggleProps} />
                         </div>
                       ))}
                       {group.standalone.length > 0 && (
-                        <BookGrid books={group.standalone} displayMode={displayMode} />
+                        <BookGrid books={group.standalone} displayMode={displayMode} {...storeToggleProps} />
                       )}
                     </div>
                   </div>
@@ -503,7 +730,7 @@ export function Library() {
                   <h3 className="mb-2 text-sm font-medium text-secondary">
                     {group.seriesName} · {group.books.length}
                   </h3>
-                  <BookGrid books={group.books} displayMode={displayMode} />
+                  <BookGrid books={group.books} displayMode={displayMode} {...storeToggleProps} />
                 </div>
               ))}
               {seriesGroups.standalone.length > 0 && (
@@ -511,7 +738,7 @@ export function Library() {
                   <h3 className="mb-2 text-sm font-medium text-secondary">
                     Not part of a series · {seriesGroups.standalone.length}
                   </h3>
-                  <BookGrid books={seriesGroups.standalone} displayMode={displayMode} />
+                  <BookGrid books={seriesGroups.standalone} displayMode={displayMode} {...storeToggleProps} />
                 </div>
               )}
             </div>

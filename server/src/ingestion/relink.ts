@@ -78,7 +78,13 @@ export async function findRelinkCandidates(source: SourceRow, book: BookRow): Pr
   }
 
   const all = await findCandidates(searchRoot)
-  const unclaimed = all.filter((c) => !claimed.has(c.filePath))
+  // Relink only ever replaces a missing book's own audio file — epub
+  // candidates (a different, unrelated book format) never belong in this
+  // suggestion pool. The type-guard form (not a plain boolean filter) is
+  // what actually narrows `format` back down for the `RelinkCandidate`
+  // return type below.
+  const isAudioCandidate = (c: Candidate): c is Candidate & { format: 'm4b' | 'mp3_folder' } => c.format !== 'epub'
+  const unclaimed = all.filter(isAudioCandidate).filter((c) => !claimed.has(c.filePath))
 
   const targetWords = new Set([...normalizeWords(book.title), ...normalizeWords(book.author ?? '')])
 

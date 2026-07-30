@@ -89,6 +89,83 @@ function migrate(db: Database.Database): void {
   if (!appSettingsColumns.has('auto_purge_after_days')) {
     db.exec('ALTER TABLE app_settings ADD COLUMN auto_purge_after_days INTEGER NOT NULL DEFAULT 60')
   }
+
+  // Last step, once every other books column above is guaranteed present —
+  // see rebuildBooksTableForEpubSupport's own docstring for why this one
+  // can't be a plain ADD COLUMN like everything else in this function.
+  if (!booksColumns.has('companion_book_id')) {
+    rebuildBooksTableForEpubSupport(db)
+  }
+}
+
+/**
+ * SQLite can't widen an existing CHECK constraint (here, `format`'s) via
+ * ALTER TABLE — only ADD COLUMN/DROP COLUMN/RENAME are supported, so every
+ * other migration in this file gets away with a plain ADD COLUMN, but
+ * adding `'epub'` as a valid format needs a full table rebuild: create a
+ * new table with the wider CHECK (+ the new companion_book_id column),
+ * copy every row across, drop the old table, rename the new one into
+ * place. Runs inside a single transaction (all-or-nothing — a failure
+ * partway leaves the original table untouched) with foreign key
+ * enforcement suspended for its duration (SQLite pragma docs recommend
+ * this for any schema surgery that drops/recreates a referenced table;
+ * `chapters.book_id`'s FK on `books` — and books' own new self-referential
+ * companion_book_id FK — both correctly re-resolve to the renamed table
+ * once it's back in place under the name `books`, confirmed via a
+ * dedicated migration test).
+ */
+function rebuildBooksTableForEpubSupport(db: Database.Database): void {
+  const wasForeignKeysOn = db.pragma('foreign_keys', { simple: true }) === 1
+  db.pragma('foreign_keys = OFF')
+  try {
+    const rebuild = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE books_new (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL REFERENCES sources(id),
+          file_path TEXT NOT NULL,
+          format TEXT NOT NULL CHECK (format IN ('m4b', 'mp3_folder', 'epub')),
+          companion_book_id TEXT REFERENCES books(id),
+          title TEXT NOT NULL,
+          author TEXT,
+          series_name TEXT,
+          series_number REAL,
+          series_number_source TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual')),
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'missing')),
+          missing_since TEXT,
+          artwork_thumb_path TEXT,
+          artwork_full_path TEXT,
+          volume_normalization_gain REAL,
+          content_hash TEXT,
+          genre TEXT,
+          synopsis TEXT,
+          metadata_enrichment_attempted_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `)
+      db.exec(`
+        INSERT INTO books_new (
+          id, source_id, file_path, format, companion_book_id, title, author, series_name, series_number,
+          series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
+          volume_normalization_gain, content_hash, genre, synopsis, metadata_enrichment_attempted_at,
+          created_at, updated_at
+        )
+        SELECT
+          id, source_id, file_path, format, NULL, title, author, series_name, series_number,
+          series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
+          volume_normalization_gain, content_hash, genre, synopsis, metadata_enrichment_attempted_at,
+          created_at, updated_at
+        FROM books
+      `)
+      db.exec('DROP TABLE books')
+      db.exec('ALTER TABLE books_new RENAME TO books')
+      db.exec('CREATE INDEX IF NOT EXISTS idx_books_source ON books(source_id)')
+    })
+    rebuild()
+  } finally {
+    db.pragma(`foreign_keys = ${wasForeignKeysOn ? 'ON' : 'OFF'}`)
+  }
 }
 
 export function closeDb(): void {

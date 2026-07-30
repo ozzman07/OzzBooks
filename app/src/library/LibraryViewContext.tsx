@@ -15,6 +15,19 @@ export type ViewMode = 'list' | 'byAuthor' | 'bySeries'
 // purely how each group of books renders, orthogonal to how they're grouped.
 export type DisplayMode = 'tile' | 'row'
 export type StatusFilter = 'all' | 'not-started' | 'in-progress' | 'finished'
+// 'audio'/'ebook' mean "can listen to"/"can read" — not a strict partition,
+// since a companion pair (see Library.tsx's dedup) satisfies both.
+export type FormatFilter = 'all' | 'audio' | 'ebook'
+// 'mine' = only books explicitly added to this account's shelf (the
+// default — what actually shows on Continue Listening too); 'store' =
+// the full shared catalog, browsable/sample-able regardless of who
+// scanned a book in. See the "My Library" plan for the full rationale.
+export type LibraryViewMode = 'mine' | 'store'
+// Same idea, scoped to the Needs Attention (missing books) list — 'mine'
+// keeps that list from growing as cluttered as the old unfiltered main
+// grid once more people add their own sources; 'everyone' is there for
+// whoever's actually responsible for fixing sources.
+export type NeedsAttentionScope = 'mine' | 'everyone'
 
 interface LibraryViewContextValue {
   search: string
@@ -27,6 +40,12 @@ interface LibraryViewContextValue {
   setDisplayMode: Dispatch<SetStateAction<DisplayMode>>
   statusFilter: StatusFilter
   setStatusFilter: Dispatch<SetStateAction<StatusFilter>>
+  formatFilter: FormatFilter
+  setFormatFilter: Dispatch<SetStateAction<FormatFilter>>
+  libraryViewMode: LibraryViewMode
+  setLibraryViewMode: Dispatch<SetStateAction<LibraryViewMode>>
+  needsAttentionScope: NeedsAttentionScope
+  setNeedsAttentionScope: Dispatch<SetStateAction<NeedsAttentionScope>>
   /** A ref rather than state — scroll position only needs to be *read* once
    * (to restore it) and *written* once (on leaving the page), so tracking
    * it as state would just cause pointless re-renders on every scroll
@@ -47,6 +66,9 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [displayMode, setDisplayMode] = useState<DisplayMode>('tile')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>('all')
+  const [libraryViewMode, setLibraryViewMode] = useState<LibraryViewMode>('mine')
+  const [needsAttentionScope, setNeedsAttentionScope] = useState<NeedsAttentionScope>('mine')
   const scrollYRef = useRef(0)
 
   const value: LibraryViewContextValue = {
@@ -60,6 +82,12 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
     setDisplayMode,
     statusFilter,
     setStatusFilter,
+    formatFilter,
+    setFormatFilter,
+    libraryViewMode,
+    setLibraryViewMode,
+    needsAttentionScope,
+    setNeedsAttentionScope,
     scrollYRef,
   }
 

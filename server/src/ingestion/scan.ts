@@ -4,17 +4,19 @@ import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import { getDb } from '../db/index.js'
 import { logActivity } from '../db/activityLog.js'
-import type { BookRow, SourceRow } from '../types.js'
+import type { BookFormat, BookRow, SourceRow } from '../types.js'
 import { ingestMp3Folder, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { ingestM4b, isDrmFile } from './m4b.js'
 import { groupM4bParts, groupSiblingFolders } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
-import { extractArtwork } from './artwork.js'
+import { extractArtwork, saveArtworkBuffer } from './artwork.js'
+import { readEpubMetadata } from './epub.js'
+import { runCompanionLinking } from './companionLink.js'
 import { deriveSeriesNumberFromName } from './seriesNumber.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
 
 export interface Candidate {
-  format: 'm4b' | 'mp3_folder'
+  format: BookFormat
   /** book-level path: the first (or only) .m4b file; for mp3_folder, the
    * folder itself (single-folder case) or the first sibling disc folder
    * in play order (multi-folder group case). */
@@ -53,6 +55,10 @@ const M4B_EXTENSIONS = ['.m4b', '.m4a']
 export function isM4bFile(filename: string): boolean {
   const lower = filename.toLowerCase()
   return M4B_EXTENSIONS.some((ext) => lower.endsWith(ext))
+}
+
+export function isEpubFile(filename: string): boolean {
+  return filename.toLowerCase().endsWith('.epub')
 }
 
 /**
@@ -322,8 +328,21 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
 
   const m4bFiles = files.filter((f) => isM4bFile(f.name))
   const mp3Files = files.filter((f) => f.name.toLowerCase().endsWith('.mp3'))
+  const epubFiles = files.filter((f) => isEpubFile(f.name))
 
   const candidates: Candidate[] = []
+
+  // Independent of the audio detection above — an epub is never grouped
+  // into a multi-part book the way M4B/mp3 rips are (one file is always
+  // one book), and unlike mp3_folder's audio-only fallback, epub detection
+  // doesn't care whether audio also exists in this same folder: this
+  // library's actual ebooks live in a completely separate source/folder
+  // tree from the audiobooks (see companionLink.ts for how the two get
+  // paired back together), but nothing here assumes that's always true.
+  for (const f of epubFiles) {
+    const filePath = path.join(dir, f.name)
+    candidates.push({ format: 'epub', filePath, hashInput: filePath })
+  }
 
   // Some rips split one book across multiple M4B files (e.g. "Part 1"/
   // "Part 2") — groupM4bParts identifies those so they become one book
@@ -509,7 +528,15 @@ export function buildSeriesSiblingCounts(source: SourceRow, candidates: Candidat
   return counts
 }
 
+// Audio-only — an epub candidate is handled entirely separately in
+// applyIngestedCandidate (readEpubMetadata, not this function). Guarded
+// explicitly rather than left to fall into the mp3_folder branch below,
+// since format is a 3-way union now and a silent fallthrough here would
+// misread an epub file as an (empty, mp3-less) mp3 folder.
 export async function ingestCandidate(candidate: Candidate): Promise<IngestedBook> {
+  if (candidate.format === 'epub') {
+    throw new Error('ingestCandidate does not handle epub candidates — see applyIngestedCandidate')
+  }
   if (candidate.format === 'm4b') {
     return ingestM4b(candidate.parts ?? [candidate.filePath])
   }
@@ -548,6 +575,11 @@ export interface ScanResult {
    * technically passed through candidate ingestion once as a plain
    * create before being merged. */
   autoReplaced: number
+  /** Audiobook/ebook pairs newly linked as companions this scan — see
+   * companionLink.ts. Runs after every scan (local or remote) regardless
+   * of which source (audio or ebook) was just scanned, since either side
+   * appearing can complete a pair. */
+  companionLinked: number
 }
 
 /**
@@ -561,7 +593,7 @@ export interface ScanResult {
  */
 export interface ResolvedBook {
   filePath: string
-  format: 'm4b' | 'mp3_folder'
+  format: BookFormat
   title: string
   author: string | null
   seriesName: string | null
@@ -694,15 +726,55 @@ export async function applyIngestedCandidate(
   hash: string,
   seriesSiblingCounts?: Map<string, number>,
 ): Promise<{ bookId: string; created: boolean }> {
-  const ingested = await ingestCandidate(candidate)
-  const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
-  // groupFolder (set only for a multi-folder mp3_folder group) is the
-  // book's own folder; filePath/hashInput point one level deeper, into the
-  // first disc subfolder, which would otherwise misread as an extra path
-  // segment for series derivation and miss a parent-folder cover.jpg.
+  // Folder-derived author/series apply identically regardless of format —
+  // an epub source is organized the same Author/Series/Book way the
+  // audiobook sources already are (see companionLink.ts, which depends on
+  // that consistency for cross-source matching).
   const bookOwnFolder = resolveBookOwnFolder(candidate)
   const siblingBookCount = seriesSiblingCounts?.get(path.relative(source.path_scope, bookOwnFolder)) ?? 1
   const seriesName = deriveSeriesFromFolder(source.path_scope, bookOwnFolder, siblingBookCount)
+  const bookId = existingBookId ?? randomUUID()
+
+  if (candidate.format === 'epub') {
+    const epubMeta = await readEpubMetadata(candidate.filePath)
+    if (epubMeta.hasDrm) {
+      // Caught by scanSource's per-candidate try/catch, same treatment as
+      // any other unreadable file — logged as a scan issue, doesn't abort
+      // the rest of the scan. DRM can't be detected from the extension
+      // alone (unlike .aax) — only found out once the file's actually
+      // opened here, so unlike audio DRM this can't be filtered out at
+      // findCandidates time.
+      throw new Error('DRM-encumbered epub (out of scope)')
+    }
+    const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? epubMeta.author
+    // No embedded "series number" concept in epub metadata the way audio
+    // tags sometimes have one — folder-derived is the only source here.
+    const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
+      existingBookId,
+      seriesName,
+      bookOwnFolder,
+      candidate.filePath,
+      null,
+    )
+    const artwork = epubMeta.coverBuffer ? await saveArtworkBuffer(bookId, epubMeta.coverBuffer) : null
+
+    return writeBookAndChapters(source, bookId, !existingBookId, {
+      filePath: candidate.filePath,
+      format: 'epub',
+      title: epubMeta.title,
+      author,
+      seriesName,
+      seriesNumber,
+      seriesNumberSource,
+      artworkThumbPath: artwork?.thumbPath ?? null,
+      artworkFullPath: artwork?.fullPath ?? null,
+      contentHash: hash,
+      chapters: [], // no audio chapters for an epub-primary book
+    })
+  }
+
+  const ingested = await ingestCandidate(candidate)
+  const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
   const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
     existingBookId,
     seriesName,
@@ -710,7 +782,6 @@ export async function applyIngestedCandidate(
     candidate.filePath,
     ingested.seriesNumber,
   )
-  const bookId = existingBookId ?? randomUUID()
   const artwork = await extractArtwork(
     bookId,
     candidate.groupFolder ?? path.dirname(candidate.hashInput),
@@ -769,7 +840,8 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
       skippedDuplicates: 0,
       failed: 1,
       removedAsTrash: 0,
-    autoReplaced: 0,
+      autoReplaced: 0,
+      companionLinked: 0,
     }
     db.prepare(
       `UPDATE sources SET
@@ -793,6 +865,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     failed: 0,
     removedAsTrash: 0,
     autoReplaced: 0,
+    companionLinked: 0,
   }
   const seenFilePaths = new Set<string>()
   const newlyCreated: NewlyCreatedBook[] = []
@@ -901,6 +974,12 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     alreadyMissing.filter((b) => !autoReplacedIds.has(b.id)),
     result,
   )
+
+  // Runs after every scan, not just this source's own books — either an
+  // audiobook or an ebook source finishing a scan can complete a pair, and
+  // linkCompanions/runCompanionLinking already skip anything already
+  // linked, so this is cheap and safe to call unconditionally here.
+  result.companionLinked = runCompanionLinking().linked
 
   db.prepare(
     `UPDATE sources SET

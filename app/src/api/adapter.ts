@@ -28,6 +28,8 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     seriesNumber: book.series_number ?? undefined,
     synopsis: book.synopsis ?? undefined,
     status: book.status,
+    format: book.format,
+    companionBookId: book.companion_book_id ?? undefined,
     coverThumbUrl: book.artwork_thumb_path ? artworkUrl(book.id, 'thumb') : undefined,
     coverFullUrl: book.artwork_full_path ? artworkUrl(book.id, 'full') : undefined,
     createdAt: book.created_at,

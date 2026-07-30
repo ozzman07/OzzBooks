@@ -87,6 +87,22 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 CREATE INDEX IF NOT EXISTS playlist_items_playlist_id_position
   ON playlist_items (playlist_id, position);
 
+-- A user's personal "shelf" on top of the shared catalog — the catalog
+-- (server/'s SQLite) is one big browsable store everyone sees regardless
+-- of who scanned a book in; this is what actually shows up on someone's
+-- own Library screen and Continue Listening shelf. Unlike playlists,
+-- there's no ordering or sharing concept here, just membership, so this
+-- follows progress's shape (composite PK, no surrogate id) rather than
+-- playlists/playlist_items' shape.
+-- book_id is TEXT, not a foreign key, matching progress/playlist_items
+-- above — book records live in server/'s own SQLite, not here.
+CREATE TABLE IF NOT EXISTS library_items (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id TEXT NOT NULL,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, book_id)
+);
+
 -- Backfill for accounts created before this feature shipped — the
 -- signup handler only creates Up Next for *new* signups (auth.ts), so
 -- every pre-existing user would otherwise have no reserved playlist at

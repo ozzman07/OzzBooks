@@ -49,6 +49,10 @@ export async function reconcileAllProgress(token: string | null): Promise<LocalP
   for (const local of localAll) byBookId.set(local.bookId, local)
 
   for (const entry of cloudAll) {
+    // A single malformed cloud row (missing the fields IndexedDB's keyPath
+    // or the Continue Listening sort depend on) shouldn't take down the
+    // whole library fetch for every other book — skip just that row.
+    if (!entry.book_id || !entry.updated_at) continue
     const asLocal: LocalProgressEntry = {
       bookId: entry.book_id,
       chapterId: entry.chapter_id ?? '',

@@ -57,3 +57,9 @@ export interface PlaylistItemRow {
   position: number
   added_at: string
 }
+
+export interface LibraryItemRow {
+  user_id: string
+  book_id: string
+  added_at: string
+}

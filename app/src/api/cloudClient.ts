@@ -106,7 +106,9 @@ export async function fetchBookProgress(token: string, bookId: string): Promise<
 export function putProgress(
   token: string,
   bookId: string,
-  data: { position: Position; chapterId: string; updatedAt: string },
+  // chapterId is null for an ebook position (a CFI has no chapter concept
+  // the way audio does) — the cloud route already treats it as optional.
+  data: { position: Position; chapterId: string | null; updatedAt: string },
 ): Promise<ProgressEntry> {
   return cloudFetch<ProgressEntry>(`/sync/progress/${bookId}`, {
     method: 'PUT',
@@ -228,5 +230,32 @@ export function reorderPlaylist(token: string, playlistId: string, itemIds: stri
     method: 'PUT',
     headers: authHeaders(token),
     body: JSON.stringify({ itemIds }),
+  })
+}
+
+// A user's personal shelf on top of the shared catalog — see cloud/'s
+// schema.sql comment on library_items for why this is a separate concept
+// from playlists (no ordering/sharing, just membership).
+export interface LibraryItem {
+  book_id: string
+  added_at: string
+}
+
+export function fetchMyLibrary(token: string): Promise<LibraryItem[]> {
+  return cloudFetch<LibraryItem[]>('/sync/library', { headers: authHeaders(token) })
+}
+
+export function addToLibrary(token: string, bookId: string): Promise<LibraryItem> {
+  return cloudFetch<LibraryItem>('/sync/library', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ bookId }),
+  })
+}
+
+export function removeFromLibrary(token: string, bookId: string): Promise<void> {
+  return cloudFetch<void>(`/sync/library/${bookId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
   })
 }

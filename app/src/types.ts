@@ -28,6 +28,11 @@ export interface Book {
   seriesNumber?: number
   synopsis?: string
   status: 'active' | 'missing'
+  format: 'm4b' | 'mp3_folder' | 'epub'
+  /** The linked audiobook/ebook counterpart's id, if any — see companionLink.ts
+   * server-side. Together with `format`, this is what BookDetail uses to
+   * decide whether to show a "Read" entry point alongside/instead of "Play". */
+  companionBookId?: string
   coverThumbUrl?: string
   coverFullUrl?: string
   totalDuration: number

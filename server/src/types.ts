@@ -1,5 +1,5 @@
 export type SourceType = 'local' | 'synology' | 'dropbox' | 'google_drive'
-export type BookFormat = 'm4b' | 'mp3_folder'
+export type BookFormat = 'm4b' | 'mp3_folder' | 'epub'
 export type BookStatus = 'active' | 'missing'
 export type CredentialsStatus = 'ok' | 'needs_reconnect'
 
@@ -34,6 +34,7 @@ export interface BookRow {
   source_id: string
   file_path: string
   format: BookFormat
+  companion_book_id: string | null
   title: string
   author: string | null
   series_name: string | null

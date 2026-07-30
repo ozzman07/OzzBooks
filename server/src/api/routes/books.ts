@@ -5,6 +5,7 @@ import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
 import { deleteBookAndArtwork } from '../../ingestion/scan.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
+import { companionMatchScore, linkCompanions, unlinkCompanions } from '../../ingestion/companionLink.js'
 
 export const booksRouter = Router()
 
@@ -113,6 +114,46 @@ booksRouter.get('/:id', (req, res) => {
   res.json({ ...book, chapters, source_label: source.label, source_type: source.type })
 })
 
+// Serves the actual epub bytes — a book's own file if it's epub-primary,
+// otherwise its linked companion's. Deliberately not res.sendFile with
+// Range support the way stream.ts's audio route is: an epub is a small
+// zip archive fetched whole by the reader (see EbookReader.tsx), not
+// something that benefits from partial-content seeking. Local/Synology
+// sources only for now — Google Drive ebook support needs its own
+// whole-file download path, not built yet (see Claude.md).
+booksRouter.get('/:id/epub', (req, res) => {
+  const loaded = loadBookAndSource(req.params.id)
+  if (!loaded) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const { book, source } = loaded
+
+  let epubBook = book
+  let epubSource = source
+  if (book.format !== 'epub') {
+    const companion = book.companion_book_id ? loadBookAndSource(book.companion_book_id) : undefined
+    if (!companion || companion.book.format !== 'epub') {
+      res.status(404).json({ error: 'this book has no ebook available' })
+      return
+    }
+    epubBook = companion.book
+    epubSource = companion.source
+  }
+
+  if (epubSource.type !== 'local' && epubSource.type !== 'synology') {
+    res.status(501).json({ error: 'ebook serving for this source type is not implemented yet' })
+    return
+  }
+
+  res.setHeader('Content-Type', 'application/epub+zip')
+  res.sendFile(epubBook.file_path, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: 'epub file not found on disk', detail: String(err) })
+    }
+  })
+})
+
 booksRouter.get('/:id/relink-candidates', async (req, res) => {
   const loaded = loadBookAndSource(req.params.id)
   if (!loaded) {
@@ -165,4 +206,76 @@ booksRouter.post('/:id/relink/confirm', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'relink confirm failed', detail: String(err) })
   }
+})
+
+// Suggests the opposite format (audio <-> epub) as a companion match,
+// ranked the same way runCompanionLinking auto-links — for anything that
+// scored too low/ambiguous to link automatically. Excludes books already
+// linked to something (including this one, if it somehow already has a
+// companion) from the suggestion pool.
+booksRouter.get('/:id/companion-candidates', (req, res) => {
+  const loaded = loadBookAndSource(req.params.id)
+  if (!loaded) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const { book, source } = loaded
+  const oppositeFormats = book.format === 'epub' ? ['m4b', 'mp3_folder'] : ['epub']
+
+  const candidates = getDb()
+    .prepare(
+      `SELECT * FROM books WHERE format IN (${oppositeFormats.map(() => '?').join(',')}) AND companion_book_id IS NULL AND id != ?`,
+    )
+    .all(...oppositeFormats, book.id) as BookRow[]
+
+  const sourcesById = new Map(
+    (getDb().prepare('SELECT * FROM sources').all() as SourceRow[]).map((s) => [s.id, s]),
+  )
+
+  const scored = candidates
+    .map((candidate) => {
+      const candidateSource = sourcesById.get(candidate.source_id)
+      return candidateSource ? { candidate, score: companionMatchScore(book, source, candidate, candidateSource) } : null
+    })
+    .filter((s): s is { candidate: BookRow; score: number } => s !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+
+  res.json(scored.map(({ candidate, score }) => ({ id: candidate.id, title: candidate.title, author: candidate.author, score })))
+})
+
+booksRouter.post('/:id/link-companion', (req, res) => {
+  const loaded = loadBookAndSource(req.params.id)
+  if (!loaded) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const targetId = typeof req.body?.targetBookId === 'string' ? req.body.targetBookId : null
+  if (!targetId) {
+    res.status(400).json({ error: 'targetBookId is required' })
+    return
+  }
+  const target = getDb().prepare('SELECT * FROM books WHERE id = ?').get(targetId) as BookRow | undefined
+  if (!target) {
+    res.status(404).json({ error: 'target book not found' })
+    return
+  }
+  const isAudio = (f: string) => f === 'm4b' || f === 'mp3_folder'
+  if (isAudio(loaded.book.format) === isAudio(target.format)) {
+    res.status(400).json({ error: 'a companion link must pair an audiobook with an ebook' })
+    return
+  }
+
+  linkCompanions(loaded.book.id, target.id, `Manually linked as a companion to "${target.title}"`)
+  res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(loaded.book.id))
+})
+
+booksRouter.post('/:id/unlink-companion', (req, res) => {
+  const loaded = loadBookAndSource(req.params.id)
+  if (!loaded) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  unlinkCompanions(loaded.book.id)
+  res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(loaded.book.id))
 })

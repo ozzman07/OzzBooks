@@ -57,7 +57,8 @@ export interface ApiBook {
   id: string
   source_id: string
   file_path: string
-  format: 'm4b' | 'mp3_folder'
+  format: 'm4b' | 'mp3_folder' | 'epub'
+  companion_book_id: string | null
   title: string
   author: string | null
   series_name: string | null
@@ -123,6 +124,7 @@ export interface ApiScanResult {
   failed: number
   removedAsTrash: number
   autoReplaced: number
+  companionLinked: number
 }
 
 // A scan is fire-and-forget on the server (it can run for well over an
@@ -138,6 +140,16 @@ export type ApiScanState =
 
 export function fetchSources(): Promise<ApiSource[]> {
   return apiFetch<ApiSource[]>('/api/sources')
+}
+
+// Local sources have no OAuth consent step (unlike Google Drive's
+// connectGoogleDrive redirect), so adding one is a plain synchronous POST —
+// the caller just needs an absolute path the server-side process can read.
+export function createLocalSource(label: string, pathScope: string): Promise<ApiSource> {
+  return apiFetch<ApiSource>('/api/sources', {
+    method: 'POST',
+    body: JSON.stringify({ type: 'local', label, pathScope }),
+  })
 }
 
 // Full-page navigation, not fetch() — this is an OAuth consent flow, the
@@ -261,6 +273,26 @@ export function fetchBooks(status?: 'active' | 'missing'): Promise<ApiBookListIt
 
 export function fetchBook(id: string): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`)
+}
+
+// epub.js's `ePub(data)` constructor takes an ArrayBuffer directly, so —
+// unlike audio/artwork's mediaUrl() `?token=` trick, needed only because
+// <audio>/<img> src attributes can't set headers — this fetches the whole
+// file eagerly with a normal Authorization header, same as apiFetch, just
+// returning raw bytes instead of parsed JSON.
+export async function fetchEpubBytes(bookId: string): Promise<ArrayBuffer> {
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE_URL}/api/books/${bookId}/epub`, {
+      headers: { Authorization: `Bearer ${API_TOKEN}` },
+    })
+  } catch (err) {
+    throw new ApiError(`Network error reaching API: ${String(err)}`, 0)
+  }
+  if (!res.ok) {
+    throw new ApiError(`API request failed: ${res.status} ${res.statusText}`, res.status)
+  }
+  return res.arrayBuffer()
 }
 
 export function updateBook(

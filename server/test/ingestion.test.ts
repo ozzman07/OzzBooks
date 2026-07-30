@@ -623,6 +623,7 @@ describe('ingestion', () => {
       failed: 1,
       removedAsTrash: 0,
       autoReplaced: 0,
+      companionLinked: 0,
     })
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -828,5 +829,131 @@ describe('ingestion', () => {
     const newBook = books.find((b) => b.id !== bookBefore.id)
     expect(newBook.status).toBe('active')
     expect(newBook.title).toBe('Completely Different Story')
+  }, 30_000)
+
+  it('ingests a standalone epub as its own book, with folder-derived author overriding the embedded one', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-'))
+    // Embedded creator ("Embedded Author") deliberately differs from the
+    // author folder name — folder-derived should win, same as it already
+    // does for audio (deriveAuthorFromFolder).
+    const authorDir = path.join(tempRoot, 'Folder Author')
+    await mkdir(authorDir, { recursive: true })
+    await makeTestEpub(path.join(authorDir, 'A Standalone Ebook.epub'), {
+      title: 'A Standalone Ebook',
+      author: 'Embedded Author',
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Epub Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1)
+    expect(result.failed).toBe(0)
+
+    const book = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(book.format).toBe('epub')
+    expect(book.title).toBe('A Standalone Ebook')
+    expect(book.author).toBe('Folder Author')
+    expect(book.status).toBe('active')
+    expect(book.companion_book_id).toBeNull()
+    // Cover extracted from the epub's own manifest, saved like any other artwork.
+    expect(book.artwork_thumb_path).toBeTruthy()
+    expect(book.artwork_full_path).toBeTruthy()
+
+    const chapters = db.prepare('SELECT * FROM chapters WHERE book_id = ?').all(book.id)
+    expect(chapters).toHaveLength(0)
+  }, 30_000)
+
+  it('re-scanning an epub source is idempotent and clears missing_since if the file comes back', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, rm } = await import('node:fs/promises')
+    const { makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-missing-'))
+    const authorDir = path.join(tempRoot, 'Some Author')
+    await mkdir(authorDir, { recursive: true })
+    const epubPath = path.join(authorDir, 'Book.epub')
+    await makeTestEpub(epubPath, { title: 'Book', author: 'Some Author' })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Epub Missing Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const bookBefore = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookBefore.status).toBe('active')
+
+    await rm(epubPath)
+    const second = await scanSource(source)
+    expect(second.markedMissing).toBe(1)
+    const bookMissing = db.prepare('SELECT * FROM books WHERE id = ?').get(bookBefore.id) as any
+    expect(bookMissing.status).toBe('missing')
+    expect(bookMissing.missing_since).toBeTruthy()
+
+    await makeTestEpub(epubPath, { title: 'Book', author: 'Some Author' })
+    await scanSource(source)
+    const bookRestored = db.prepare('SELECT * FROM books WHERE id = ?').get(bookBefore.id) as any
+    expect(bookRestored.status).toBe('active')
+    expect(bookRestored.missing_since).toBeNull()
+  }, 30_000)
+
+  it('skips a DRM-encumbered epub (and a separately corrupt one) without failing the rest of the scan', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-drm-'))
+    const authorDir = path.join(tempRoot, 'DRM Author')
+    await mkdir(authorDir, { recursive: true })
+    await makeTestEpub(path.join(authorDir, 'Open Book.epub'), { title: 'Open Book', author: 'DRM Author' })
+    await makeTestEpub(path.join(authorDir, 'Protected Book.epub'), {
+      title: 'Protected Book',
+      author: 'DRM Author',
+      includeDrm: true,
+    })
+    const corruptEpubPath = path.join(authorDir, 'Corrupt.epub')
+    await writeFile(corruptEpubPath, 'not a real zip file')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Epub DRM Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1) // only the open epub
+    expect(result.failed).toBe(2) // DRM-encumbered + corrupt
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].title).toBe('Open Book')
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(2)
+    expect(issues.some((i) => i.error.includes('DRM'))).toBe(true)
   }, 30_000)
 })
