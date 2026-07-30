@@ -42,15 +42,17 @@ interface LibraryViewContextValue {
   setStatusFilter: Dispatch<SetStateAction<StatusFilter>>
   formatFilter: FormatFilter
   setFormatFilter: Dispatch<SetStateAction<FormatFilter>>
-  libraryViewMode: LibraryViewMode
-  setLibraryViewMode: Dispatch<SetStateAction<LibraryViewMode>>
   needsAttentionScope: NeedsAttentionScope
   setNeedsAttentionScope: Dispatch<SetStateAction<NeedsAttentionScope>>
   /** A ref rather than state — scroll position only needs to be *read* once
    * (to restore it) and *written* once (on leaving the page), so tracking
    * it as state would just cause pointless re-renders on every scroll
-   * event for no benefit. */
-  scrollYRef: MutableRefObject<number>
+   * event for no benefit. Keyed by pathname (not a single number) now that
+   * "My Library" and "Store" are separate routes (/library, /store)
+   * sharing the same Library component — each unmount/remount (switching
+   * between them via the bottom nav) needs its own remembered position,
+   * not one shared value that the other route's scrolling overwrites. */
+  scrollPositionsRef: MutableRefObject<Map<string, number>>
 }
 
 const LibraryViewContext = createContext<LibraryViewContextValue | null>(null)
@@ -67,9 +69,8 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>('tile')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [formatFilter, setFormatFilter] = useState<FormatFilter>('all')
-  const [libraryViewMode, setLibraryViewMode] = useState<LibraryViewMode>('mine')
   const [needsAttentionScope, setNeedsAttentionScope] = useState<NeedsAttentionScope>('mine')
-  const scrollYRef = useRef(0)
+  const scrollPositionsRef = useRef(new Map<string, number>())
 
   const value: LibraryViewContextValue = {
     search,
@@ -84,11 +85,9 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
     setStatusFilter,
     formatFilter,
     setFormatFilter,
-    libraryViewMode,
-    setLibraryViewMode,
     needsAttentionScope,
     setNeedsAttentionScope,
-    scrollYRef,
+    scrollPositionsRef,
   }
 
   return <LibraryViewContext.Provider value={value}>{children}</LibraryViewContext.Provider>
