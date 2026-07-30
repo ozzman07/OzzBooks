@@ -379,7 +379,7 @@ export function BookDetail() {
                 onClick={() => navigate(`/book/${book.id}/read`)}
                 className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
               >
-                📖 Read
+                📖 {hasProgress ? 'Keep Reading' : 'Read'}
               </button>
               <button
                 onClick={() => navigate(`/book/${book.companionBookId}`)}
@@ -395,7 +395,7 @@ export function BookDetail() {
                 disabled={book.status === 'missing' || book.chapters.length === 0}
                 className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
               >
-                🎧 {hasProgress ? 'Resume' : 'Play'}
+                🎧 {hasProgress ? 'Keep Listening' : 'Play'}
               </button>
               <button
                 onClick={() => navigate(`/book/${book.companionBookId}/read`)}
@@ -411,7 +411,7 @@ export function BookDetail() {
           onClick={() => navigate(`/book/${book.id}/read`)}
           className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
         >
-          Read
+          {hasProgress ? 'Keep Reading' : 'Read'}
         </button>
       ) : (
         <button
@@ -419,7 +419,7 @@ export function BookDetail() {
           disabled={book.status === 'missing' || book.chapters.length === 0}
           className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
         >
-          {hasProgress ? 'Resume' : 'Play'}
+          {hasProgress ? 'Keep Listening' : 'Play'}
         </button>
       )}
 
@@ -435,14 +435,22 @@ export function BookDetail() {
           onClick={() => void handleRemoveFromContinueListening()}
           className="mt-1 w-full text-center text-xs text-subtle underline"
         >
-          Remove from Continue Listening
+          Remove from In Progress
         </button>
       )}
 
-      <AddToPlaylist bookId={book.id} />
+      {/* Up Next/playlists are an audio queue (NowPlaying's auto-advance
+          loads the next item straight into the audio player) — offering
+          it on a page with no chapters to play doesn't make sense. Hidden
+          here rather than on the epub format check alone so a companion
+          pair's epub-side page also hides it; its own "Listen" button
+          already sends you to the audio side's page, which has this. */}
+      {book.format !== 'epub' && <AddToPlaylist bookId={book.id} />}
 
       <div className="mt-3 flex items-center justify-between">
-        <p className="text-xs text-subtle">{formatDuration(book.totalDuration)} total</p>
+        {/* A pure ebook has no chapters, so totalDuration is 0 — see the
+            matching guard in Library.tsx's BookTile/BookRow. */}
+        {book.totalDuration > 0 && <p className="text-xs text-subtle">{formatDuration(book.totalDuration)} total</p>}
         <div className="flex items-center gap-2">
           {book.format !== 'epub' && <DownloadBadge book={book} downloads={downloads} />}
           {epubIdForDownload && <EbookDownloadBadge download={ebookDownload} />}
