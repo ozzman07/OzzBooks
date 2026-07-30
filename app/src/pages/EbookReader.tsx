@@ -401,19 +401,26 @@ export function EbookReader() {
 
       {showSettings && <ReaderSettingsPanel prefs={prefs} onChange={updatePrefs} fg={fg} bg={bg} />}
 
-      {status === 'loading' && (
-        <p className="flex flex-1 items-center justify-center text-sm" style={{ color: fg }}>
-          Loading…
-        </p>
-      )}
-      {status === 'error' && (
-        <p className="flex flex-1 items-center justify-center text-sm" style={{ color: fg }}>
-          Couldn't load this book.
-        </p>
-      )}
-
+      {/* The epub container below must always be the sole flex-1 child of
+          the outer column — epub.renderTo() measures it synchronously
+          while status is still 'loading' (setStatus('ready') only happens
+          after display() resolves), so a sibling that also claims flex-1
+          space during loading would make epub.js paginate against half
+          the real height. Loading/error text is an absolute overlay on
+          top of the (still-empty) container instead, same pattern as the
+          prev/next buttons below. */}
       <div className="relative flex-1">
         <div ref={containerRef} className="absolute inset-0" />
+        {status === 'loading' && (
+          <p className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: fg }}>
+            Loading…
+          </p>
+        )}
+        {status === 'error' && (
+          <p className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: fg }}>
+            Couldn't load this book.
+          </p>
+        )}
         {status === 'ready' && (
           <>
             <button
