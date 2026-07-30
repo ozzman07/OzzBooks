@@ -220,7 +220,7 @@ function FormatBadge({ book, className = '' }: { book: Book; className?: string 
 // Only rendered in Store mode (see BookGrid) — lets someone shelve a book
 // straight from the grid without drilling into BookDetail first. Sits
 // outside the tile/row's own <Link> (same pattern as the existing
-// Continue Listening ✕ button) so tapping it doesn't also navigate.
+// In Progress ✕ button) so tapping it doesn't also navigate.
 function LibraryToggleButton({
   inMyLibrary,
   onToggle,
@@ -273,7 +273,11 @@ function BookTile({
       </div>
       <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
       <p className="truncate text-xs text-muted">{book.author}</p>
-      <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
+      {/* A pure ebook has no chapters, so totalDuration is 0 — showing
+          "0m" next to it reads as broken, not as "this book has no
+          runtime." Audio books and companion pairs (which use the audio
+          side's totalDuration) always have a real value here. */}
+      {book.totalDuration > 0 && <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>}
     </Link>
   )
 }
@@ -320,7 +324,9 @@ function BookRow({
           className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary"
         />
       )}
-      <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
+      {book.totalDuration > 0 && (
+        <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
+      )}
     </Link>
   )
 }
@@ -585,15 +591,20 @@ export function Library() {
           if (continueListening.length === 0) return null
           return (
             <section className="mb-6">
+              {/* "In Progress," not "Continue Listening" — this shelf mixes
+                  audio and ebook progress together (see the companion-pair
+                  progress-resolution fix elsewhere in this file), so a
+                  listening-specific name was actually wrong, not just
+                  imprecise, once ebooks could land here too. */}
               <h2 className="mb-2 text-sm font-medium uppercase tracking-wide text-muted">
-                Continue Listening
+                In Progress
               </h2>
               <ul className="flex gap-3 overflow-x-auto pb-1">
                 {continueListening.map((book) => (
                   <li key={book.id} className="relative w-28 shrink-0">
                     <button
                       onClick={(e) => void handleRemoveFromContinueListening(e, book.id)}
-                      aria-label={`Remove ${book.title} from Continue Listening`}
+                      aria-label={`Remove ${book.title} from In Progress`}
                       className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/80 text-xs text-slate-300"
                     >
                       ✕
