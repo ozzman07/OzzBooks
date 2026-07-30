@@ -164,6 +164,11 @@ export function EbookReader() {
   // otherwise re-trigger it immediately after the mount effect's own
   // first display() already applied the current prefs correctly.
   const skipNextPrefsApplyRef = useRef(true)
+  // Same guard, same reason, for the settings-panel resize effect further
+  // below — also keyed on `status`, also fires spuriously on the initial
+  // ready transition (see that effect's comment for why that one actually
+  // corrupts the freshly-restored reading position, not just wastes work).
+  const skipNextResizeRef = useRef(true)
   const [title, setTitle] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [showSettings, setShowSettings] = useState(false)
@@ -172,6 +177,7 @@ export function EbookReader() {
   useEffect(() => {
     if (!bookId || !containerRef.current) return
     skipNextPrefsApplyRef.current = true
+    skipNextResizeRef.current = true
     let cancelled = false
     let rendition: Rendition | null = null
     let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -334,6 +340,22 @@ export function EbookReader() {
   useEffect(() => {
     const rendition = renditionRef.current
     if (!rendition || status !== 'ready') return
+    if (skipNextResizeRef.current) {
+      // Same spurious-refire issue as skipNextPrefsApplyRef above — this
+      // effect is keyed on `status` too, so the initial loading->ready
+      // transition fires it right after the mount effect's own
+      // display(startCfi) already established the correct position.
+      // resize() isn't a no-op read-only measurement: per epub.js's
+      // internals, if it detects any size difference it calls clear() and
+      // re-displays internally at `this.location.start.cfi` — running
+      // that this early, before the just-set location has settled, was
+      // corrupting a freshly-restored reading position into a blank page
+      // (reported as "reopening an ebook shows a blank page, colors but
+      // no content"). Only genuine showSettings toggles after mount
+      // should trigger this.
+      skipNextResizeRef.current = false
+      return
+    }
     // epubjs's own type declarations wrongly mark width/height as
     // required — the real implementation treats no-args as "measure the
     // container's current size", which is exactly what's needed here.
