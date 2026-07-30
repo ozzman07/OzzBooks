@@ -199,23 +199,30 @@ export function BookDetail() {
   // cache has resolved yet) — every hook below tolerates that via `?? []`/
   // optional chaining, since hooks must run unconditionally before the
   // early returns further down decide whether there's anything to render.
-  const book = isFullyLoaded ? result.data : cachedListItem
+  const partialBook = isFullyLoaded ? result.data : cachedListItem
 
-  const downloads = useDownloads(bookId!, book?.chapters ?? [])
-  const epubIdForDownload = book && (book.format === 'epub' ? book.id : book.companionBookId)
+  const downloads = useDownloads(bookId!, partialBook?.chapters ?? [])
+  const epubIdForDownload = partialBook && (partialBook.format === 'epub' ? partialBook.id : partialBook.companionBookId)
   const ebookDownload = useEbookDownload(epubIdForDownload)
 
   if (result.status === 'error') {
     return <LibraryError onRetry={result.retry} error={result.error} />
   }
-  if (!book) {
+  if (!partialBook) {
     return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
   }
+  // Re-bound with an explicit type (rather than just using partialBook
+  // from here on) — TS's control-flow narrowing from the guard above
+  // doesn't carry into the nested function declarations below that close
+  // over it (playFrom, saveSeries, etc.), so it'd still see
+  // `Book | undefined` there. Declaring a fresh `const book: Book`
+  // sidesteps that entirely.
+  const book: Book = partialBook
 
   const isInMyLibrary = bookInLibrary(book, data.myLibraryIds)
 
   async function handleToggleLibrary() {
-    await data.toggleLibraryMembership(book!, !isInMyLibrary)
+    await data.toggleLibraryMembership(book, !isInMyLibrary)
   }
 
   // Every chapter shares the same underlying file for a single m4b with
