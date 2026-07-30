@@ -6,10 +6,12 @@ import { reconcileProgress, removeFromContinueListening } from '../offline/recon
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDownloads } from '../hooks/useDownloads'
+import { useEbookDownload } from '../hooks/useEbookDownload'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
+import { companionLibraryIds, bookInLibrary } from '../library/companion'
 import {
   fetchPlaylists,
   addToPlaylist,
@@ -138,6 +140,30 @@ function DownloadBadge({
   )
 }
 
+// A single file, not N chapters sharing M source files like audio — no
+// partial-progress state, just cached or not.
+function EbookDownloadBadge({ download }: { download: ReturnType<typeof useEbookDownload> }) {
+  if (download.cached) {
+    return (
+      <button
+        onClick={() => void download.remove()}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-amber-400"
+      >
+        Ebook downloaded — remove
+      </button>
+    )
+  }
+  return (
+    <button
+      onClick={() => void download.download()}
+      disabled={download.pending}
+      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
+    >
+      {download.pending ? 'Downloading…' : 'Download ebook'}
+    </button>
+  )
+}
+
 export function BookDetail() {
   const { bookId } = useParams()
   const navigate = useNavigate()
@@ -169,11 +195,19 @@ export function BookDetail() {
       // back to '' instead of crashing on chapters[0].id for that case.
       book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0]?.id || '' }
     }
-    const isInMyLibrary = libraryItems.some((i) => i.book_id === book.id)
+    const fetchedLibraryIds = new Set(libraryItems.map((i) => i.book_id))
+    const isInMyLibrary = bookInLibrary(book, fetchedLibraryIds)
     return { book, isInMyLibrary }
   }, [bookId])
 
   const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.book.chapters : [])
+  const epubIdForDownload =
+    result.status === 'success'
+      ? result.data.book.format === 'epub'
+        ? result.data.book.id
+        : result.data.book.companionBookId
+      : undefined
+  const ebookDownload = useEbookDownload(epubIdForDownload)
 
   if (result.status === 'loading') {
     return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
@@ -192,11 +226,8 @@ export function BookDetail() {
     const next = !isInMyLibrary
     setLibraryOverride(next)
     try {
-      if (next) {
-        await addToLibrary(auth.token, book.id)
-      } else {
-        await removeFromLibrary(auth.token, book.id)
-      }
+      const ids = companionLibraryIds(book)
+      await Promise.all(ids.map((id) => (next ? addToLibrary(auth.token!, id) : removeFromLibrary(auth.token!, id))))
     } catch {
       setLibraryOverride(!next)
     }
@@ -332,9 +363,46 @@ export function BookDetail() {
         </div>
       )}
 
-      {book.format === 'epub' ? (
+      {book.companionBookId ? (
+        // A companion pair — equal-weight side by side, so neither format
+        // reads as the "real" book and the other as an afterthought.
+        <div className="mt-4 flex gap-2">
+          {book.format === 'epub' ? (
+            <>
+              <button
+                onClick={() => navigate(`/book/${book.id}/read`)}
+                className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
+              >
+                📖 Read
+              </button>
+              <button
+                onClick={() => navigate(`/book/${book.companionBookId}`)}
+                className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
+              >
+                🎧 Listen
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={playResume}
+                disabled={book.status === 'missing' || book.chapters.length === 0}
+                className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
+              >
+                🎧 {hasProgress ? 'Resume' : 'Play'}
+              </button>
+              <button
+                onClick={() => navigate(`/book/${book.companionBookId}/read`)}
+                className="flex-1 rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
+              >
+                📖 Read
+              </button>
+            </>
+          )}
+        </div>
+      ) : book.format === 'epub' ? (
         <button
-          onClick={() => navigate(`/book/${bookId}/read`)}
+          onClick={() => navigate(`/book/${book.id}/read`)}
           className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
         >
           Read
@@ -346,15 +414,6 @@ export function BookDetail() {
           className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
         >
           {hasProgress ? 'Resume' : 'Play'}
-        </button>
-      )}
-
-      {book.format !== 'epub' && book.companionBookId && (
-        <button
-          onClick={() => navigate(`/book/${bookId}/read`)}
-          className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
-        >
-          Read companion ebook
         </button>
       )}
 
@@ -378,7 +437,10 @@ export function BookDetail() {
 
       <div className="mt-3 flex items-center justify-between">
         <p className="text-xs text-subtle">{formatDuration(book.totalDuration)} total</p>
-        <DownloadBadge book={book} downloads={downloads} />
+        <div className="flex items-center gap-2">
+          {book.format !== 'epub' && <DownloadBadge book={book} downloads={downloads} />}
+          {epubIdForDownload && <EbookDownloadBadge download={ebookDownload} />}
+        </div>
       </div>
 
       {book.synopsis && (
