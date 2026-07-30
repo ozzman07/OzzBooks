@@ -7,21 +7,13 @@ import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDownloads } from '../hooks/useDownloads'
 import { useEbookDownload } from '../hooks/useEbookDownload'
+import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
-import { companionLibraryIds, bookInLibrary } from '../library/companion'
-import {
-  fetchPlaylists,
-  addToPlaylist,
-  findUpNext,
-  fetchMyLibrary,
-  addToLibrary,
-  removeFromLibrary,
-  CloudApiError,
-  type Playlist,
-} from '../api/cloudClient'
+import { bookInLibrary } from '../library/companion'
+import { fetchPlaylists, addToPlaylist, findUpNext, CloudApiError, type Playlist } from '../api/cloudClient'
 import type { Book } from '../types'
 
 function AddToPlaylist({ bookId }: { bookId: string }) {
@@ -169,6 +161,7 @@ export function BookDetail() {
   const navigate = useNavigate()
   const player = usePlayer()
   const auth = useAuth()
+  const data = useAppData()
   // `book.progress` is set by mutating the fetched object in-place below
   // (see the useAsync fetcher), so it won't trigger a re-render on its own
   // when cleared — this local flag is what actually drives the UI after a
@@ -178,15 +171,10 @@ export function BookDetail() {
   const [seriesNameDraft, setSeriesNameDraft] = useState('')
   const [seriesNumberDraft, setSeriesNumberDraft] = useState('')
   const [seriesError, setSeriesError] = useState<string | null>(null)
-  // Overrides the fetched shelf-membership check the instant Add/Remove is
-  // tapped — same optimistic-then-reconcile shape as progressCleared
-  // above, rather than waiting on (or forcing) a full re-fetch.
-  const [libraryOverride, setLibraryOverride] = useState<boolean | null>(null)
   const result = useAsync(async () => {
-    const [book, progress, libraryItems] = await Promise.all([
+    const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
       reconcileProgress(auth.token, bookId!),
-      auth.token ? fetchMyLibrary(auth.token) : Promise.resolve([]),
     ])
     if (progress) {
       // book.chapters[0] doesn't exist for an epub-only book (ebook
@@ -195,42 +183,39 @@ export function BookDetail() {
       // back to '' instead of crashing on chapters[0].id for that case.
       book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0]?.id || '' }
     }
-    const fetchedLibraryIds = new Set(libraryItems.map((i) => i.book_id))
-    const isInMyLibrary = bookInLibrary(book, fetchedLibraryIds)
-    return { book, isInMyLibrary }
+    return book
   }, [bookId])
 
-  const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.book.chapters : [])
-  const epubIdForDownload =
-    result.status === 'success'
-      ? result.data.book.format === 'epub'
-        ? result.data.book.id
-        : result.data.book.companionBookId
-      : undefined
+  // AppDataContext's book list already has this book's title/author/cover/
+  // format/companionBookId (everything except chapters, synopsis, and
+  // source label — the list-item shape) from the last time the catalog was
+  // fetched. Showing that immediately, instead of a bare "Loading…", is
+  // what actually fixes "opening a book feels slow" — the full fetch
+  // (below) still runs for chapters/synopsis, but the page paints right
+  // away instead of waiting on it.
+  const cachedListItem = data.books.find((b) => b.id === bookId)
+  const isFullyLoaded = result.status === 'success'
+  // Possibly undefined for one render (neither the full fetch nor the
+  // cache has resolved yet) — every hook below tolerates that via `?? []`/
+  // optional chaining, since hooks must run unconditionally before the
+  // early returns further down decide whether there's anything to render.
+  const book = isFullyLoaded ? result.data : cachedListItem
+
+  const downloads = useDownloads(bookId!, book?.chapters ?? [])
+  const epubIdForDownload = book && (book.format === 'epub' ? book.id : book.companionBookId)
   const ebookDownload = useEbookDownload(epubIdForDownload)
 
-  if (result.status === 'loading') {
-    return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
-  }
   if (result.status === 'error') {
     return <LibraryError onRetry={result.retry} error={result.error} />
   }
+  if (!book) {
+    return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
+  }
 
-  const book = result.data.book
-  // The override, if set, always wins — it reflects the most recent
-  // Add/Remove tap, which may not have made it into a re-fetch yet.
-  const isInMyLibrary = libraryOverride ?? result.data.isInMyLibrary
+  const isInMyLibrary = bookInLibrary(book, data.myLibraryIds)
 
   async function handleToggleLibrary() {
-    if (!auth.token) return
-    const next = !isInMyLibrary
-    setLibraryOverride(next)
-    try {
-      const ids = companionLibraryIds(book)
-      await Promise.all(ids.map((id) => (next ? addToLibrary(auth.token!, id) : removeFromLibrary(auth.token!, id))))
-    } catch {
-      setLibraryOverride(!next)
-    }
+    await data.toggleLibraryMembership(book!, !isInMyLibrary)
   }
 
   // Every chapter shares the same underlying file for a single m4b with
@@ -285,11 +270,19 @@ export function BookDetail() {
     }
     try {
       await updateBook(book.id, { seriesName: trimmedName === '' ? null : trimmedName, seriesNumber: parsedNumber })
+      const patch = { seriesName: trimmedName === '' ? undefined : trimmedName, seriesNumber: parsedNumber ?? undefined }
       // Mutated in place, same as book.progress above — book is the
       // useAsync-cached object for this bookId, not re-fetched on every
-      // render, so this is what makes the edit show up immediately.
-      book.seriesName = trimmedName === '' ? undefined : trimmedName
-      book.seriesNumber = parsedNumber ?? undefined
+      // render, so this is what makes the edit show up immediately here.
+      // Only reachable once isFullyLoaded (see the Edit button above), so
+      // `book` is always result.data at this point, never the shared
+      // cached list item.
+      book.seriesName = patch.seriesName
+      book.seriesNumber = patch.seriesNumber
+      // AppDataContext's own copy needs the same update so Library/Store
+      // (reading from the shared cache, not this page's local book) show
+      // the edit too, without a full re-fetch.
+      data.updateCachedBook(book.id, patch)
       setEditingSeries(false)
     } catch (err) {
       setSeriesError(err instanceof Error ? err.message : String(err))
@@ -332,12 +325,18 @@ export function BookDetail() {
             <>
               {book.seriesName}
               {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
-              {' · '}
+              {book.seriesName && isFullyLoaded && ' · '}
             </>
           )}
-          <button onClick={startEditingSeries} className="underline">
-            {book.seriesName ? 'Edit' : '+ Add series info'}
-          </button>
+          {/* Editing needs the real fetched `book` object (saveSeries
+              mutates it in place) — held back until the full fetch lands
+              so a fast tap can't ever mutate the shared cached list item
+              AppDataContext owns instead. */}
+          {isFullyLoaded && (
+            <button onClick={startEditingSeries} className="underline">
+              {book.seriesName ? 'Edit' : '+ Add series info'}
+            </button>
+          )}
         </p>
       )}
       {seriesError && <p className="mt-1 text-center text-xs text-red-400">{seriesError}</p>}
@@ -449,6 +448,8 @@ export function BookDetail() {
           <p className="mt-2 whitespace-pre-line text-sm text-muted">{book.synopsis}</p>
         </div>
       )}
+
+      {!isFullyLoaded && <p className="mt-6 text-center text-xs text-subtle">Loading chapters…</p>}
 
       <ul className="mt-6 divide-y divide-border">
         {book.chapters.map((chapter) => (

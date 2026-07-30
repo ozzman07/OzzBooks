@@ -11,6 +11,7 @@ import {
   type ApiBrowseEntry,
   type ApiRelinkPreview,
 } from '../api/client'
+import { useAppData } from '../data/AppDataContext'
 import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
 
@@ -19,6 +20,7 @@ type Target = { path: string; format: 'm4b' | 'mp3_folder' }
 export function RelinkBook() {
   const { bookId } = useParams()
   const navigate = useNavigate()
+  const data = useAppData()
 
   const [book, setBook] = useState<ApiBookDetail | null>(null)
   const [candidates, setCandidates] = useState<ApiRelinkCandidate[]>([])
@@ -92,6 +94,7 @@ export function RelinkBook() {
     setConfirming(true)
     try {
       await confirmRelink(bookId!, target.path, target.format)
+      data.invalidate()
       navigate(`/book/${bookId}`)
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : 'Relink failed')

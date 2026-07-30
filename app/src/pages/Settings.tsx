@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { useTheme, type ThemePreference } from '../theme/ThemeContext'
 import {
-  fetchBooks,
   fetchSources,
   createLocalSource,
   connectGoogleDrive,
@@ -23,6 +22,7 @@ import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { deleteBookDownload } from '../offline/downloadManager'
 import { SourceStatusCard } from '../components/SourceStatusCard'
+import { useAppData } from '../data/AppDataContext'
 
 const ENRICHMENT_POLL_INTERVAL_MS = 5000
 
@@ -270,19 +270,15 @@ function AddLocalSourceForm({ onAdded }: { onAdded: () => void }) {
   )
 }
 
-// Same snapshot-card pattern as ActivityLogCard below — fetches the
-// missing-books list just to get its count. No separate summary endpoint:
-// this library's scale (a personal collection, not a catalog) makes a
-// full fetch-and-count trivially fast, and it's the same request the
-// Needs Attention page itself makes.
+// Same snapshot-card pattern as ActivityLogCard below — shows the
+// missing-books count. Reads from AppDataContext's shared book cache
+// (filtered client-side to 'missing') rather than its own fetch — this
+// used to independently re-fetch the whole missing-books list on every
+// visit to Settings, one of several duplicated fetches that made
+// navigating around the app feel slow.
 function NeedsAttentionCard() {
-  const [count, setCount] = useState<number | null>(null)
-
-  useEffect(() => {
-    fetchBooks('missing')
-      .then((rows) => setCount(rows.length))
-      .catch(() => setCount(null))
-  }, [])
+  const data = useAppData()
+  const count = data.status === 'success' ? data.books.filter((b) => b.status === 'missing').length : null
 
   return (
     <div className="mt-3 rounded border border-border p-3">
@@ -566,6 +562,7 @@ interface DownloadedBook {
 
 export function Settings() {
   const auth = useAuth()
+  const data = useAppData()
   const [searchParams, setSearchParams] = useSearchParams()
   const [budgetMb, setBudgetMb] = useState<number | null>(null)
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null)
@@ -589,9 +586,18 @@ export function Settings() {
     setSourcesLoaded(true)
   }, [])
 
+  // A scan (or a disconnect, which also marks books missing) can add,
+  // update, or remove books and shelf-relevant state in ways too varied to
+  // patch the AppDataContext cache surgically — a full invalidate is the
+  // simplest correct response here.
+  const handleRescanned = useCallback(() => {
+    void refreshSources()
+    data.invalidate()
+  }, [refreshSources, data])
+
   const refreshDownloads = useCallback(async () => {
-    const [cached, books] = await Promise.all([getAllCachedAudioFiles(), fetchBooks().catch(() => [])])
-    const titleById = new Map(books.map((b) => [b.id, b.title]))
+    const cached = await getAllCachedAudioFiles()
+    const titleById = new Map(data.books.map((b) => [b.id, b.title]))
     const bytesByBook = new Map<string, number>()
     for (const entry of cached) {
       bytesByBook.set(entry.bookId, (bytesByBook.get(entry.bookId) ?? 0) + entry.sizeBytes)
@@ -603,7 +609,7 @@ export function Settings() {
         bytes,
       })),
     )
-  }, [])
+  }, [data.books])
 
   useEffect(() => {
     if (justConnected) {
@@ -727,7 +733,7 @@ export function Settings() {
           )}
 
           {sources.map((source) => (
-            <SourceStatusCard key={source.id} source={source} onRescanned={refreshSources} />
+            <SourceStatusCard key={source.id} source={source} onRescanned={handleRescanned} />
           ))}
 
           {/* Hidden once a Google Drive source already exists (or until we've

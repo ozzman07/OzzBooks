@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
-import { fetchBooks } from '../api/client'
-import { adaptBookListItem } from '../api/adapter'
+import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { formatDuration } from '../lib/format'
-import type { Book } from '../types'
 import {
   fetchPlaylist,
   renamePlaylist,
@@ -22,29 +20,26 @@ export function PlaylistDetail() {
   const { playlistId } = useParams<{ playlistId: string }>()
   const auth = useAuth()
   const navigate = useNavigate()
+  const data = useAppData()
 
   const [playlist, setPlaylist] = useState<PlaylistWithItems | null>(null)
-  const [byBookId, setByBookId] = useState<Map<string, Book>>(new Map())
   const [renaming, setRenaming] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const [actionError, setActionError] = useState<string | null>(null)
 
   const result = useAsync(async () => {
     if (!auth.token || !playlistId) return null
-    const [pl, books] = await Promise.all([
-      fetchPlaylist(auth.token, playlistId),
-      fetchBooks().then((rows) => rows.map(adaptBookListItem)),
-    ])
-    return { pl, books }
+    return await fetchPlaylist(auth.token, playlistId)
   }, [auth.token, playlistId])
 
   useEffect(() => {
     if (result.status !== 'success' || !result.data) return
-    setPlaylist(result.data.pl)
-    setByBookId(new Map(result.data.books.map((b) => [b.id, b])))
-    setNameDraft(result.data.pl.name)
+    setPlaylist(result.data)
+    setNameDraft(result.data.name)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result.status])
+
+  const byBookId = useMemo(() => new Map(data.books.map((b) => [b.id, b])), [data.books])
 
   if (result.status === 'loading' || !playlist) {
     return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
