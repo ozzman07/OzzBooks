@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import JSZip from 'jszip'
 
 const execFileAsync = promisify(execFile)
 
@@ -45,6 +46,126 @@ async function makeTone(outPath: string, durationSeconds: number, extraArgs: str
     ...extraArgs,
     outPath,
   ])
+}
+
+// A real, tiny, valid 1x1 JPEG — small enough to inline, but real enough
+// for sharp (saveArtworkBuffer) to actually decode it, unlike arbitrary
+// placeholder bytes.
+const TINY_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k='
+
+/**
+ * Builds a real, valid, minimal EPUB (EPUB3-style manifest with a
+ * properties="cover-image" item, so both cover-detection paths in
+ * ingestion/epub.ts get exercised across the test suite) — a real zip
+ * archive via jszip, not a hand-waved fixture, so parsing is tested
+ * against an actual container rather than assumptions about its shape.
+ */
+export async function makeTestEpub(
+  outPath: string,
+  opts: {
+    title: string
+    author: string
+    includeCover?: boolean
+    /** Real content DRM — encrypts the actual chapter file, not just a font. */
+    includeDrm?: boolean
+    /** Font-obfuscation-only encryption.xml (the common, non-DRM case ingestion/epub.ts's hasContentDrm must NOT flag). */
+    includeFontObfuscation?: boolean
+    /** Same as includeFontObfuscation, but the obfuscated font uses a generic .dat extension (relies on the fonts/ folder check, not the extension check). */
+    includeFontObfuscationGenericExt?: boolean
+  } = {
+    title: 'Test Book',
+    author: 'Test Author',
+  },
+): Promise<void> {
+  const {
+    title,
+    author,
+    includeCover = true,
+    includeDrm = false,
+    includeFontObfuscation = false,
+    includeFontObfuscationGenericExt = false,
+  } = opts
+  const zip = new JSZip()
+  // Must be the first entry, stored (uncompressed) — the EPUB spec's one
+  // hard requirement beyond "it's a zip".
+  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+  zip.file(
+    'META-INF/container.xml',
+    `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+  )
+  if (includeDrm) {
+    // References the actual chapter content, not a font — this is what
+    // ingestion/epub.ts's hasContentDrm() treats as genuine DRM.
+    zip.file(
+      'META-INF/encryption.xml',
+      `<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData>
+    <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>
+    <enc:CipherData><enc:CipherReference URI="OEBPS/chapter1.xhtml"/></enc:CipherData>
+  </enc:EncryptedData>
+</encryption>`,
+    )
+  } else if (includeFontObfuscation) {
+    // References only an embedded font — the common, non-DRM case (font
+    // licensing obfuscation) that must NOT be flagged as DRM.
+    zip.file(
+      'META-INF/encryption.xml',
+      `<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData>
+    <enc:EncryptionMethod Algorithm="http://ns.adobe.com/pdf/enc#RC"/>
+    <enc:CipherData><enc:CipherReference URI="OEBPS/Fonts/font1.otf"/></enc:CipherData>
+  </enc:EncryptedData>
+</encryption>`,
+    )
+  } else if (includeFontObfuscationGenericExt) {
+    // Same font-obfuscation case, but with a generic .dat extension (some
+    // conversion tools name obfuscated fonts this way) — only the fonts/
+    // folder-name check catches this, not the extension check.
+    zip.file(
+      'META-INF/encryption.xml',
+      `<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+  <enc:EncryptedData>
+    <enc:EncryptionMethod Algorithm="http://ns.adobe.com/pdf/enc#RC"/>
+    <enc:CipherData><enc:CipherReference URI="fonts/00004.dat"/></enc:CipherData>
+  </enc:EncryptedData>
+</encryption>`,
+    )
+  }
+  zip.file(
+    'OEBPS/content.opf',
+    `<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:test-${Buffer.from(title).toString('hex').slice(0, 8)}</dc:identifier>
+    <dc:title>${title}</dc:title>
+    <dc:creator>${author}</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+    ${includeCover ? '<item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>' : ''}
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>`,
+  )
+  zip.file(
+    'OEBPS/chapter1.xhtml',
+    `<?xml version="1.0"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Chapter one text.</p></body></html>`,
+  )
+  if (includeCover) {
+    zip.file('OEBPS/cover.jpg', Buffer.from(TINY_JPEG_BASE64, 'base64'))
+  }
+  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  await writeFile(outPath, buffer)
 }
 
 /**

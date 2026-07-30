@@ -14,6 +14,9 @@ import {
   fetchPlaylists,
   addToPlaylist,
   findUpNext,
+  fetchMyLibrary,
+  addToLibrary,
+  removeFromLibrary,
   CloudApiError,
   type Playlist,
 } from '../api/cloudClient'
@@ -149,27 +152,55 @@ export function BookDetail() {
   const [seriesNameDraft, setSeriesNameDraft] = useState('')
   const [seriesNumberDraft, setSeriesNumberDraft] = useState('')
   const [seriesError, setSeriesError] = useState<string | null>(null)
+  // Overrides the fetched shelf-membership check the instant Add/Remove is
+  // tapped — same optimistic-then-reconcile shape as progressCleared
+  // above, rather than waiting on (or forcing) a full re-fetch.
+  const [libraryOverride, setLibraryOverride] = useState<boolean | null>(null)
   const result = useAsync(async () => {
-    const [book, progress] = await Promise.all([
+    const [book, progress, libraryItems] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
       reconcileProgress(auth.token, bookId!),
+      auth.token ? fetchMyLibrary(auth.token) : Promise.resolve([]),
     ])
     if (progress) {
-      book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0].id }
+      // book.chapters[0] doesn't exist for an epub-only book (ebook
+      // reading position is CFI-based, not chapter-based, so its saved
+      // progress rows never have a real chapterId to begin with) — fall
+      // back to '' instead of crashing on chapters[0].id for that case.
+      book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0]?.id || '' }
     }
-    return book
+    const isInMyLibrary = libraryItems.some((i) => i.book_id === book.id)
+    return { book, isInMyLibrary }
   }, [bookId])
 
-  const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.chapters : [])
+  const downloads = useDownloads(bookId!, result.status === 'success' ? result.data.book.chapters : [])
 
   if (result.status === 'loading') {
     return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
   }
   if (result.status === 'error') {
-    return <LibraryError onRetry={result.retry} />
+    return <LibraryError onRetry={result.retry} error={result.error} />
   }
 
-  const book = result.data
+  const book = result.data.book
+  // The override, if set, always wins — it reflects the most recent
+  // Add/Remove tap, which may not have made it into a re-fetch yet.
+  const isInMyLibrary = libraryOverride ?? result.data.isInMyLibrary
+
+  async function handleToggleLibrary() {
+    if (!auth.token) return
+    const next = !isInMyLibrary
+    setLibraryOverride(next)
+    try {
+      if (next) {
+        await addToLibrary(auth.token, book.id)
+      } else {
+        await removeFromLibrary(auth.token, book.id)
+      }
+    } catch {
+      setLibraryOverride(!next)
+    }
+  }
 
   // Every chapter shares the same underlying file for a single m4b with
   // embedded chapter markers (as opposed to an mp3-folder book, or a
@@ -283,18 +314,55 @@ export function BookDetail() {
       {book.status === 'missing' && (
         <div className="mt-2 rounded bg-danger-soft px-3 py-2 text-center text-xs text-danger-soft-text">
           <p>This book's source file couldn't be found. Progress and bookmarks are kept.</p>
-          <button onClick={() => navigate(`/book/${bookId}/relink`)} className="mt-2 underline">
-            Relink
-          </button>
+          {isInMyLibrary && (
+            <p className="mt-1">
+              It'll be cleaned up by the library's normal missing-book housekeeping if nobody relinks it.
+            </p>
+          )}
+          <div className="mt-2 flex items-center justify-center gap-3">
+            <button onClick={() => navigate(`/book/${bookId}/relink`)} className="underline">
+              Relink
+            </button>
+            {isInMyLibrary && (
+              <button onClick={() => void handleToggleLibrary()} className="underline">
+                Remove from My Library
+              </button>
+            )}
+          </div>
         </div>
       )}
 
+      {book.format === 'epub' ? (
+        <button
+          onClick={() => navigate(`/book/${bookId}/read`)}
+          className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
+        >
+          Read
+        </button>
+      ) : (
+        <button
+          onClick={playResume}
+          disabled={book.status === 'missing' || book.chapters.length === 0}
+          className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
+        >
+          {hasProgress ? 'Resume' : 'Play'}
+        </button>
+      )}
+
+      {book.format !== 'epub' && book.companionBookId && (
+        <button
+          onClick={() => navigate(`/book/${bookId}/read`)}
+          className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
+        >
+          Read companion ebook
+        </button>
+      )}
+
       <button
-        onClick={playResume}
-        disabled={book.status === 'missing' || book.chapters.length === 0}
-        className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950 disabled:opacity-40"
+        onClick={() => void handleToggleLibrary()}
+        className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
       >
-        {hasProgress ? 'Resume' : 'Play'}
+        {isInMyLibrary ? '✓ On My Library' : '+ Add to My Library'}
       </button>
 
       {hasProgress && (

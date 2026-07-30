@@ -2,11 +2,31 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { fetchBooks, removeMissingBook } from '../api/client'
 import { adaptBookListItem } from '../api/adapter'
+import { fetchMyLibrary } from '../api/cloudClient'
+import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { CoverArt } from '../components/CoverArt'
+import { useLibraryView, type NeedsAttentionScope } from '../library/LibraryViewContext'
+
+const SCOPE_LABELS: Record<NeedsAttentionScope, string> = {
+  mine: 'My Library',
+  everyone: 'Everyone',
+}
 
 export function NeedsAttention() {
-  const result = useAsync(() => fetchBooks('missing').then((rows) => rows.map(adaptBookListItem)), [])
+  const auth = useAuth()
+  const { needsAttentionScope, setNeedsAttentionScope } = useLibraryView()
+  // Scoped to "my shelf" by default for the same reason the main Library
+  // grid is: as more people add their own sources, an unfiltered missing-
+  // books list gets just as cluttered as the old unfiltered main grid did.
+  const result = useAsync(async () => {
+    const [books, libraryItems] = await Promise.all([
+      fetchBooks('missing').then((rows) => rows.map(adaptBookListItem)),
+      auth.token ? fetchMyLibrary(auth.token) : Promise.resolve([]),
+    ])
+    const myLibraryIds = new Set(libraryItems.map((i) => i.book_id))
+    return { books, myLibraryIds }
+  }, [])
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
   const [removingId, setRemovingId] = useState<string | null>(null)
 
@@ -22,7 +42,12 @@ export function NeedsAttention() {
     }
   }
 
-  const books = result.status === 'success' ? result.data.filter((b) => !removedIds.has(b.id)) : []
+  const books =
+    result.status === 'success'
+      ? result.data.books
+          .filter((b) => !removedIds.has(b.id))
+          .filter((b) => needsAttentionScope === 'everyone' || result.data.myLibraryIds.has(b.id))
+      : []
 
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
@@ -33,10 +58,22 @@ export function NeedsAttention() {
         </Link>
       </div>
 
-      <p className="mb-4 text-xs text-subtle">
+      <p className="mb-3 text-xs text-subtle">
         These books' source files couldn't be found on their last scan. Progress and bookmarks are kept — relink a
         book to reconnect it, or remove it to clear it from this list.
       </p>
+
+      <div className="mb-4 flex overflow-hidden rounded-lg border border-border-strong text-xs">
+        {(Object.entries(SCOPE_LABELS) as [NeedsAttentionScope, string][]).map(([value, label]) => (
+          <button
+            key={value}
+            onClick={() => setNeedsAttentionScope(value)}
+            className={`px-2.5 py-1.5 ${needsAttentionScope === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {result.status === 'loading' && <p className="text-center text-muted">Loading…</p>}
 
@@ -50,7 +87,11 @@ export function NeedsAttention() {
       )}
 
       {result.status === 'success' && books.length === 0 && (
-        <p className="pt-12 text-center text-sm text-subtle">Nothing needs attention right now.</p>
+        <p className="pt-12 text-center text-sm text-subtle">
+          {needsAttentionScope === 'mine'
+            ? 'Nothing on your shelf needs attention right now.'
+            : 'Nothing needs attention right now.'}
+        </p>
       )}
 
       {result.status === 'success' && books.length > 0 && (

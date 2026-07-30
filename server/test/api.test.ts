@@ -246,6 +246,164 @@ describe('sources + ingestion via the API', () => {
     })
   })
 
+  describe('companion linking routes', () => {
+    let audioBookId: string
+    let epubBookId: string
+    let otherEpubBookId: string
+
+    it('inserts a directly-crafted audiobook + two candidate epubs for these tests to target', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      audioBookId = randomUUID()
+      epubBookId = randomUUID()
+      otherEpubBookId = randomUUID()
+      const db = getDb()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/companion/Author Co/Companion Book.m4b', 'm4b', 'Companion Book', 'Author Co', 'active')`,
+      ).run(audioBookId, sourceId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/companion/Author Co/Companion Book.epub', 'epub', 'Companion Book', 'Author Co', 'active')`,
+      ).run(epubBookId, sourceId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/companion/Someone/Unrelated.epub', 'epub', 'Unrelated', 'Someone', 'active')`,
+      ).run(otherEpubBookId, sourceId)
+    })
+
+    it('suggests the matching epub as the top companion candidate', async () => {
+      const res = await request(app)
+        .get(`/api/books/${audioBookId}/companion-candidates`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body[0].id).toBe(epubBookId)
+      expect(res.body.some((c: any) => c.id === otherEpubBookId)).toBe(true) // still listed, just lower-ranked
+    })
+
+    it('refuses to link two books of the same "side" (both audio, or both ebook)', async () => {
+      const res = await request(app)
+        .post(`/api/books/${epubBookId}/link-companion`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+        .send({ targetBookId: otherEpubBookId })
+      expect(res.status).toBe(400)
+    })
+
+    it('links a book to its companion and logs it', async () => {
+      const res = await request(app)
+        .post(`/api/books/${audioBookId}/link-companion`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+        .send({ targetBookId: epubBookId })
+      expect(res.status).toBe(200)
+      expect(res.body.companion_book_id).toBe(epubBookId)
+
+      const epubRes = await request(app).get(`/api/books/${epubBookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(epubRes.body.companion_book_id).toBe(audioBookId)
+
+      const { getDb } = await import('../src/db/index.js')
+      const log = getDb()
+        .prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'metadata_updated'")
+        .get(audioBookId) as any
+      expect(log.detail).toContain('Manually linked')
+    })
+
+    it('now excludes the linked epub from candidate suggestions for other books', async () => {
+      const res = await request(app)
+        .get(`/api/books/${otherEpubBookId}/companion-candidates`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      // audioBookId already has a companion (epubBookId), so it shouldn't be suggested here.
+      expect(res.status).toBe(200)
+      expect(res.body.some((c: any) => c.id === audioBookId)).toBe(false)
+    })
+
+    it('unlinks a companion pair', async () => {
+      const res = await request(app)
+        .post(`/api/books/${audioBookId}/unlink-companion`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body.companion_book_id).toBeNull()
+
+      const epubRes = await request(app).get(`/api/books/${epubBookId}`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(epubRes.body.companion_book_id).toBeNull()
+    })
+
+    it('404s linking a nonexistent book, 400s a missing targetBookId', async () => {
+      const notFound = await request(app)
+        .post('/api/books/does-not-exist/link-companion')
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+        .send({ targetBookId: epubBookId })
+      expect(notFound.status).toBe(404)
+
+      const badRequest = await request(app)
+        .post(`/api/books/${audioBookId}/link-companion`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+        .send({})
+      expect(badRequest.status).toBe(400)
+    })
+  })
+
+  describe('GET /api/books/:id/epub', () => {
+    let realEpubBookId: string
+    let audioLinkedToEpubId: string
+    let audioWithNoEpubId: string
+
+    it('sets up a real epub file on disk, an audiobook linked to it, and an audiobook with no ebook at all', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      const { mkdtemp } = await import('node:fs/promises')
+      const { tmpdir } = await import('node:os')
+      const path = await import('node:path')
+      const { makeTestEpub } = await import('./fixtures.js')
+
+      const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-serve-'))
+      const epubPath = path.join(dir, 'Real Book.epub')
+      await makeTestEpub(epubPath, { title: 'Real Book', author: 'Real Author' })
+
+      const db = getDb()
+      realEpubBookId = randomUUID()
+      audioLinkedToEpubId = randomUUID()
+      audioWithNoEpubId = randomUUID()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, ?, 'epub', 'Real Book', 'Real Author', 'active')`,
+      ).run(realEpubBookId, sourceId, epubPath)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status, companion_book_id)
+         VALUES (?, ?, '/nowhere/audio.m4b', 'm4b', 'Real Book', 'Real Author', 'active', ?)`,
+      ).run(audioLinkedToEpubId, sourceId, realEpubBookId)
+      db.prepare("UPDATE books SET companion_book_id = ? WHERE id = ?").run(audioLinkedToEpubId, realEpubBookId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/nowhere/lonely.m4b', 'm4b', 'Lonely Book', 'Lonely Author', 'active')`,
+      ).run(audioWithNoEpubId, sourceId)
+    })
+
+    it('serves the epub bytes directly for an epub-primary book', async () => {
+      const res = await request(app).get(`/api/books/${realEpubBookId}/epub`).set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toContain('application/epub+zip')
+      // supertest/superagent doesn't have a built-in parser for
+      // application/epub+zip, so the raw bytes land in res.text rather
+      // than a parsed res.body — just confirming real content came back.
+      expect(res.text.length).toBeGreaterThan(0)
+    })
+
+    it("serves the linked companion's epub for an audiobook", async () => {
+      const res = await request(app)
+        .get(`/api/books/${audioLinkedToEpubId}/epub`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toContain('application/epub+zip')
+    })
+
+    it('404s for an audiobook with no linked ebook', async () => {
+      const res = await request(app)
+        .get(`/api/books/${audioWithNoEpubId}/epub`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(404)
+    })
+  })
+
   describe('POST /api/sources/:id/disconnect', () => {
     it('clears credentials, flips to needs_reconnect, and marks the source\'s active books missing', async () => {
       const { getDb } = await import('../src/db/index.js')

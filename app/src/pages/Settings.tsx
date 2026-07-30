@@ -5,6 +5,7 @@ import { useTheme, type ThemePreference } from '../theme/ThemeContext'
 import {
   fetchBooks,
   fetchSources,
+  createLocalSource,
   connectGoogleDrive,
   startEnrichment,
   fetchEnrichmentStatus,
@@ -208,6 +209,64 @@ function SeriesNumberBackfillCard() {
       )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>
+  )
+}
+
+// Local sources have no OAuth consent step, so this is just a plain form —
+// unlike Google Drive's "Connect" button above, there's no reason to hide
+// it once a local source already exists (you can have several, e.g. one
+// for audiobooks and a separate one for an ebook folder elsewhere on the
+// NAS — see createLocalSource's docstring).
+function AddLocalSourceForm({ onAdded }: { onAdded: () => void }) {
+  const [label, setLabel] = useState('')
+  const [pathScope, setPathScope] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setSubmitting(true)
+    try {
+      await createLocalSource(label, pathScope)
+      setLabel('')
+      setPathScope('')
+      onAdded()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-2 flex flex-col gap-2 border-t border-border pt-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">Add a local source</p>
+      <input
+        type="text"
+        required
+        placeholder="Label (e.g. Ebooks)"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
+      />
+      <input
+        type="text"
+        required
+        placeholder="Absolute path (e.g. /Volumes/Books/Ebooks)"
+        value={pathScope}
+        onChange={(e) => setPathScope(e.target.value)}
+        className="rounded-lg border border-border-strong bg-surface px-3 py-2 text-sm text-primary placeholder:text-subtle"
+      />
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <button
+        type="submit"
+        disabled={submitting}
+        className="rounded-lg border border-border-strong py-2 text-sm text-secondary disabled:opacity-40"
+      >
+        {submitting ? 'Adding…' : 'Add source'}
+      </button>
+    </form>
   )
 }
 
@@ -687,6 +746,8 @@ export function Settings() {
               Connect Google Drive
             </button>
           )}
+
+          <AddLocalSourceForm onAdded={refreshSources} />
 
           <MetadataEnrichmentCard />
           <NightlyRescanCard />

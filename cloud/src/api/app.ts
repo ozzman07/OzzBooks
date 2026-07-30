@@ -6,6 +6,7 @@ import { bookmarksRouter } from './routes/bookmarks.js'
 import { settingsRouter } from './routes/settings.js'
 import { downloadsRouter } from './routes/downloads.js'
 import { playlistsRouter } from './routes/playlists.js'
+import { libraryRouter } from './routes/library.js'
 
 export function createApp() {
   const app = express()
@@ -20,6 +21,7 @@ export function createApp() {
   app.use('/sync/settings', settingsRouter)
   app.use('/sync/downloads', downloadsRouter)
   app.use('/sync/playlists', playlistsRouter)
+  app.use('/sync/library', libraryRouter)
 
   return app
 }

@@ -14,7 +14,7 @@ beforeAll(async () => {
   await migrate()
   // Real Postgres test DB, not mocked — clean slate per run.
   await getPool().query(
-    'TRUNCATE users, progress, bookmarks, downloads, user_settings, playlists, playlist_items, annotations, reading_prefs, book_position_map CASCADE',
+    'TRUNCATE users, progress, bookmarks, downloads, user_settings, playlists, playlist_items, library_items, annotations, reading_prefs, book_position_map CASCADE',
   )
 
   const { createApp } = await import('../src/api/app.js')
@@ -427,5 +427,88 @@ describe('playlists', () => {
     const reserved = res.body.filter((p: any) => p.is_reserved)
     expect(reserved).toHaveLength(1)
     expect(reserved[0].name).toBe('Up Next')
+  })
+})
+
+describe('library', () => {
+  it('starts empty', async () => {
+    const res = await request(app).get('/sync/library').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual([])
+  })
+
+  it('adds a book to the shelf', async () => {
+    const res = await request(app)
+      .post('/sync/library')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ bookId: 'book-lib-1' })
+    expect(res.status).toBe(201)
+    expect(res.body.book_id).toBe('book-lib-1')
+    expect(res.body.added_at).toBeTruthy()
+  })
+
+  it('lists it back', async () => {
+    const res = await request(app).get('/sync/library').set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(200)
+    expect(res.body.map((i: any) => i.book_id)).toContain('book-lib-1')
+  })
+
+  it('re-adding an already-shelved book is a no-op, not an error', async () => {
+    const res = await request(app)
+      .post('/sync/library')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ bookId: 'book-lib-1' })
+    expect(res.status).toBe(200)
+    expect(res.body.book_id).toBe('book-lib-1')
+
+    const list = await request(app).get('/sync/library').set('Authorization', `Bearer ${token}`)
+    expect(list.body.filter((i: any) => i.book_id === 'book-lib-1')).toHaveLength(1)
+  })
+
+  it('rejects adding without a bookId', async () => {
+    const res = await request(app).post('/sync/library').set('Authorization', `Bearer ${token}`).send({})
+    expect(res.status).toBe(400)
+  })
+
+  it('removes a book from the shelf', async () => {
+    const del = await request(app)
+      .delete('/sync/library/book-lib-1')
+      .set('Authorization', `Bearer ${token}`)
+    expect(del.status).toBe(204)
+
+    const list = await request(app).get('/sync/library').set('Authorization', `Bearer ${token}`)
+    expect(list.body.map((i: any) => i.book_id)).not.toContain('book-lib-1')
+  })
+
+  it('removing something never added is still a success', async () => {
+    const res = await request(app)
+      .delete('/sync/library/never-added')
+      .set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(204)
+  })
+
+  it("can't see or remove another user's shelf", async () => {
+    await request(app).post('/sync/library').set('Authorization', `Bearer ${token}`).send({ bookId: 'book-lib-2' })
+
+    const otherSignup = await request(app)
+      .post('/auth/signup')
+      .send({ email: `other-library-${Date.now()}@example.com`, password: 'correct-horse-battery' })
+    const otherToken = otherSignup.body.token
+
+    const list = await request(app).get('/sync/library').set('Authorization', `Bearer ${otherToken}`)
+    expect(list.body.map((i: any) => i.book_id)).not.toContain('book-lib-2')
+
+    // Doesn't error, just can't affect the other user's row — DELETE has
+    // no ownership check to fail since the WHERE clause already scopes to
+    // req.userId, so this simply deletes nothing.
+    await request(app).delete('/sync/library/book-lib-2').set('Authorization', `Bearer ${otherToken}`)
+
+    const stillThere = await request(app).get('/sync/library').set('Authorization', `Bearer ${token}`)
+    expect(stillThere.body.map((i: any) => i.book_id)).toContain('book-lib-2')
+  })
+
+  it('rejects protected routes with no token', async () => {
+    const res = await request(app).get('/sync/library')
+    expect(res.status).toBe(401)
   })
 })
