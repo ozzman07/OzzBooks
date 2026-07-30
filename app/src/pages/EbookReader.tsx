@@ -249,6 +249,26 @@ export function EbookReader() {
           if (startCfi) await rendition.display()
         }
         if (cancelled) return
+        if (startCfi) {
+          // display(cfi) resolves the section, then separately computes a
+          // pixel offset and scrolls to it (epub.js's DefaultViewManager)
+          // — it never re-runs that scroll if the section reflows *after*
+          // (a late-loading image, a web font swap, a ResizeObserver
+          // correction all trigger a silent re-layout with no re-scroll).
+          // The scroll position then points past — or between — the
+          // reflowed content, landing on a blank paginated "page" even
+          // though the section itself rendered fine (hence the theme/
+          // background color still showing). Re-issuing display() at the
+          // same CFI once things have settled re-does that offset
+          // calculation against the final layout. Guarded on the current
+          // location still being where we left it, so this can't yank the
+          // reader back if they've already turned a page in the meantime.
+          setTimeout(() => {
+            if (cancelled || !renditionRef.current) return
+            if (currentCfiRef.current !== startCfi) return
+            void renditionRef.current.display(startCfi)
+          }, 800)
+        }
         setStatus('ready')
       } catch {
         if (!cancelled) setStatus('error')
