@@ -6,6 +6,7 @@ import { fetchBook, fetchEpubBytes } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { fetchBookProgress, putProgress } from '../api/cloudClient'
 import { getCachedEpubFile } from '../offline/epubFileStore'
+import { getCachedLocations, putCachedLocations } from '../offline/bookLocationsStore'
 import { useAuth } from '../auth/AuthContext'
 import {
   loadReaderPrefs,
@@ -169,10 +170,22 @@ export function EbookReader() {
   // ready transition (see that effect's comment for why that one actually
   // corrupts the freshly-restored reading position, not just wastes work).
   const skipNextResizeRef = useRef(true)
+  // book.locations (the whole-book percentage index) loads/generates in
+  // the background after the reader's already showing a page — this
+  // tracks whether it's ready yet, checked inside the relocated handler
+  // below. A ref, not state: it's only ever read inside that handler, and
+  // flipping it shouldn't itself trigger a re-render.
+  const locationsReadyRef = useRef(false)
   const [title, setTitle] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [showSettings, setShowSettings] = useState(false)
   const [prefs, setPrefs] = useState<ReaderPrefs>(loadReaderPrefs)
+  // Page N of M within the current chapter — epub.js's paginated layout
+  // computes this for free on every relocate, no locations index needed.
+  const [pageInfo, setPageInfo] = useState<{ page: number; total: number } | null>(null)
+  // Percentage through the *whole book* — needs book.locations (see
+  // locationsReadyRef above), null until that's ready.
+  const [percent, setPercent] = useState<number | null>(null)
 
   useEffect(() => {
     if (!bookId || !containerRef.current) return
@@ -224,23 +237,33 @@ export function EbookReader() {
         // currentCfiRef needs a real value from the start so a preference
         // change made before the reader's first page-turn still has
         // somewhere valid to re-paginate from (see the prefs effect below).
-        rendition.on('relocated', (location: { start?: { cfi?: string } }) => {
-          const cfi = location?.start?.cfi
-          if (!cfi) return
-          currentCfiRef.current = cfi
-          if (!auth.token) return
-          // Debounced — relocated fires on every page turn, syncing every
-          // single one would spam the cloud API for no benefit over just
-          // capturing where the reader settles.
-          if (saveTimer) clearTimeout(saveTimer)
-          saveTimer = setTimeout(() => {
-            void putProgress(auth.token!, bookId!, {
-              position: { type: 'cfi', value: cfi },
-              chapterId: null,
-              updatedAt: new Date().toISOString(),
-            })
-          }, 2000)
-        })
+        rendition.on(
+          'relocated',
+          (location: { start?: { cfi?: string; displayed?: { page?: number; total?: number } } }) => {
+            const cfi = location?.start?.cfi
+            if (!cfi) return
+            currentCfiRef.current = cfi
+            const displayed = location.start?.displayed
+            if (displayed?.page && displayed.total) {
+              setPageInfo({ page: displayed.page, total: displayed.total })
+            }
+            if (locationsReadyRef.current) {
+              setPercent(Math.round(epub.locations.percentageFromCfi(cfi) * 100))
+            }
+            if (!auth.token) return
+            // Debounced — relocated fires on every page turn, syncing
+            // every single one would spam the cloud API for no benefit
+            // over just capturing where the reader settles.
+            if (saveTimer) clearTimeout(saveTimer)
+            saveTimer = setTimeout(() => {
+              void putProgress(auth.token!, bookId!, {
+                position: { type: 'cfi', value: cfi },
+                chapterId: null,
+                updatedAt: new Date().toISOString(),
+              })
+            }, 2000)
+          },
+        )
 
         const startCfi = progress?.position.type === 'cfi' ? progress.position.value : undefined
         try {
@@ -276,6 +299,39 @@ export function EbookReader() {
           }, 800)
         }
         setStatus('ready')
+
+        // Whole-book percentage — fire-and-forget, never blocks the
+        // reader from opening. Cached locations restore near-instantly;
+        // a fresh generate() is several seconds (walks the whole book's
+        // text), so this can easily still be running while the reader is
+        // already showing pages. Character-count-based, not layout-based,
+        // so it's valid regardless of font-size/line-height changes.
+        void (async () => {
+          try {
+            const cachedLocations = await getCachedLocations(bookId!)
+            if (cancelled) return
+            if (cachedLocations) {
+              epub.locations.load(cachedLocations.locations)
+            } else {
+              await epub.locations.generate(150)
+              if (cancelled) return
+              void putCachedLocations(bookId!, epub.locations.save())
+            }
+            if (cancelled) return
+            locationsReadyRef.current = true
+            // Compute for the *current* position right away, rather than
+            // waiting for the next page turn — generate() can finish
+            // while the reader is sitting still, and relocated won't fire
+            // again until the next prev()/next().
+            if (currentCfiRef.current) {
+              setPercent(Math.round(epub.locations.percentageFromCfi(currentCfiRef.current) * 100))
+            }
+          } catch {
+            // Soft-fail — the percentage is a nice-to-have; a malformed
+            // book failing to index isn't worth surfacing as a reader
+            // error when everything else about it works fine.
+          }
+        })()
       } catch {
         if (!cancelled) setStatus('error')
       }
@@ -433,6 +489,15 @@ export function EbookReader() {
               onClick={() => void renditionRef.current?.next()}
               className="absolute right-0 top-0 h-full w-1/5"
             />
+            {pageInfo && (
+              <p
+                className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs opacity-70"
+                style={{ color: fg }}
+              >
+                Page {pageInfo.page} of {pageInfo.total}
+                {percent !== null && ` · ${percent}%`}
+              </p>
+            )}
           </>
         )}
       </div>

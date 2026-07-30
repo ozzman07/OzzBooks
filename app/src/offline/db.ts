@@ -33,6 +33,19 @@ export interface CachedEpubFileEntry {
   downloadedAt: string
 }
 
+// epub.js's book.locations.generate() indexes the whole book's text into
+// fixed-size CFI breakpoints — several seconds of work for a typical
+// novel, but built from raw character counts, not visual layout, so it
+// never needs regenerating for a font-size/line-height change. `locations`
+// is the opaque string book.locations.save() returns, round-tripped
+// straight into book.locations.load() on the next open to skip
+// regenerating entirely. See EbookReader.tsx.
+export interface CachedBookLocationsEntry {
+  bookId: string
+  locations: string
+  savedAt: string
+}
+
 interface OzzBooksDB extends DBSchema {
   // No index on `synced` — IndexedDB keys can't be booleans, and the
   // number of in-flight progress rows is small enough that a full-table
@@ -50,13 +63,17 @@ interface OzzBooksDB extends DBSchema {
     key: string // bookId
     value: CachedEpubFileEntry
   }
+  bookLocations: {
+    key: string // bookId
+    value: CachedBookLocationsEntry
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<OzzBooksDB>> | null = null
 
 export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<OzzBooksDB>('ozzbooks', 2, {
+    dbPromise = openDB<OzzBooksDB>('ozzbooks', 3, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'bookId' })
@@ -68,6 +85,9 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
         }
         if (!db.objectStoreNames.contains('epubFiles')) {
           db.createObjectStore('epubFiles', { keyPath: 'bookId' })
+        }
+        if (!db.objectStoreNames.contains('bookLocations')) {
+          db.createObjectStore('bookLocations', { keyPath: 'bookId' })
         }
       },
     })
