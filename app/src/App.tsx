@@ -4,10 +4,9 @@ import { ThemeProvider } from './theme/ThemeContext'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { PlayerProvider } from './player/PlayerContext'
 import { LibraryViewProvider } from './library/LibraryViewContext'
+import { AppDataProvider, useAppData } from './data/AppDataContext'
 import { BottomNav } from './components/BottomNav'
 import { UpdatePrompt } from './components/UpdatePrompt'
-import { useAsync } from './hooks/useAsync'
-import { fetchMyLibrary } from './api/cloudClient'
 import { Auth } from './pages/Auth'
 import { Library } from './pages/Library'
 import { BookDetail } from './pages/BookDetail'
@@ -33,19 +32,14 @@ const EbookReader = lazy(() => import('./pages/EbookReader').then((m) => ({ defa
 // route. Doesn't fight manual bottom-nav taps — those go straight to
 // their own route and never pass through here again.
 function RootRedirect() {
-  const auth = useAuth()
-  const result = useAsync(async () => {
-    if (!auth.token) return true
-    const items = await fetchMyLibrary(auth.token)
-    return items.length === 0
-  }, [])
-  if (result.status === 'loading') {
+  const data = useAppData()
+  if (data.status === 'loading') {
     return <div className="pt-24 text-center text-muted">Loading…</div>
   }
   // On a failed fetch, default to the normal Library landing rather than
   // stranding the user on a blank screen — they can still reach Store
   // from the bottom nav.
-  const isEmpty = result.status === 'success' && result.data
+  const isEmpty = data.status === 'success' && data.myLibraryIds.size === 0
   return <Navigate replace to={isEmpty ? '/store' : '/library'} />
 }
 
@@ -111,7 +105,9 @@ export default function App() {
         <AuthGate>
           <PlayerProvider>
             <LibraryViewProvider>
-              <AppShell />
+              <AppDataProvider>
+                <AppShell />
+              </AppDataProvider>
             </LibraryViewProvider>
           </PlayerProvider>
         </AuthGate>

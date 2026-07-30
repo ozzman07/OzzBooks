@@ -1,15 +1,13 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { fetchBooks } from '../api/client'
-import { adaptBookListItem } from '../api/adapter'
 import { reconcileAllProgress, removeFromContinueListening } from '../offline/reconcile'
-import { fetchMyLibrary, addToLibrary, removeFromLibrary } from '../api/cloudClient'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
+import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { formatDuration } from '../lib/format'
-import { companionLibraryIds, bookInLibrary } from '../library/companion'
+import { bookInLibrary } from '../library/companion'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
 import {
@@ -393,6 +391,7 @@ function sortBooks(books: Book[], sortBy: SortOption): Book[] {
 export function Library() {
   const auth = useAuth()
   const location = useLocation()
+  const data = useAppData()
   // "My Library" and "Store" are two routes sharing this one component
   // (/library, /store — see App.tsx) rather than a toggle within a single
   // page, so the bottom nav can surface Store as its own always-visible
@@ -417,15 +416,10 @@ export function Library() {
   } = useLibraryView()
 
   // Locally hides a shelf entry the instant it's removed, rather than
-  // waiting on (or forcing) a full re-fetch of the library + progress —
-  // removal is a deliberate, infrequent action, so a small client-side
-  // override set is simpler than restructuring the useAsync data flow.
+  // waiting on (or forcing) a full re-fetch of progress — removal is a
+  // deliberate, infrequent action, so a small client-side override set is
+  // simpler than restructuring the useAsync data flow.
   const [removedFromShelf, setRemovedFromShelf] = useState<Set<string>>(new Set())
-  // Same idea, for the Store grid's Add/Remove My Library button — `true`
-  // means locally added, `false` locally removed, absence means "trust
-  // the fetched value." Layered on top of result.data.myLibraryIds (see
-  // effectiveMyLibraryIds below) rather than refetching on every toggle.
-  const [libraryOverrides, setLibraryOverrides] = useState<Map<string, boolean>>(new Map())
 
   async function handleRemoveFromContinueListening(e: React.MouseEvent, bookId: string) {
     e.preventDefault() // don't follow the enclosing Link to the book
@@ -443,24 +437,7 @@ export function Library() {
   }
 
   async function handleToggleLibrary(book: Book, currentlyIn: boolean) {
-    if (!auth.token) return
-    const ids = companionLibraryIds(book)
-    const next = !currentlyIn
-    setLibraryOverrides((prev) => {
-      const nextMap = new Map(prev)
-      for (const id of ids) nextMap.set(id, next)
-      return nextMap
-    })
-    try {
-      await Promise.all(ids.map((id) => (next ? addToLibrary(auth.token!, id) : removeFromLibrary(auth.token!, id))))
-    } catch {
-      // Revert — the request failed, so the toggle didn't actually happen.
-      setLibraryOverrides((prev) => {
-        const nextMap = new Map(prev)
-        for (const id of ids) nextMap.set(id, currentlyIn)
-        return nextMap
-      })
-    }
+    await data.toggleLibraryMembership(book, !currentlyIn)
   }
 
   // Captures the scroll position exactly once, at the moment this page is
@@ -477,72 +454,65 @@ export function Library() {
     }
   }, [location.pathname, scrollPositionsRef])
 
-  const result = useAsync(async () => {
-    // Missing books live exclusively on the Needs Attention page now — the
-    // server excludes them here so a book that needs relinking never shows
-    // up as a dead tile/row in the main grid.
-    const [fetchedBooks, progressEntries, libraryItems] = await Promise.all([
-      fetchBooks('active').then((rows) => rows.map(adaptBookListItem)),
-      reconcileAllProgress(auth.token),
-      auth.token ? fetchMyLibrary(auth.token) : Promise.resolve([]),
-    ])
-    const books = dedupeCompanionPairs(fetchedBooks)
-    const myLibraryIds = new Set(libraryItems.map((i) => i.book_id))
+  // The book list and shelf come from AppDataContext (fetched once per app
+  // session, shared across every page) — this only fetches progress, which
+  // is still per-mount (see the caching plan's explicit scope cut: it's a
+  // much lighter payload, and it changes during live playback in a way the
+  // book/shelf cache doesn't need to reason about).
+  const progressResult = useAsync(() => reconcileAllProgress(auth.token), [])
 
-    // A companion pair's epub-side row is deduped out of `books` above, but
-    // its progress can be keyed to *either* id (audio listening is always
-    // the audio id; ebook reading is the epub's own id — see BookDetail's
-    // read-navigation fix). Registering both ids against the one displayed
-    // tile means a progress row for either format still resolves to it.
-    const canonicalBookFor = new Map<string, Book>()
-    for (const b of books) {
-      canonicalBookFor.set(b.id, b)
-      if (b.companionBookId) canonicalBookFor.set(b.companionBookId, b)
+  // Missing books live exclusively on the Needs Attention page — filtered
+  // out here (both /library and /store) so a book that needs relinking
+  // never shows up as a dead tile/row in either grid.
+  const activeBooks = useMemo(
+    () => dedupeCompanionPairs(data.books.filter((b) => b.status === 'active')),
+    [data.books],
+  )
+
+  // A companion pair's epub-side row is deduped out of `activeBooks`
+  // above, but its progress can be keyed to *either* id (audio listening
+  // is always the audio id; ebook reading is the epub's own id — see
+  // BookDetail's read-navigation fix). Registering both ids against the
+  // one displayed tile means a progress row for either format still
+  // resolves to it.
+  const canonicalBookFor = useMemo(() => {
+    const map = new Map<string, Book>()
+    for (const b of activeBooks) {
+      map.set(b.id, b)
+      if (b.companionBookId) map.set(b.companionBookId, b)
     }
-    const progressByBookId = new Map(progressEntries.map((p) => [p.bookId, p]))
-    // A malformed/missing updatedAt on any single progress row (local or
-    // cloud) shouldn't take down the whole library fetch — treat it as
-    // "oldest" rather than letting .localeCompare on undefined throw.
-    // Not yet filtered to shelf-only here — that happens at render time
-    // against effectiveMyLibraryIds, so a live Add/Remove toggle updates
-    // this shelf without needing a full re-fetch.
-    const continueListeningCandidates = progressEntries
+    return map
+  }, [activeBooks])
+
+  const progressByBookId = useMemo(() => {
+    if (progressResult.status !== 'success') return new Map<string, LocalProgressEntry>()
+    return new Map(progressResult.data.map((p) => [p.bookId, p]))
+  }, [progressResult])
+
+  // Not yet filtered to shelf-only here — that happens at render time
+  // against data.myLibraryIds, so a live Add/Remove toggle updates this
+  // shelf without needing a full re-fetch.
+  const continueListeningCandidates = useMemo(() => {
+    if (progressResult.status !== 'success') return []
+    return progressResult.data
       .slice()
       .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
       .map((p) => canonicalBookFor.get(p.bookId))
       .filter((b): b is Book => b !== undefined)
-
-    return { books, continueListeningCandidates, progressByBookId, myLibraryIds }
-  }, [])
-
-  // Fetched shelf membership with any local Add/Remove overrides applied
-  // on top (see handleToggleLibrary) — the single source of truth for
-  // "is this book on my shelf" used by both the My Library filter and the
-  // Continue Listening shelf below.
-  const effectiveMyLibraryIds = useMemo(() => {
-    if (result.status !== 'success') return new Set<string>()
-    const ids = new Set(result.data.myLibraryIds)
-    for (const [bookId, inLibrary] of libraryOverrides) {
-      if (inLibrary) ids.add(bookId)
-      else ids.delete(bookId)
-    }
-    return ids
-  }, [result, libraryOverrides])
+  }, [progressResult, canonicalBookFor])
 
   const filteredBooks = useMemo(() => {
-    if (result.status !== 'success') return []
-    const { books, progressByBookId } = result.data
     const query = search.trim().toLowerCase()
 
-    return books.filter((b) => {
+    return activeBooks.filter((b) => {
       if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
       if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
       if (formatFilter === 'audio' && !isAudioFormat(b)) return false
       if (formatFilter === 'ebook' && !(b.format === 'epub' || b.companionBookId)) return false
-      if (libraryViewMode === 'mine' && !bookInLibrary(b, effectiveMyLibraryIds)) return false
+      if (libraryViewMode === 'mine' && !bookInLibrary(b, data.myLibraryIds)) return false
       return true
     })
-  }, [result, search, statusFilter, formatFilter, libraryViewMode, effectiveMyLibraryIds])
+  }, [activeBooks, search, statusFilter, formatFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
 
@@ -558,7 +528,7 @@ export function Library() {
   // Add/Remove My Library affordance make sense (in My Library mode,
   // everything shown is already added, so there's nothing to toggle).
   const storeToggleProps =
-    libraryViewMode === 'store' ? { myLibraryIds: effectiveMyLibraryIds, onToggleLibrary: handleToggleLibrary } : {}
+    libraryViewMode === 'store' ? { myLibraryIds: data.myLibraryIds, onToggleLibrary: handleToggleLibrary } : {}
 
   // Restores the scroll position captured above, once the book grid has
   // actually rendered (not before — restoring against an empty "Loading…"
@@ -566,10 +536,10 @@ export function Library() {
   // useLayoutEffect rather than useEffect so it applies before the browser
   // paints this render, avoiding a visible flash at the top first.
   useLayoutEffect(() => {
-    if (result.status !== 'success') return
+    if (data.status !== 'success') return
     window.scrollTo(0, scrollPositionsRef.current.get(location.pathname) ?? 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result.status, location.pathname])
+  }, [data.status, location.pathname])
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
@@ -582,23 +552,36 @@ export function Library() {
           <span aria-hidden="true">{libraryViewMode === 'store' ? '🛍️' : '📚'}</span>
           {libraryViewMode === 'store' ? 'Store' : 'Your Library'}
         </h1>
+        {/* Pull-to-refresh doesn't work in the installed PWA (only in a
+            browser tab) — this is the escape hatch for "someone else just
+            added a book on their own device and I want to see it now"
+            without waiting on the 5-minute visibility-regain refetch. */}
+        <button
+          onClick={() => void data.refresh()}
+          disabled={data.status === 'loading'}
+          aria-label="Refresh"
+          title="Refresh"
+          className="text-sm text-muted underline disabled:opacity-40"
+        >
+          ↻ Refresh
+        </button>
       </div>
 
-      {result.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
+      {data.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
 
-      {result.status === 'error' && <LibraryError onRetry={result.retry} error={result.error} />}
+      {data.status === 'error' && <LibraryError onRetry={data.refresh} error={data.error} />}
 
-      {result.status === 'success' && result.data.books.length === 0 && (
+      {data.status === 'success' && activeBooks.length === 0 && (
         <p className="px-2 text-center text-muted">
           No books yet — add a source and scan it to start building your library.
         </p>
       )}
 
-      {result.status === 'success' &&
+      {data.status === 'success' &&
         (() => {
-          const continueListening = result.data.continueListeningCandidates
+          const continueListening = continueListeningCandidates
             .filter((b) => !removedFromShelf.has(b.id))
-            .filter((b) => bookInLibrary(b, effectiveMyLibraryIds))
+            .filter((b) => bookInLibrary(b, data.myLibraryIds))
           if (continueListening.length === 0) return null
           return (
             <section className="mb-6">
@@ -626,7 +609,7 @@ export function Library() {
           )
         })()}
 
-      {result.status === 'success' && result.data.books.length > 0 && (
+      {data.status === 'success' && activeBooks.length > 0 && (
         <section>
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <h2 className="mr-auto text-sm font-medium uppercase tracking-wide text-muted">
