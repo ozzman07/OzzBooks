@@ -56,6 +56,11 @@ export interface ApiChapter {
 export interface ApiBook {
   id: string
   source_id: string
+  /** The owning source's display name — e.g. "Jarrett's Drive". Present on
+   * both list and detail responses (books.ts LEFT JOINs sources on both
+   * routes) so it can drive the Library/Store Source filter facet without
+   * a full per-book detail fetch. */
+  source_label: string
   file_path: string
   format: 'm4b' | 'mp3_folder' | 'epub'
   companion_book_id: string | null
@@ -64,6 +69,8 @@ export interface ApiBook {
   series_name: string | null
   series_number: number | null
   synopsis: string | null
+  genre: string | null
+  narrator: string | null
   status: 'active' | 'missing'
   artwork_thumb_path: string | null
   artwork_full_path: string | null
@@ -71,6 +78,11 @@ export interface ApiBook {
   content_hash: string | null
   created_at: string
   updated_at: string
+  /** True only for a 'missing' book converted from a mobi before the
+   * epub-always-wins dedup rule existed — no scan can ever relink it
+   * (see ingestion/mobiConvert.ts's isOrphanedConversion server-side).
+   * Always false for an 'active' book. */
+  is_orphaned_conversion: boolean
 }
 
 // List endpoint aggregates total_duration server-side (SUM over chapters);
@@ -85,7 +97,6 @@ export interface ApiBookListItem extends ApiBook {
 
 export interface ApiBookDetail extends ApiBook {
   chapters: ApiChapter[]
-  source_label: string
   source_type: string
 }
 
@@ -297,7 +308,7 @@ export async function fetchEpubBytes(bookId: string): Promise<ArrayBuffer> {
 
 export function updateBook(
   id: string,
-  patch: { seriesName?: string | null; seriesNumber?: number | null },
+  patch: { seriesName?: string | null; seriesNumber?: number | null; genre?: string | null; narrator?: string | null },
 ): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
 }

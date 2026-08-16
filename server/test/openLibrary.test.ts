@@ -47,7 +47,10 @@ describe('searchWork', () => {
     vi.stubGlobal('fetch', fetchMock)
     const match = await searchWork('Grantville Gazette Volume IV', 'History')
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(match).toEqual({ genre: 'Alternate history', coverId: 42, synopsis: null })
+    // genre is now mapped through the controlled vocabulary (see
+    // genreOptions.ts) rather than the raw top subject string — "Alternate
+    // history" hits the History keyword pattern.
+    expect(match).toEqual({ genre: 'History', coverId: 42, synopsis: null })
   })
 
   it('does not retry when no author was supplied in the first place', async () => {
@@ -94,8 +97,11 @@ describe('searchWork', () => {
       ),
     )
     const match = await searchWork('Mistborn The Final Empire', 'Brandon Sanderson')
+    // genre is mapped through the controlled vocabulary (genreOptions.ts),
+    // scored across the whole subject list: "Fantasy fiction" + "Magic"
+    // both score Fantasy, "Fiction" alone matches nothing.
     expect(match).toEqual({
-      genre: 'Fantasy fiction',
+      genre: 'Fantasy',
       coverId: 12345,
       synopsis: 'A young thief joins a crew to overthrow the immortal Lord Ruler.',
     })

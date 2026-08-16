@@ -14,9 +14,25 @@ export interface IngestedBook {
   author: string | null
   seriesName: string | null
   seriesNumber: number | null
+  /** Audiobook narrator — read from the ID3/MP4 "composer" tag, the
+   * conventional (if inconsistent) place audiobook tools store this. Not a
+   * real composer credit; there's no dedicated narrator tag in either
+   * format's spec. Null when the tag's missing or blank, which real-world
+   * files frequently are — confirmed against this library's own files
+   * (2026-08-16): present and correct on some ("MacLeod Andrews", "Tim
+   * Gerard Reynolds"), blank on others, absent entirely on plain MP3s. */
+  narrator: string | null
   chapters: IngestedChapter[]
   /** Metadata to pull embedded cover art from — first chapter's tags. */
   artworkMetadata: IAudioMetadata
+}
+
+// Composer tag is sometimes present but blank ([""]) rather than absent —
+// seen on real files in this library — so a plain join isn't enough; empty
+// entries need filtering before deciding there's nothing usable.
+export function narratorFrom(metadata: IAudioMetadata | undefined): string | null {
+  const composer = metadata?.common.composer?.map((c) => c.trim()).filter(Boolean)
+  return composer && composer.length > 0 ? composer.join(', ') : null
 }
 
 function trackNumber(metadata: IAudioMetadata): number {
@@ -90,6 +106,7 @@ export async function ingestMp3Folder(parts: Mp3FolderPart[]): Promise<IngestedB
     author: first?.common.albumartist || first?.common.artist || null,
     seriesName: null,
     seriesNumber: null,
+    narrator: narratorFrom(first),
     chapters,
     artworkMetadata: first!,
   }

@@ -27,7 +27,11 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     seriesName: book.series_name ?? undefined,
     seriesNumber: book.series_number ?? undefined,
     synopsis: book.synopsis ?? undefined,
+    genre: book.genre ?? undefined,
+    narrator: book.narrator ?? undefined,
+    sourceLabel: book.source_label,
     status: book.status,
+    isOrphanedConversion: book.is_orphaned_conversion,
     format: book.format,
     companionBookId: book.companion_book_id ?? undefined,
     coverThumbUrl: book.artwork_thumb_path ? artworkUrl(book.id, 'thumb') : undefined,
@@ -51,7 +55,6 @@ export function adaptBookDetail(book: ApiBookDetail): Book {
     ...adaptBookFields(book),
     chapters,
     totalDuration: chapters.reduce((sum, c) => sum + c.duration, 0),
-    sourceLabel: book.source_label,
     sourceType: book.source_type,
   }
 }

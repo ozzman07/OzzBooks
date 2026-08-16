@@ -8,6 +8,7 @@ import {
   deriveAuthorFromSegments,
   deriveSeriesFromSegments,
   BACKUP_FOLDER_RE,
+  fillIfMissing,
   type ScanResult,
 } from '../../../ingestion/scan.js'
 import type { BookRow, SourceRow } from '../../../types.js'
@@ -279,6 +280,7 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
         contentHash: hash,
         chapters: ingested.chapters,
       })
+      fillIfMissing(bookId, 'narrator', ingested.narrator)
 
       if (created) {
         result.created++

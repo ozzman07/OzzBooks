@@ -3,7 +3,7 @@ import type { IRangeRequestClient, IHeadRequestInfo, IRangeRequestResponse, ICon
 import { parseFromTokenizer } from 'music-metadata'
 import type { IAudioMetadata } from 'music-metadata'
 import { readContainerInfoFromUrl } from '../../../ingestion/ffprobe.js'
-import type { IngestedBook, IngestedChapter } from '../../../ingestion/mp3Folder.js'
+import { narratorFrom, type IngestedBook, type IngestedChapter } from '../../../ingestion/mp3Folder.js'
 
 /**
  * A minimal IRangeRequestClient over fetch(), adding an Authorization
@@ -118,6 +118,7 @@ export async function ingestRemoteM4b(
     author: tags.common.albumartist || tags.common.artist || null,
     seriesName: null,
     seriesNumber: tags.common.movementIndex?.no ? Number(tags.common.movementIndex.no) : null,
+    narrator: narratorFrom(tags),
     chapters,
     artworkMetadata: tags,
   }
@@ -164,6 +165,7 @@ export async function ingestRemoteMp3Folder(folderName: string, files: RemoteMp3
     author: first?.common.albumartist || first?.common.artist || null,
     seriesName: null,
     seriesNumber: null,
+    narrator: narratorFrom(first),
     chapters,
     artworkMetadata: first!,
   }

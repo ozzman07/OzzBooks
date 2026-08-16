@@ -47,6 +47,7 @@ export interface BookRow {
   content_hash: string | null
   genre: string | null
   synopsis: string | null
+  narrator: string | null
   metadata_enrichment_attempted_at: string | null
   missing_since: string | null
   created_at: string

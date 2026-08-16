@@ -66,8 +66,9 @@ CREATE TABLE IF NOT EXISTS books (
   artwork_full_path TEXT,
   volume_normalization_gain REAL,
   content_hash TEXT, -- for duplicate detection across sources
-  genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched
+  genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched; always one of GENRE_OPTIONS, not a raw subject string
   synopsis TEXT, -- backfilled alongside genre, same enrichment pass, null until enriched
+  narrator TEXT, -- audiobooks only; read from the composer/writer tag at ingestion, editable on Book Detail
   -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
   -- doesn't repeatedly re-query the same already-attempted book — a
   -- future "retry failed lookups" action resets this to NULL.
