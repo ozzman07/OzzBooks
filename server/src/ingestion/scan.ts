@@ -11,9 +11,11 @@ import { groupM4bParts, groupSiblingFolders } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
 import { extractArtwork, saveArtworkBuffer } from './artwork.js'
 import { readEpubMetadata } from './epub.js'
+import { isMobiFile, convertMobiToEpub } from './mobiConvert.js'
 import { runCompanionLinking } from './companionLink.js'
 import { deriveSeriesNumberFromName } from './seriesNumber.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
+import { mapToControlledGenre } from './enrichment/genreOptions.js'
 
 export interface Candidate {
   format: BookFormat
@@ -47,6 +49,20 @@ export interface Candidate {
 // real book titles that happen to contain one of these words as a
 // substring, like "Sourcery" or "The Source of Magic".
 export const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
+
+// Filesystem-generated metadata folders, never real book content —
+// most commonly .AppleDouble, which macOS auto-creates when files move
+// to/from a share that doesn't natively support resource forks/extended
+// attributes (common on SMB/AFP NAS mounts). The copy inside is
+// frequently truncated or otherwise corrupted, not a genuine second copy
+// — traced a real "Unknown book type" mobi-conversion failure back to
+// exactly this (Zelazny, Roger/Trumps of Doom/.AppleDouble/...mobi).
+// Recursing into these wastes time re-processing a broken shadow of a
+// file already found at its real path, and risks a spurious duplicate or
+// failed-scan entry. Other entries cover the equivalent junk on a
+// Synology NAS (@eaDir) and stray macOS Trash/Spotlight folders that can
+// end up inside a mounted share.
+const SYSTEM_METADATA_FOLDER_RE = /^(\.AppleDouble|@eaDir|\.Trashes|\.TemporaryItems|\.fseventsd|\.Spotlight-V100|#recycle)$/i
 
 // .m4a and .m4b are the same MPEG-4/AAC container — Apple just uses .m4b as
 // a convention for "this M4A has audiobook chapter markers," not a
@@ -314,8 +330,56 @@ async function removeTrashedBooks(
   }
 }
 
+// The first standalone number (integer or decimal) anywhere in a
+// filename — not anchored to a known series name, since at this point in
+// the scan (a raw directory listing, before any book has actually been
+// read) no series name has been derived yet. Used by isSameBookAsAnyEpub
+// below to tell two different same-series entries apart by their
+// position number, since plain word overlap alone can't: within one
+// series folder, every file's name shares the series name (often the
+// author name too).
+function firstNumberToken(filename: string): number | null {
+  const m = /\d+(?:\.\d+)?/.exec(filename)
+  return m ? Number(m[0]) : null
+}
+
+/**
+ * Decides whether `mobiName` is a duplicate of one of `epubFiles` sitting
+ * in the same folder — not just "some epub happens to exist in this
+ * folder" (a flat series folder can legitimately hold several *different*
+ * books with uneven format coverage; see findCandidates' mobiFiles
+ * filter). If either filename carries a standalone number, that number
+ * has to match exactly — e.g. "The Expanse 5 - Nemesis Games - James S.
+ * A. Corey" vs "The Expanse 5.5 - The Vital Abyss - James S A Corey"
+ * share four words ("the"/"expanse"/"james"/"corey", clearing
+ * AUTO_REPLACE_MIN_SCORE) despite being two completely different books —
+ * word overlap alone would misfire here, so a present-but-mismatched (or
+ * one-sided) number always wins over it. Word overlap only decides it
+ * when *neither* file has a number at all, the common standalone-book
+ * case this whole dedup rule exists for.
+ */
+function isSameBookAsAnyEpub(mobiName: string, epubFiles: Dirent[]): boolean {
+  // A folder with exactly one epub has no ambiguity to resolve — there's
+  // nothing else present that a same-folder mobi could be confused with,
+  // so it's presumed to be that epub's counterpart regardless of how
+  // little its filename otherwise overlaps (e.g. two different-language
+  // titles for the same book). The number/word-overlap matching below
+  // only earns its keep once there's more than one epub candidate in the
+  // folder to potentially mismatch against.
+  if (epubFiles.length === 1) return true
+
+  const mobiStem = path.basename(mobiName, path.extname(mobiName))
+  const mobiNumber = firstNumberToken(mobiStem)
+  return epubFiles.some((e) => {
+    const epubStem = path.basename(e.name, path.extname(e.name))
+    const epubNumber = firstNumberToken(epubStem)
+    if (mobiNumber !== null || epubNumber !== null) return mobiNumber !== null && epubNumber !== null && mobiNumber === epubNumber
+    return titleMatchScore(mobiStem, epubStem) >= AUTO_REPLACE_MIN_SCORE
+  })
+}
+
 export async function findCandidates(dir: string): Promise<Candidate[]> {
-  if (BACKUP_FOLDER_RE.test(path.basename(dir))) return []
+  if (BACKUP_FOLDER_RE.test(path.basename(dir)) || SYSTEM_METADATA_FOLDER_RE.test(path.basename(dir))) return []
 
   const entries = await readdir(dir, { withFileTypes: true })
   const files = entries.filter((e) => e.isFile())
@@ -329,6 +393,19 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
   const m4bFiles = files.filter((f) => isM4bFile(f.name))
   const mp3Files = files.filter((f) => f.name.toLowerCase().endsWith('.mp3'))
   const epubFiles = files.filter((f) => isEpubFile(f.name))
+  // Per the user's dedup policy: when a book's own folder has both a real
+  // epub and a mobi copy of the *same* book, the epub always wins — skip
+  // that mobi entirely rather than converting it into a second, duplicate
+  // library entry. Matched per-file against same-folder epubs (see
+  // isSameBookAsAnyEpub below), not "this folder has any epub at all" —
+  // a flat series folder can legitimately hold several *different* books
+  // with uneven format coverage (some only ever released as epub, others
+  // only as mobi, e.g. novellas), and blanket-suppressing every mobi
+  // whenever the folder happens to contain any epub silently drops the
+  // mobi-only ones with no equivalent anywhere. A mobi with no matching
+  // epub sibling still converts normally (see mobiConvert.ts) — nothing
+  // downstream needs to know mobi was ever involved.
+  const mobiFiles = files.filter((f) => isMobiFile(f.name) && !isSameBookAsAnyEpub(f.name, epubFiles))
 
   const candidates: Candidate[] = []
 
@@ -339,7 +416,7 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
   // library's actual ebooks live in a completely separate source/folder
   // tree from the audiobooks (see companionLink.ts for how the two get
   // paired back together), but nothing here assumes that's always true.
-  for (const f of epubFiles) {
+  for (const f of [...epubFiles, ...mobiFiles]) {
     const filePath = path.join(dir, f.name)
     candidates.push({ format: 'epub', filePath, hashInput: filePath })
   }
@@ -444,7 +521,12 @@ const GARBLED_FOLDER_NAME_RE = /^[A-Z0-9]{6}~[A-Z0-9]$/
 export function deriveAuthorFromSegments(segments: string[]): string | null {
   const [authorFolder, ...rest] = segments
   if (rest.length === 0) return null // file/folder sits directly at the source root, no author level
-  if (!authorFolder || GARBLED_FOLDER_NAME_RE.test(authorFolder)) return null
+  // A leading underscore is the user's own convention for "this top-level
+  // folder is a misc/grab-bag collection, not a single author" (e.g.
+  // "_Business books") — same fallback-to-embedded-metadata treatment as
+  // a garbled short name below, just an intentional marker instead of an
+  // accident.
+  if (!authorFolder || authorFolder.startsWith('_') || GARBLED_FOLDER_NAME_RE.test(authorFolder)) return null
   return authorFolder
 }
 
@@ -613,6 +695,19 @@ export interface ResolvedBook {
  * mechanics (Drive's parents-based folder hierarchy, ffprobe-over-URL)
  * than the local-filesystem-path logic in applyIngestedCandidate below.
  */
+// Genre/narrator are deliberately excluded from writeBookAndChapters' own
+// upsert below (unlike title/author/series, which a rescan should always
+// refresh) — a rescan must never clobber a value that came from the
+// enrichment pass or a manual edit on Book Detail back to whatever the
+// file itself says today. This mirrors enrichBooks.ts's own "only fill a
+// null field" rule, just applied at scan time instead of during the
+// separate enrichment pass, since these values come straight from the
+// file rather than a network lookup.
+export function fillIfMissing(bookId: string, field: 'genre' | 'narrator', value: string | null): void {
+  if (!value) return
+  getDb().prepare(`UPDATE books SET ${field} = ? WHERE id = ? AND ${field} IS NULL`).run(value, bookId)
+}
+
 export function writeBookAndChapters(
   source: SourceRow,
   bookId: string,
@@ -736,14 +831,27 @@ export async function applyIngestedCandidate(
   const bookId = existingBookId ?? randomUUID()
 
   if (candidate.format === 'epub') {
-    const epubMeta = await readEpubMetadata(candidate.filePath)
+    // A mobi candidate arrives here tagged 'epub' (see findCandidates) —
+    // convert it to a real epub first so everything below (metadata
+    // parsing, the stored file_path the /epub route serves, DRM
+    // detection) works on actual epub bytes and never needs its own
+    // mobi-awareness. candidate.filePath stays the original .mobi path
+    // throughout (used for hashing/folder-derivation above); only the
+    // file actually read/stored switches to the converted copy.
+    const epubFilePath = isMobiFile(candidate.filePath)
+      ? await convertMobiToEpub(candidate.filePath, bookId)
+      : candidate.filePath
+    const epubMeta = await readEpubMetadata(epubFilePath)
     if (epubMeta.hasDrm) {
       // Caught by scanSource's per-candidate try/catch, same treatment as
       // any other unreadable file — logged as a scan issue, doesn't abort
       // the rest of the scan. DRM can't be detected from the extension
       // alone (unlike .aax) — only found out once the file's actually
       // opened here, so unlike audio DRM this can't be filtered out at
-      // findCandidates time.
+      // findCandidates time. A DRM-encumbered *mobi* never reaches this
+      // check at all — ebook-convert fails outright on those, which
+      // throws (and gets caught the same way) inside convertMobiToEpub
+      // above.
       throw new Error('DRM-encumbered epub (out of scope)')
     }
     const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? epubMeta.author
@@ -758,8 +866,8 @@ export async function applyIngestedCandidate(
     )
     const artwork = epubMeta.coverBuffer ? await saveArtworkBuffer(bookId, epubMeta.coverBuffer) : null
 
-    return writeBookAndChapters(source, bookId, !existingBookId, {
-      filePath: candidate.filePath,
+    const result = writeBookAndChapters(source, bookId, !existingBookId, {
+      filePath: epubFilePath,
       format: 'epub',
       title: epubMeta.title,
       author,
@@ -771,6 +879,12 @@ export async function applyIngestedCandidate(
       contentHash: hash,
       chapters: [], // no audio chapters for an epub-primary book
     })
+    // Free genre win when the epub's own OPF subjects map cleanly — skips
+    // waiting on the Open Library enrichment pass entirely for these.
+    // Falls back to enrichment (unaffected by this — it only ever fills a
+    // still-null genre) when the file's subjects don't map to anything.
+    fillIfMissing(bookId, 'genre', mapToControlledGenre(epubMeta.subjects))
+    return result
   }
 
   const ingested = await ingestCandidate(candidate)
@@ -788,7 +902,7 @@ export async function applyIngestedCandidate(
     ingested.artworkMetadata,
   )
 
-  return writeBookAndChapters(source, bookId, !existingBookId, {
+  const result = writeBookAndChapters(source, bookId, !existingBookId, {
     filePath: candidate.filePath,
     format: candidate.format,
     title: ingested.title,
@@ -801,6 +915,8 @@ export async function applyIngestedCandidate(
     contentHash: hash,
     chapters: ingested.chapters,
   })
+  fillIfMissing(bookId, 'narrator', ingested.narrator)
+  return result
 }
 
 export async function scanSource(source: SourceRow): Promise<ScanResult> {
@@ -879,10 +995,33 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
 
     try {
       const hash = await contentHash(candidate.hashInput)
+      // A mobi candidate's stored file_path is the converted epub (see
+      // applyIngestedCandidate/mobiConvert.ts) — it can never equal
+      // candidate.filePath (the original .mobi), so the exact-path lookup
+      // below can never find it. Content hash of the untouched source
+      // .mobi is a stable identity key instead, same idea as the
+      // content-hash relink match a few lines down (which exists to
+      // handle a genuinely-moved file of any other format) — just used
+      // as the *primary* lookup here instead of a fallback, since for
+      // mobi the exact-path lookup isn't a fallback case, it's simply
+      // never applicable.
+      const isMobi = isMobiFile(candidate.filePath)
 
-      let existing = db
-        .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND file_path = ?')
-        .get(source.id, candidate.filePath)
+      let existing: BookRow | undefined
+      if (isMobi) {
+        const match = db
+          .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND content_hash = ?')
+          .get(source.id, hash)
+        // Same "don't reuse a row another candidate already claimed this
+        // scan" guard the relink match below uses — protects against two
+        // genuinely-duplicate mobi files (identical content, different
+        // paths) both matching the same existing book.
+        if (match && !seenFilePaths.has(match.file_path)) existing = match
+      } else {
+        existing = db
+          .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND file_path = ?')
+          .get(source.id, candidate.filePath)
+      }
 
       if (!existing) {
         const duplicate = db
@@ -901,21 +1040,37 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         // the new path, silently resetting progress/bookmarks/downloads.
         // Excludes rows already claimed by another file processed earlier
         // in this same scan, guarding against genuine intra-library
-        // duplicates confusing the match.
-        const relinkMatch = db
-          .prepare<[string, string, string], BookRow>(
-            'SELECT * FROM books WHERE source_id = ? AND content_hash = ? AND file_path != ?',
-          )
-          .get(source.id, hash, candidate.filePath)
-        if (relinkMatch && !seenFilePaths.has(relinkMatch.file_path)) {
-          existing = relinkMatch
+        // duplicates confusing the match. Doesn't apply to mobi — the
+        // content-hash lookup above already covers it (mobi has no
+        // separate "own path" tracked to detect a move against).
+        if (!isMobi) {
+          const relinkMatch = db
+            .prepare<[string, string, string], BookRow>(
+              'SELECT * FROM books WHERE source_id = ? AND content_hash = ? AND file_path != ?',
+            )
+            .get(source.id, hash, candidate.filePath)
+          if (relinkMatch && !seenFilePaths.has(relinkMatch.file_path)) {
+            existing = relinkMatch
+          }
         }
       }
 
-      const wasHashRelink = Boolean(existing && existing.file_path !== candidate.filePath)
+      // For mobi, candidate.filePath (the .mobi) vs. existing.file_path
+      // (the converted epub) always differ — that's structural, not a
+      // move, so never log it as one.
+      const wasHashRelink = !isMobi && Boolean(existing && existing.file_path !== candidate.filePath)
       const previousPath = existing?.file_path
 
       const { bookId, created } = await applyIngestedCandidate(source, candidate, existing?.id, hash, seriesSiblingCounts)
+      if (isMobi) {
+        // The book's real stored file_path (the converted epub) is what
+        // the "missing" sweep below actually checks — candidate.filePath
+        // (added to seenFilePaths at the top of the loop) is the original
+        // .mobi and will never match it, so without this every mobi book
+        // would get marked missing the instant it's created/confirmed.
+        const stored = db.prepare<[string], { file_path: string }>('SELECT file_path FROM books WHERE id = ?').get(bookId)
+        if (stored) seenFilePaths.add(stored.file_path)
+      }
       if (created) {
         result.created++
         const book = db.prepare('SELECT title, author FROM books WHERE id = ?').get(bookId) as

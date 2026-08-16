@@ -7,6 +7,12 @@ export interface EpubMetadata {
   /** Raw cover image bytes, if the epub's manifest/metadata point at one — pass to saveArtworkBuffer() to resize+save. */
   coverBuffer: Buffer | null
   hasDrm: boolean
+  /** Raw <dc:subject> tags straight from the OPF, e.g. "Fiction, science
+   * fiction, general" — free text, no fixed vocabulary. Feed to
+   * mapToControlledGenre() (enrichment/genreOptions.ts) rather than storing
+   * or displaying directly; quality varies wildly by how the file was
+   * produced (see readEpubMetadata's doc comment). */
+  subjects: string[] | null
 }
 
 // Extensions covered by embedded-font obfuscation (Adobe's font-mangling
@@ -82,5 +88,6 @@ export async function readEpubMetadata(filePath: string): Promise<EpubMetadata> 
     author: epub.metadata.creator?.trim() || null,
     coverBuffer,
     hasDrm: await hasContentDrm(epub),
+    subjects: epub.metadata.subjects?.filter((s) => s.trim()).map((s) => s.trim()) || null,
   }
 }

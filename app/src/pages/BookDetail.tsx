@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { fetchBook, updateBook } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { reconcileProgress, removeFromContinueListening } from '../offline/reconcile'
+import { getCachedBookDetail, putCachedBookDetail } from '../offline/bookDetailCacheStore'
 import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDownloads } from '../hooks/useDownloads'
@@ -13,6 +14,7 @@ import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
 import { formatClock, formatDuration } from '../lib/format'
 import { bookInLibrary } from '../library/companion'
+import { GENRE_OPTIONS } from '../library/genreOptions'
 import { fetchPlaylists, addToPlaylist, findUpNext, CloudApiError, type Playlist } from '../api/cloudClient'
 import type { Book } from '../types'
 
@@ -171,6 +173,12 @@ export function BookDetail() {
   const [seriesNameDraft, setSeriesNameDraft] = useState('')
   const [seriesNumberDraft, setSeriesNumberDraft] = useState('')
   const [seriesError, setSeriesError] = useState<string | null>(null)
+  const [editingGenre, setEditingGenre] = useState(false)
+  const [genreDraft, setGenreDraft] = useState('')
+  const [genreError, setGenreError] = useState<string | null>(null)
+  const [editingNarrator, setEditingNarrator] = useState(false)
+  const [narratorDraft, setNarratorDraft] = useState('')
+  const [narratorError, setNarratorError] = useState<string | null>(null)
   const result = useAsync(async () => {
     const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
@@ -183,7 +191,27 @@ export function BookDetail() {
       // back to '' instead of crashing on chapters[0].id for that case.
       book.progress = { position: progress.position, chapterId: progress.chapterId || book.chapters[0]?.id || '' }
     }
+    void putCachedBookDetail(bookId!, book)
     return book
+  }, [bookId])
+
+  // The *full* detail (chapters included) from a previous successful
+  // visit, if any — distinct from the list-item prefill below, and loaded
+  // in parallel with the network fetch rather than blocking on it. This is
+  // what makes an already-downloaded audiobook actually playable with no
+  // server connection: the list-item shape has no chapters, so without
+  // this a network failure would strand you on a book you can't press
+  // Play on even though the audio file itself is sitting in IndexedDB.
+  const [cachedFullDetail, setCachedFullDetail] = useState<Book | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setCachedFullDetail(null)
+    void getCachedBookDetail(bookId!).then((entry) => {
+      if (!cancelled && entry) setCachedFullDetail(entry.book)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [bookId])
 
   // AppDataContext's book list already has this book's title/author/cover/
@@ -195,20 +223,27 @@ export function BookDetail() {
   // away instead of waiting on it.
   const cachedListItem = data.books.find((b) => b.id === bookId)
   const isFullyLoaded = result.status === 'success'
-  // Possibly undefined for one render (neither the full fetch nor the
+  // Possibly undefined for one render (neither the full fetch nor either
   // cache has resolved yet) — every hook below tolerates that via `?? []`/
   // optional chaining, since hooks must run unconditionally before the
   // early returns further down decide whether there's anything to render.
-  const partialBook = isFullyLoaded ? result.data : cachedListItem
+  // Priority: fresh fetch > cached full detail (has real chapters, so
+  // still playable/readable offline) > list-item prefill (title/cover
+  // only, from AppDataContext).
+  const partialBook = isFullyLoaded ? result.data : (cachedFullDetail ?? cachedListItem)
 
   const downloads = useDownloads(bookId!, partialBook?.chapters ?? [])
   const epubIdForDownload = partialBook && (partialBook.format === 'epub' ? partialBook.id : partialBook.companionBookId)
   const ebookDownload = useEbookDownload(epubIdForDownload)
 
-  if (result.status === 'error') {
-    return <LibraryError onRetry={result.retry} error={result.error} />
-  }
+  // The error screen only wins when there's truly nothing to show — a
+  // network failure with a cached book (full or partial) available
+  // renders normally instead, same "stale beats a hard block" principle
+  // as AppDataContext.
   if (!partialBook) {
+    if (result.status === 'error') {
+      return <LibraryError onRetry={result.retry} error={result.error} />
+    }
     return <p className="px-4 pt-24 text-center text-muted">Loading…</p>
   }
   // Re-bound with an explicit type (rather than just using partialBook
@@ -296,6 +331,45 @@ export function BookDetail() {
     }
   }
 
+  function startEditingGenre() {
+    setGenreError(null)
+    setGenreDraft(book.genre ?? '')
+    setEditingGenre(true)
+  }
+
+  async function saveGenre() {
+    setGenreError(null)
+    try {
+      await updateBook(book.id, { genre: genreDraft === '' ? null : genreDraft })
+      const patch = { genre: genreDraft === '' ? undefined : genreDraft }
+      book.genre = patch.genre
+      data.updateCachedBook(book.id, patch)
+      setEditingGenre(false)
+    } catch (err) {
+      setGenreError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  function startEditingNarrator() {
+    setNarratorError(null)
+    setNarratorDraft(book.narrator ?? '')
+    setEditingNarrator(true)
+  }
+
+  async function saveNarrator() {
+    setNarratorError(null)
+    const trimmed = narratorDraft.trim()
+    try {
+      await updateBook(book.id, { narrator: trimmed === '' ? null : trimmed })
+      const patch = { narrator: trimmed === '' ? undefined : trimmed }
+      book.narrator = patch.narrator
+      data.updateCachedBook(book.id, patch)
+      setEditingNarrator(false)
+    } catch (err) {
+      setNarratorError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
       <div className="mx-auto w-40">
@@ -303,6 +377,34 @@ export function BookDetail() {
       </div>
       <h1 className="mt-4 text-center text-xl font-semibold text-primary">{book.title}</h1>
       <p className="text-center text-sm text-muted">{book.author}</p>
+      {book.format !== 'epub' &&
+        (editingNarrator ? (
+          <div className="mt-1 flex items-center justify-center gap-2">
+            <input
+              type="text"
+              value={narratorDraft}
+              onChange={(e) => setNarratorDraft(e.target.value)}
+              placeholder="Narrator"
+              className="w-40 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
+            />
+            <button onClick={() => void saveNarrator()} className="text-xs text-amber-400 underline">
+              Save
+            </button>
+            <button onClick={() => setEditingNarrator(false)} className="text-xs text-subtle underline">
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <p className="text-center text-xs text-subtle">
+            {book.narrator && <>Narrated by {book.narrator} </>}
+            {isFullyLoaded && (
+              <button onClick={startEditingNarrator} className="underline">
+                {book.narrator ? 'Edit' : '+ Add narrator'}
+              </button>
+            )}
+          </p>
+        ))}
+      {narratorError && <p className="mt-1 text-center text-xs text-red-400">{narratorError}</p>}
       {editingSeries ? (
         <div className="mt-2 flex items-center justify-center gap-2">
           <input
@@ -347,6 +449,44 @@ export function BookDetail() {
         </p>
       )}
       {seriesError && <p className="mt-1 text-center text-xs text-red-400">{seriesError}</p>}
+      <div className="mt-2 flex items-center justify-center gap-2">
+        {editingGenre ? (
+          <>
+            <select
+              value={genreDraft}
+              onChange={(e) => setGenreDraft(e.target.value)}
+              className="rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary"
+            >
+              <option value="">No genre</option>
+              {GENRE_OPTIONS.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+            <button onClick={() => void saveGenre()} className="text-xs text-amber-400 underline">
+              Save
+            </button>
+            <button onClick={() => setEditingGenre(false)} className="text-xs text-subtle underline">
+              Cancel
+            </button>
+          </>
+        ) : book.genre ? (
+          <button
+            onClick={() => isFullyLoaded && startEditingGenre()}
+            className="rounded-full border border-border-strong bg-surface px-2.5 py-0.5 text-xs text-secondary"
+          >
+            {book.genre}
+          </button>
+        ) : (
+          isFullyLoaded && (
+            <button onClick={startEditingGenre} className="text-xs text-subtle underline">
+              + Add genre
+            </button>
+          )
+        )}
+      </div>
+      {genreError && <p className="mt-1 text-center text-xs text-red-400">{genreError}</p>}
       {book.sourceLabel && <p className="text-center text-xs text-subtle">{book.sourceLabel}</p>}
       {book.status === 'missing' && (
         <div className="mt-2 rounded bg-danger-soft px-3 py-2 text-center text-xs text-danger-soft-text">
@@ -464,7 +604,14 @@ export function BookDetail() {
         </div>
       )}
 
-      {!isFullyLoaded && <p className="mt-6 text-center text-xs text-subtle">Loading chapters…</p>}
+      {/* Only when there really are no chapters to show yet — the
+          cachedFullDetail fallback above can already have real chapters
+          even when !isFullyLoaded (offline, showing a previously-cached
+          full detail), and showing this text above an already-populated
+          chapter list would be confusing. */}
+      {!isFullyLoaded && book.chapters.length === 0 && (
+        <p className="mt-6 text-center text-xs text-subtle">Loading chapters…</p>
+      )}
 
       <ul className="mt-6 divide-y divide-border">
         {book.chapters.map((chapter) => (

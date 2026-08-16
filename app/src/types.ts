@@ -27,7 +27,22 @@ export interface Book {
   seriesName?: string
   seriesNumber?: number
   synopsis?: string
+  /** One of GENRE_OPTIONS (library/genreOptions.ts) — from Open Library
+   * enrichment, from-file subject tags, or a manual edit. Undefined until
+   * enriched/set, same as synopsis. */
+  genre?: string
+  /** Audiobooks only — from the composer/writer tag at ingestion, or a
+   * manual edit. Frequently missing; real audio tagging is inconsistent
+   * about this (see genreOptions.ts's sibling narrator doc comment
+   * server-side). */
+  narrator?: string
   status: 'active' | 'missing'
+  /** True only for a 'missing' book that can never be relinked by a scan
+   * (a pre-dedup-rule mobi conversion whose original folder isn't
+   * tracked) — Needs Attention excludes these, since there's no action
+   * the user could take that would ever bring one back. Always false for
+   * an 'active' book. */
+  isOrphanedConversion: boolean
   format: 'm4b' | 'mp3_folder' | 'epub'
   /** The linked audiobook/ebook counterpart's id, if any — see companionLink.ts
    * server-side. Together with `format`, this is what BookDetail uses to
@@ -42,9 +57,11 @@ export interface Book {
    * a lightweight "finished" status by comparing against synced progress,
    * without fetching every book's full chapter list. */
   lastChapterId?: string
-  /** Only present on detail-view books (from ApiBookDetail) — shown on
-   * Book Details only, deliberately left off the library grid tile. */
+  /** The owning source's display name (e.g. "Jarrett's Drive") — present
+   * on both list and detail books, driving both Book Detail's display and
+   * the Library/Store Source filter facet. */
   sourceLabel?: string
+  /** Only present on detail-view books (from ApiBookDetail). */
   sourceType?: string
   chapters: Chapter[]
   progress?: {

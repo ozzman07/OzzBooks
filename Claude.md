@@ -326,6 +326,48 @@ Don't remove them for being "unused."
   that includes that banner in the first place — a device stuck on a
   pre-`UpdatePrompt` build has to be manually unstuck once, the same way
   the Mac mini and the first iPad were.
+
+  Correction (2026-08-16): "already `user_id`-scoped" above does NOT hold
+  for `sources` — checked the actual schema while scoping the Source
+  filter facet below, and `sources` has no `user_id`/owner column at all,
+  in either the local SQLite schema or anywhere else in the local server.
+  The local file-serving API also isn't user-aware today (one shared
+  bearer token, not per-user auth) — real per-user identity only exists
+  in the separate cloud service. Whatever this bullet meant by "already
+  scoped" was true for other tables, not this one.
+
+  **Two related, deferred ideas surfaced together (2026-08-16), worth
+  doing as one piece of work whenever Phase 2 actually starts:**
+  (1) **Per-user source ownership** — came up when Jim asked whether the
+  Library/Store Source filter (shipped same day, see the Source facet
+  note further down) could auto-scope to "sources my son personally
+  connected" instead of him manually picking his own source's name from
+  a list. Answer at the time: not without adding real ownership, since
+  sources aren't tied to any user today (see correction above) — shipped
+  the plain named-source filter instead as a cheaper, sufficient interim
+  fix. (2) **Actually merging Jim's two "Ozzstation" sources into one** —
+  today they're two separate source rows (`type: 'synology'` scanning
+  `/Volumes/Books/Audio Books`, `type: 'local'` scanning
+  `/Volumes/Books/Ebooks`) that only *look* unified because their
+  `label` was manually set to match ("Ozzstation" for both) so the
+  Source filter groups them as one option — cosmetic, not structural.
+  Confirmed while scoping this: `'synology'` and `'local'` are treated
+  identically everywhere in the code (same scan/stream logic, no real
+  distinction), and both paths share one parent folder, so a true merge
+  is technically straightforward — widen one source's `path_scope` to
+  the shared parent (`/Volumes/Books`), migrate every book currently on
+  the other source's id over to it (content-hash relink should handle
+  this safely on rescan, but verify that assumption against real data
+  before trusting it), then retire the now-empty row. Deliberately not
+  done now — real risk (thousands of `book.source_id` rows to migrate,
+  a widened scan path re-touching content that already scanned fine) for
+  a purely cosmetic win today, when the label-match already produces the
+  same filter result. The real reason to eventually do it for real:
+  once per-user source ownership (idea 1) exists, ownership/permissions
+  would naturally be granted per source *row* — leaving Jim's two rows
+  unmerged at that point would mean granting his son access twice for
+  what's actually one physical NAS, not once. Do the real merge at the
+  same time real ownership gets built, not before.
 - **Phase 2b — Metadata cleanup & online enrichment:** two-part project,
   in order (part 2 depends on part 1):
   1. Title/author cleaning: parse a canonical title + author out of messy
@@ -355,6 +397,78 @@ Don't remove them for being "unused."
      Audible's own) but turned out to be ASIN-only — no title/author search
      endpoint exists — so it only works as a later enrichment step once an
      ASIN is known some other way, not as the primary matcher.
+
+     Note (2026-08-16): this bullet is stale — the Open Library backfill
+     described above (`enrichBooks.ts`/`openLibrary.ts`) and manual series
+     editing on Book Detail already shipped since this was written. Update
+     this whole entry (or fold it into the Data model section) next time
+     it's touched instead of trusting the "not yet built" framing above.
+
+     **Follow-on, shipped 2026-08-16** (designed and built same day —
+     genre/narrator filtering + editing): genre is now narrowed to a
+     controlled 17-value vocabulary (`server/src/ingestion/enrichment/
+     genreOptions.ts`'s `GENRE_OPTIONS`/`mapToControlledGenre`, mirrored at
+     `app/src/library/genreOptions.ts`), not raw Open Library subject
+     strings — those are too messy/high-cardinality to filter on directly
+     (real examples from this library: "franchise:Red Rising",
+     "Xanth (Imaginary place)"). A new `narrator` column captures the
+     audiobook composer/writer tag (`©wrt`/composer — confirmed empirically
+     against real files in this library, e.g. "MacLeod Andrews"; often
+     blank or absent, real-world tagging is inconsistent). Both are
+     extracted at scan time (`epub.ts` subjects, `mp3Folder.ts`'s
+     `narratorFrom()`) for local *and* Google Drive sources, and
+     `enrichBooks.ts`/`openLibrary.ts` now score a book's *whole* subject
+     list through the same mapper rather than keeping just the first raw
+     subject string. Genre/narrator never get clobbered by ingestion or
+     enrichment once set (scan.ts's `fillIfMissing()` only ever writes a
+     currently-null field, same rule `enrichBooks.ts` already followed).
+
+     Exposed two ways: (1) manual edit on Book Detail (genre via dropdown
+     from the controlled list, narrator as free text, audiobook-only —
+     same inline-edit pattern series already had); (2) an ecommerce-style
+     faceted filter panel on the shared Library/Store view
+     (`app/src/library/FilterSheet.tsx`), replacing the old segmented-
+     button Status/Format row, which didn't scale once Genre/Narrator
+     needed multi-select checkboxes with live counts. Counts are computed
+     per-facet against every *other* active filter (not the facet's own
+     selection) — standard faceted-search behavior — and are cheap enough
+     to do client-side at this library's real size (5,470 active books).
+     Explicit "Unset" option per facet doubles as a real "needs a tag"
+     worklist, deliberately kept separate from the existing Needs
+     Attention page (that one means a missing *source file*, not missing
+     metadata). **Bulk-edit** (select several "Unset" books from the
+     filtered list and tag them all at once) was considered and
+     deliberately deferred — single-book editing shipped first; revisit
+     once it's clear how often it's actually needed.
+
+     Operational note: existing books keep whatever genre/narrator they
+     already had — the new from-file extraction only runs on the *next*
+     scan of each source (nightly, or a manual trigger from Settings), it
+     doesn't retroactively touch books scanned before this shipped. Real
+     production data at ship time: 364 of 5,470 books already had a
+     (now-remapped) genre from prior Open Library enrichment; narrator was
+     0 for everyone until a rescan actually runs.
+
+     **Follow-on #2, shipped same day:** a **Source** facet (which
+     source ingested a book — "Ozzstation"/"Ebooks" at ship time),
+     prompted by Jim asking whether a family member's own connected
+     source could be filtered to directly, since multiple people connect
+     their own sources into one shared catalog. Important nuance surfaced
+     while scoping it: `sources` has no owner/`user_id` at all in the
+     local data model, and this local file-serving API doesn't know which
+     family member is calling it (single shared bearer token, not
+     per-user auth — the per-user pieces, login/My Library/progress, all
+     live in the separate cloud service instead). So this deliberately
+     ships as a plain named-source filter (multi-select, same facet-sheet
+     pattern as Genre/Narrator, no `FACET_UNSET` since every book always
+     has exactly one source) rather than an automatic "sources I
+     personally connected" scoping — good enough to solve the actual
+     complaint (stop scrolling the whole Store to find what you added),
+     cheaper to ship, and doesn't require the bigger architectural work
+     real per-user source ownership would need. `source_label` was
+     previously only returned by the single-book detail route — added a
+     `LEFT JOIN sources` to the list route (`GET /api/books`) too so the
+     Library/Store grid has it without an extra per-book fetch.
 - **Phase 3a — Ebook integration:** chapter-level audio↔ebook sync, basic
   EPUB rendering (epub.js is the likely library — it produces CFIs, the
   standard EPUB position format)

@@ -68,6 +68,7 @@ function migrate(db: Database.Database): void {
     ['metadata_enrichment_attempted_at', 'TEXT'],
     ['series_number_source', "TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual'))"],
     ['missing_since', 'TEXT'],
+    ['narrator', 'TEXT'],
   ]
   for (const [name, type] of booksTextColumns) {
     if (!booksColumns.has(name)) {

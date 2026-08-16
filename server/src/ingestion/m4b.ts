@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { parseFile } from 'music-metadata'
 import { readContainerInfo } from './ffprobe.js'
-import type { IngestedBook, IngestedChapter } from './mp3Folder.js'
+import { narratorFrom, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { PART_MARKER_RE, BARE_TRAILING_NUMBER_RE } from './partGrouping.js'
 
 const DRM_EXTENSIONS = new Set(['.aax', '.aaxc'])
@@ -96,6 +96,7 @@ export async function ingestM4b(filePaths: string[]): Promise<IngestedBook> {
     author: first.common.albumartist || first.common.artist || null,
     seriesName: null,
     seriesNumber: first.common.movementIndex?.no ? Number(first.common.movementIndex.no) : null,
+    narrator: narratorFrom(first),
     chapters,
     artworkMetadata: first,
   }

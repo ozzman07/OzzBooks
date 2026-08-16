@@ -6,6 +6,8 @@ import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../
 import { deleteBookAndArtwork } from '../../ingestion/scan.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
 import { companionMatchScore, linkCompanions, unlinkCompanions } from '../../ingestion/companionLink.js'
+import { isOrphanedConversion } from '../../ingestion/mobiConvert.js'
+import { GENRE_OPTIONS } from '../../ingestion/enrichment/genreOptions.js'
 
 export const booksRouter = Router()
 
@@ -25,16 +27,17 @@ booksRouter.get('/', (req, res) => {
   const status = req.query.status === 'active' || req.query.status === 'missing' ? req.query.status : undefined
   const rows = getDb()
     .prepare(
-      `SELECT books.*, COALESCE(SUM(chapters.duration), 0) AS total_duration,
+      `SELECT books.*, sources.label AS source_label, COALESCE(SUM(chapters.duration), 0) AS total_duration,
          (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id
        FROM books
        LEFT JOIN chapters ON chapters.book_id = books.id
+       LEFT JOIN sources ON sources.id = books.source_id
        ${status ? 'WHERE books.status = ?' : ''}
        GROUP BY books.id
        ORDER BY books.title`,
     )
-    .all(...(status ? [status] : []))
-  res.json(rows)
+    .all(...(status ? [status] : [])) as (BookRow & { source_label: string; total_duration: number; last_chapter_id: string | null })[]
+  res.json(rows.map((row) => ({ ...row, is_orphaned_conversion: isOrphanedConversion(row) })))
 })
 
 // Deliberately synchronous (200, not 202+poll) — pure local string
@@ -60,9 +63,18 @@ booksRouter.patch('/:id', (req, res) => {
   // of leaving it permanently stuck on whatever guess came before.
   const seriesNumberSource = 'seriesNumber' in body ? (seriesNumber === null ? null : 'manual') : existing.series_number_source
 
+  if ('genre' in body && body.genre !== null && !GENRE_OPTIONS.includes(body.genre)) {
+    res.status(400).json({ error: 'invalid genre' })
+    return
+  }
+  const genre = 'genre' in body ? body.genre : existing.genre
+  const narrator = 'narrator' in body ? (typeof body.narrator === 'string' ? body.narrator.trim() || null : null) : existing.narrator
+
   getDb()
-    .prepare('UPDATE books SET series_name = ?, series_number = ?, series_number_source = ? WHERE id = ?')
-    .run(seriesName, seriesNumber, seriesNumberSource, existing.id)
+    .prepare(
+      'UPDATE books SET series_name = ?, series_number = ?, series_number_source = ?, genre = ?, narrator = ? WHERE id = ?',
+    )
+    .run(seriesName, seriesNumber, seriesNumberSource, genre, narrator, existing.id)
 
   // Only a genuine change is worth a log entry — e.g. the "leave fields
   // not present in the body untouched" call pattern (an empty PATCH to
@@ -75,6 +87,13 @@ booksRouter.patch('/:id', (req, res) => {
       'series_updated',
       `Series set to ${seriesName ?? '(none)'}${seriesNumber !== null ? ` #${seriesNumber}` : ''}`,
     )
+  }
+  // Reuses 'metadata_updated' — the same action type enrichBooks.ts logs
+  // for an automatic genre/synopsis/cover backfill — since this is the
+  // same field changing, just via a manual edit instead.
+  if (genre !== existing.genre || narrator !== existing.narrator) {
+    const changed = [genre !== existing.genre && 'genre', narrator !== existing.narrator && 'narrator'].filter(Boolean)
+    logActivity(existing.id, existing.title, existing.author, 'metadata_updated', `Manually edited: ${changed.join(', ')}`)
   }
 
   res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))
@@ -111,7 +130,13 @@ booksRouter.get('/:id', (req, res) => {
     .prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY idx')
     .all(book.id) as ChapterRow[]
 
-  res.json({ ...book, chapters, source_label: source.label, source_type: source.type })
+  res.json({
+    ...book,
+    chapters,
+    source_label: source.label,
+    source_type: source.type,
+    is_orphaned_conversion: isOrphanedConversion(book),
+  })
 })
 
 // Serves the actual epub bytes — a book's own file if it's epub-primary,

@@ -12,12 +12,15 @@ import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
 import {
   useLibraryView,
+  FACET_UNSET,
   type SortOption,
   type StatusFilter,
   type FormatFilter,
   type DisplayMode,
   type LibraryViewMode,
 } from '../library/LibraryViewContext'
+import { FilterSheet, type FacetOption } from '../library/FilterSheet'
+import { GENRE_OPTIONS } from '../library/genreOptions'
 
 const SORT_LABELS: Record<SortOption, string> = {
   title: 'Title (A–Z)',
@@ -46,6 +49,53 @@ const LIBRARY_VIEW_LABELS: Record<LibraryViewMode, string> = {
 
 function isAudioFormat(book: Book): boolean {
   return book.format === 'm4b' || book.format === 'mp3_folder'
+}
+
+// Genre applies to every book, audio or ebook — a plain "is this value in
+// the selected set" check (an empty selected set means the facet isn't
+// active, so everything passes).
+function matchesGenreFacet(book: Book, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  return selected.has(book.genre ?? FACET_UNSET)
+}
+
+// Narrator only means anything for audio — an active narrator filter must
+// exclude ebooks entirely (they can't be "narrated by" anyone), not fold
+// them into "Unset" alongside genuinely untagged audiobooks. That would
+// flood the Unset bucket with ~every ebook in the library and defeat its
+// point as a "needs a narrator tag" worklist.
+function matchesNarratorFacet(book: Book, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  if (!isAudioFormat(book)) return false
+  return selected.has(book.narrator ?? FACET_UNSET)
+}
+
+// Every book always has exactly one source — no FACET_UNSET case needed
+// here, unlike genre/narrator.
+function matchesSourceFacet(book: Book, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  return book.sourceLabel !== undefined && selected.has(book.sourceLabel)
+}
+
+function toggleInSet(set: Set<string>, value: string): Set<string> {
+  const next = new Set(set)
+  if (next.has(value)) next.delete(value)
+  else next.add(value)
+  return next
+}
+
+// Applied-filter pill shown outside the sheet once it's closed, so what's
+// active stays visible/removable without reopening the whole panel.
+function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <button
+      onClick={onRemove}
+      className="flex items-center gap-1 rounded-full border border-border-strong bg-surface px-2.5 py-1 text-xs text-secondary"
+    >
+      {label}
+      <span aria-hidden="true">✕</span>
+    </button>
+  )
 }
 
 // A companion pair (an audiobook and an ebook linked to each other — see
@@ -418,14 +468,28 @@ export function Library() {
     setStatusFilter,
     formatFilter,
     setFormatFilter,
+    genreFilter,
+    setGenreFilter,
+    narratorFilter,
+    setNarratorFilter,
+    sourceFilter,
+    setSourceFilter,
     scrollPositionsRef,
   } = useLibraryView()
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false)
 
   // Locally hides a shelf entry the instant it's removed, rather than
   // waiting on (or forcing) a full re-fetch of progress — removal is a
   // deliberate, infrequent action, so a small client-side override set is
   // simpler than restructuring the useAsync data flow.
   const [removedFromShelf, setRemovedFromShelf] = useState<Set<string>>(new Set())
+
+  // The manual Refresh button needs its own loading affordance — global
+  // `data.status` only flips to 'loading' when there's nothing cached yet
+  // (see AppDataContext's stale-while-revalidate `load()`), so a refresh
+  // with an already-populated library would otherwise fetch silently with
+  // no visible feedback that the click did anything.
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   async function handleRemoveFromContinueListening(e: React.MouseEvent, bookId: string) {
     e.preventDefault() // don't follow the enclosing Link to the book
@@ -507,20 +571,123 @@ export function Library() {
       .filter((b): b is Book => b !== undefined)
   }, [progressResult, canonicalBookFor])
 
-  const filteredBooks = useMemo(() => {
+  // Shared by both the actual filtered list and the facet-count computation
+  // below — `exclude` skips one facet's own predicate so that facet's
+  // counts reflect every *other* active filter without shrinking against
+  // its own current selection (standard faceted-search behavior: checking
+  // one Genre option shouldn't make the other Genre options' counts drop
+  // to 0, since checking another one of them is still a valid next click).
+  type Facet = 'status' | 'format' | 'genre' | 'narrator' | 'source'
+  function passesFilters(b: Book, exclude?: Facet): boolean {
     const query = search.trim().toLowerCase()
-
-    return activeBooks.filter((b) => {
-      if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
-      if (statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter) return false
+    if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
+    if (libraryViewMode === 'mine' && !bookInLibrary(b, data.myLibraryIds)) return false
+    if (exclude !== 'status' && statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter)
+      return false
+    if (exclude !== 'format') {
       if (formatFilter === 'audio' && !isAudioFormat(b)) return false
       if (formatFilter === 'ebook' && !(b.format === 'epub' || b.companionBookId)) return false
-      if (libraryViewMode === 'mine' && !bookInLibrary(b, data.myLibraryIds)) return false
-      return true
-    })
-  }, [activeBooks, search, statusFilter, formatFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+    }
+    if (exclude !== 'genre' && !matchesGenreFacet(b, genreFilter)) return false
+    if (exclude !== 'narrator' && !matchesNarratorFacet(b, narratorFilter)) return false
+    if (exclude !== 'source' && !matchesSourceFacet(b, sourceFilter)) return false
+    return true
+  }
+
+  const filteredBooks = useMemo(
+    () => activeBooks.filter((b) => passesFilters(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBooks, search, statusFilter, formatFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId],
+  )
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<StatusFilter, number> = { all: 0, 'not-started': 0, 'in-progress': 0, finished: 0 }
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'status')) continue
+      counts[bookStatus(b, progressByBookId.get(b.id))]++
+      counts.all++
+    }
+    return counts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, search, formatFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+
+  const formatCounts = useMemo(() => {
+    const counts: Record<FormatFilter, number> = { all: 0, audio: 0, ebook: 0 }
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'format')) continue
+      counts.all++
+      if (isAudioFormat(b)) counts.audio++
+      if (b.format === 'epub' || b.companionBookId) counts.ebook++
+    }
+    return counts
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, search, statusFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+
+  const genreOptions: FacetOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'genre')) continue
+      const key = b.genre ?? FACET_UNSET
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    const options: FacetOption[] = GENRE_OPTIONS.map((g) => ({ value: g, label: g, count: counts.get(g) ?? 0 })).filter(
+      (o) => o.count > 0 || genreFilter.has(o.value),
+    )
+    options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
+    return options
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, search, statusFilter, formatFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId, genreFilter])
+
+  const narratorOptions: FacetOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of activeBooks) {
+      if (!isAudioFormat(b)) continue
+      if (!passesFilters(b, 'narrator')) continue
+      const key = b.narrator ?? FACET_UNSET
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    // Most-used narrators first — with a real library this can be 60+
+    // people, and the ones you actually have several books from should
+    // surface before alphabetical noise. Unset always pinned last: it's
+    // the "needs attention" catch-all, not a narrator to browse toward.
+    const entries = [...counts.entries()].filter(([key]) => key !== FACET_UNSET)
+    entries.sort((a, b) => b[1] - a[1])
+    const options: FacetOption[] = entries.map(([value, count]) => ({ value, label: value, count }))
+    options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
+    return options
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, search, statusFilter, formatFilter, genreFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+
+  const sourceOptions: FacetOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'source')) continue
+      if (b.sourceLabel === undefined) continue
+      counts.set(b.sourceLabel, (counts.get(b.sourceLabel) ?? 0) + 1)
+    }
+    const options: FacetOption[] = [...counts.entries()]
+      .map(([value, count]) => ({ value, label: value, count }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+    return options
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, search, statusFilter, formatFilter, genreFilter, narratorFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
+
+  const activeFilterCount =
+    (statusFilter !== 'all' ? 1 : 0) +
+    (formatFilter !== 'all' ? 1 : 0) +
+    genreFilter.size +
+    narratorFilter.size +
+    sourceFilter.size
+
+  function clearAllFilters() {
+    setStatusFilter('all')
+    setFormatFilter('all')
+    setGenreFilter(new Set())
+    setNarratorFilter(new Set())
+    setSourceFilter(new Set())
+  }
 
   // Author browse fixes its own ordering (group by author, series-then-title
   // within group) rather than the sort dropdown — grouping already
@@ -563,13 +730,16 @@ export function Library() {
             added a book on their own device and I want to see it now"
             without waiting on the 5-minute visibility-regain refetch. */}
         <button
-          onClick={() => void data.refresh()}
-          disabled={data.status === 'loading'}
+          onClick={() => {
+            setIsRefreshing(true)
+            void data.refresh().finally(() => setIsRefreshing(false))
+          }}
+          disabled={isRefreshing || data.status === 'loading'}
           aria-label="Refresh"
           title="Refresh"
           className="text-sm text-muted underline disabled:opacity-40"
         >
-          ↻ Refresh
+          {isRefreshing ? '↻ Refreshing…' : '↻ Refresh'}
         </button>
       </div>
 
@@ -683,28 +853,38 @@ export function Library() {
           </div>
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <div className="flex overflow-hidden rounded-lg border border-border-strong text-xs">
-              {(Object.entries(STATUS_LABELS) as [StatusFilter, string][]).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setStatusFilter(value)}
-                  className={`px-2.5 py-1.5 ${statusFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="flex overflow-hidden rounded-lg border border-border-strong text-xs">
-              {(Object.entries(FORMAT_LABELS) as [FormatFilter, string][]).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setFormatFilter(value)}
-                  className={`px-2.5 py-1.5 ${formatFilter === value ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <button
+              onClick={() => setFilterSheetOpen(true)}
+              className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-xs text-secondary"
+            >
+              Filters
+              {activeFilterCount > 0 && (
+                <span className="rounded-full bg-amber-400 px-1.5 text-slate-950">{activeFilterCount}</span>
+              )}
+            </button>
+            {statusFilter !== 'all' && (
+              <FilterChip label={STATUS_LABELS[statusFilter]} onRemove={() => setStatusFilter('all')} />
+            )}
+            {formatFilter !== 'all' && (
+              <FilterChip label={FORMAT_LABELS[formatFilter]} onRemove={() => setFormatFilter('all')} />
+            )}
+            {[...sourceFilter].map((s) => (
+              <FilterChip key={s} label={s} onRemove={() => setSourceFilter((prev) => toggleInSet(prev, s))} />
+            ))}
+            {[...genreFilter].map((g) => (
+              <FilterChip
+                key={g}
+                label={g === FACET_UNSET ? 'Genre: Unset' : g}
+                onRemove={() => setGenreFilter((prev) => toggleInSet(prev, g))}
+              />
+            ))}
+            {[...narratorFilter].map((n) => (
+              <FilterChip
+                key={n}
+                label={n === FACET_UNSET ? 'Narrator: Unset' : n}
+                onRemove={() => setNarratorFilter((prev) => toggleInSet(prev, n))}
+              />
+            ))}
           </div>
 
           {filteredBooks.length === 0 ? (
@@ -765,6 +945,48 @@ export function Library() {
           )}
         </section>
       )}
+
+      <FilterSheet
+        open={filterSheetOpen}
+        onClose={() => setFilterSheetOpen(false)}
+        onClearAll={clearAllFilters}
+        resultCount={filteredBooks.length}
+        status={{
+          value: statusFilter,
+          onChange: setStatusFilter,
+          options: (Object.entries(STATUS_LABELS) as [StatusFilter, string][]).map(([value, label]) => ({
+            value,
+            label,
+            count: statusCounts[value],
+          })),
+        }}
+        format={{
+          value: formatFilter,
+          onChange: setFormatFilter,
+          options: (Object.entries(FORMAT_LABELS) as [FormatFilter, string][]).map(([value, label]) => ({
+            value,
+            label,
+            count: formatCounts[value],
+          })),
+        }}
+        source={{
+          selected: sourceFilter,
+          onToggle: (value) => setSourceFilter((prev) => toggleInSet(prev, value)),
+          options: sourceOptions,
+          searchThreshold: 12,
+        }}
+        genre={{
+          selected: genreFilter,
+          onToggle: (value) => setGenreFilter((prev) => toggleInSet(prev, value)),
+          options: genreOptions,
+        }}
+        narrator={{
+          selected: narratorFilter,
+          onToggle: (value) => setNarratorFilter((prev) => toggleInSet(prev, value)),
+          options: narratorOptions,
+          searchThreshold: 12,
+        }}
+      />
     </div>
   )
 }

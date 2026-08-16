@@ -1,3 +1,5 @@
+import { mapToControlledGenre } from './genreOptions.js'
+
 const SEARCH_ENDPOINT = 'https://openlibrary.org/search.json'
 const COVERS_ENDPOINT = 'https://covers.openlibrary.org/b/id'
 // Identifies the app per Open Library's stated policy (required for the
@@ -163,7 +165,12 @@ export async function searchWork(title: string, author: string | null): Promise<
   if (!best || best.score < MIN_MATCH_SCORE) return null
 
   return {
-    genre: best.doc.subject?.[0] ?? null,
+    // Was best.doc.subject?.[0] — the raw top subject string ("Fiction",
+    // "franchise:Red Rising", "Xanth (Imaginary place)" — see Claude.md
+    // Phase 2b note, 2026-08-16). Mapped through the controlled genre list
+    // now, scored against the *whole* subject array rather than just
+    // whichever one Open Library happened to list first.
+    genre: mapToControlledGenre(best.doc.subject),
     coverId: best.doc.cover_i ?? null,
     synopsis: normalizeDescription(best.doc.description),
   }
