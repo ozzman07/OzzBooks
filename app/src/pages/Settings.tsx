@@ -278,7 +278,10 @@ function AddLocalSourceForm({ onAdded }: { onAdded: () => void }) {
 // navigating around the app feel slow.
 function NeedsAttentionCard() {
   const data = useAppData()
-  const count = data.status === 'success' ? data.books.filter((b) => b.status === 'missing').length : null
+  const count =
+    data.status === 'success'
+      ? data.books.filter((b) => b.status === 'missing' && !b.isOrphanedConversion).length
+      : null
 
   return (
     <div className="mt-3 rounded border border-border p-3">

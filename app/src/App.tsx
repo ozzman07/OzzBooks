@@ -7,6 +7,7 @@ import { LibraryViewProvider } from './library/LibraryViewContext'
 import { AppDataProvider, useAppData } from './data/AppDataContext'
 import { BottomNav } from './components/BottomNav'
 import { UpdatePrompt } from './components/UpdatePrompt'
+import { OfflineBanner } from './components/OfflineBanner'
 import { Auth } from './pages/Auth'
 import { Library } from './pages/Library'
 import { BookDetail } from './pages/BookDetail'
@@ -65,6 +66,7 @@ function AppShell() {
 
   return (
     <div className="min-h-screen bg-app pt-[env(safe-area-inset-top)] text-primary">
+      <OfflineBanner />
       <Routes>
         <Route path="/" element={<RootRedirect />} />
         <Route path="/library" element={<Library />} />

@@ -32,7 +32,9 @@ export function NeedsAttention() {
   // grid is: as more people add their own sources, an unfiltered missing-
   // books list gets just as cluttered as the old unfiltered main grid did.
   const books = data.books
-    .filter((b) => b.status === 'missing')
+    // Excludes a pre-dedup-rule mobi conversion orphan — no action here
+    // could ever bring one of these back (see types.ts's Book.isOrphanedConversion).
+    .filter((b) => b.status === 'missing' && !b.isOrphanedConversion)
     .filter((b) => needsAttentionScope === 'everyone' || bookInLibrary(b, data.myLibraryIds))
 
   return (

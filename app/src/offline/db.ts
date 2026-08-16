@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { Position } from '../types'
+import type { Book, Position } from '../types'
 
 export interface LocalProgressEntry {
   bookId: string
@@ -46,6 +46,28 @@ export interface CachedBookLocationsEntry {
   savedAt: string
 }
 
+// A single row, not one-per-book — this is AppDataContext's whole shared
+// catalog/shelf snapshot, persisted so a cold PWA launch while offline has
+// something to show immediately instead of an empty list with nothing to
+// fall back to. See AppDataContext.tsx.
+export interface CachedCatalogEntry {
+  id: 'catalog'
+  books: Book[]
+  myLibraryIds: string[]
+  fetchedAt: string
+}
+
+// The *full* per-book detail (chapters included), as opposed to
+// AppDataContext's list-item-shaped catalog entries above — this is what
+// actually makes a downloaded audiobook playable offline, since
+// PlayerContext.loadBook() needs real chapter/sourceFileId data that the
+// list-item shape doesn't carry. See BookDetail.tsx.
+export interface CachedBookDetailEntry {
+  bookId: string
+  book: Book
+  fetchedAt: string
+}
+
 interface OzzBooksDB extends DBSchema {
   // No index on `synced` — IndexedDB keys can't be booleans, and the
   // number of in-flight progress rows is small enough that a full-table
@@ -67,13 +89,21 @@ interface OzzBooksDB extends DBSchema {
     key: string // bookId
     value: CachedBookLocationsEntry
   }
+  catalogCache: {
+    key: string // always 'catalog' — singleton row
+    value: CachedCatalogEntry
+  }
+  bookDetailCache: {
+    key: string // bookId
+    value: CachedBookDetailEntry
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<OzzBooksDB>> | null = null
 
 export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<OzzBooksDB>('ozzbooks', 3, {
+    dbPromise = openDB<OzzBooksDB>('ozzbooks', 4, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'bookId' })
@@ -88,6 +118,12 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
         }
         if (!db.objectStoreNames.contains('bookLocations')) {
           db.createObjectStore('bookLocations', { keyPath: 'bookId' })
+        }
+        if (!db.objectStoreNames.contains('catalogCache')) {
+          db.createObjectStore('catalogCache', { keyPath: 'id' })
+        }
+        if (!db.objectStoreNames.contains('bookDetailCache')) {
+          db.createObjectStore('bookDetailCache', { keyPath: 'bookId' })
         }
       },
     })

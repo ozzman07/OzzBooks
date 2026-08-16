@@ -876,6 +876,39 @@ describe('ingestion', () => {
     expect(chapters).toHaveLength(0)
   }, 30_000)
 
+  it('falls back to embedded metadata for a leading-underscore "misc" top-level folder, not the literal folder name', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-misc-folder-'))
+    const miscDir = path.join(tempRoot, '_Business books')
+    await mkdir(miscDir, { recursive: true })
+    await makeTestEpub(path.join(miscDir, 'Getting Things Done.epub'), {
+      title: 'Getting Things Done',
+      author: 'David Allen',
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Misc Folder Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1)
+
+    const book = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    // Not the literal "_Business books" folder name — falls back to the
+    // epub's own embedded author metadata instead.
+    expect(book.author).toBe('David Allen')
+  }, 30_000)
+
   it('re-scanning an epub source is idempotent and clears missing_since if the file comes back', async () => {
     const { getDb } = await import('../src/db/index.js')
     const { scanSource } = await import('../src/ingestion/scan.js')
@@ -955,5 +988,281 @@ describe('ingestion', () => {
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
     expect(issues).toHaveLength(2)
     expect(issues.some((i) => i.error.includes('DRM'))).toBe(true)
+  }, 30_000)
+
+  it('ingests a mobi as a converted epub, and skips re-converting it on the next scan', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, stat } = await import('node:fs/promises')
+    const { makeTestMobi } = await import('./fixtures.js')
+    const { readEpubMetadata } = await import('../src/ingestion/epub.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-mobi-'))
+    const authorDir = path.join(tempRoot, 'Mobi Author')
+    await mkdir(authorDir, { recursive: true })
+    await makeTestMobi(path.join(authorDir, 'A Mobi Book.mobi'), {
+      title: 'A Mobi Book',
+      author: 'Embedded Author',
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Mobi Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1)
+    expect(result.failed).toBe(0)
+
+    const book = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    // Stored as a plain epub — the rest of the app (reader, offline
+    // caching, companion linking) never needs to know mobi was involved.
+    expect(book.format).toBe('epub')
+    expect(book.title).toBe('A Mobi Book')
+    expect(book.author).toBe('Mobi Author') // folder-derived, same override behavior as native epub
+    // file_path points at a real, readable converted epub, not the
+    // original .mobi — the /epub route serves this path directly.
+    expect(book.file_path.endsWith('.epub')).toBe(true)
+    const convertedMeta = await readEpubMetadata(book.file_path)
+    expect(convertedMeta.title).toBe('A Mobi Book')
+
+    // Re-scanning shouldn't re-run the (multi-second) conversion for an
+    // already-converted book — confirmed by the converted file's mtime
+    // staying put across a second scan.
+    const beforeMtime = (await stat(book.file_path)).mtimeMs
+    await scanSource(source)
+    const afterMtime = (await stat(book.file_path)).mtimeMs
+    expect(afterMtime).toBe(beforeMtime)
+  }, 60_000)
+
+  it('skips an unconvertible mobi (e.g. DRM-encumbered) without failing the rest of the scan', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { makeTestMobi } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-mobi-bad-'))
+    const authorDir = path.join(tempRoot, 'Mobi Author')
+    await mkdir(authorDir, { recursive: true })
+    await makeTestMobi(path.join(authorDir, 'Good Book.mobi'), { title: 'Good Book', author: 'Mobi Author' })
+    // ebook-convert can't parse this at all — the same failure shape a
+    // genuinely DRM-encumbered mobi produces (Calibre doesn't attempt to
+    // break real DRM, so conversion just fails outright either way).
+    await writeFile(path.join(authorDir, 'Bad Book.mobi'), 'not a real mobi file')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Mobi Bad Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1) // only the good mobi
+    expect(result.failed).toBe(1)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].title).toBe('Good Book')
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(1)
+  }, 60_000)
+
+  it('does not mark a mobi-derived book missing on the very scan that created it, or on a later rescan', async () => {
+    // Regression test: the stored file_path for a mobi book is the
+    // *converted* epub, never candidate.filePath (the original .mobi) —
+    // scanSource's "missing" sweep and its existing-book lookup both used
+    // to compare directly against candidate.filePath, so every mobi book
+    // was immediately (and permanently, every rescan) marked missing the
+    // instant it was created.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestMobi } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-mobi-missing-'))
+    const authorDir = path.join(tempRoot, 'Mobi Author')
+    await mkdir(authorDir, { recursive: true })
+    await makeTestMobi(path.join(authorDir, 'A Mobi Book.mobi'), { title: 'A Mobi Book', author: 'Mobi Author' })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Mobi Missing Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const first = await scanSource(source)
+    expect(first.created).toBe(1)
+    expect(first.markedMissing).toBe(0)
+    const bookAfterFirst = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookAfterFirst.status).toBe('active')
+
+    // Second scan: same file, nothing changed. Should update the same
+    // book in place (not re-create it), and no relink noise — the
+    // candidate-path-vs-stored-path difference for mobi is structural,
+    // not a real move.
+    const second = await scanSource(source)
+    expect(second.created).toBe(0)
+    expect(second.updated).toBe(1)
+    expect(second.markedMissing).toBe(0)
+    const bookAfterSecond = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+    expect(bookAfterSecond.id).toBe(bookAfterFirst.id)
+    expect(bookAfterSecond.status).toBe('active')
+
+    const activity = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'relinked'").all(bookAfterFirst.id)
+    expect(activity).toHaveLength(0)
+  }, 60_000)
+
+  it('prefers the epub over a same-folder mobi copy of the same book, ignoring the mobi entirely', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestEpub, makeTestMobi } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-mobi-dupe-'))
+    const authorDir = path.join(tempRoot, 'Dupe Author')
+    const bookDir = path.join(authorDir, 'A Book')
+    await mkdir(bookDir, { recursive: true })
+    await makeTestEpub(path.join(bookDir, 'A Book.epub'), { title: 'A Book', author: 'Dupe Author' })
+    await makeTestMobi(path.join(bookDir, 'A Book.mobi'), { title: 'A Book', author: 'Dupe Author' })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Epub Mobi Dupe Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.found).toBe(1) // only the epub counted as a candidate — the mobi was never one
+    expect(result.created).toBe(1)
+    expect(result.failed).toBe(0)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].file_path.endsWith('.epub')).toBe(true)
+    expect(books[0].file_path).not.toContain('converted-ebooks') // the real epub, not a converted one
+  }, 60_000)
+
+  it('does not let one epub in a flat series folder suppress a different mobi-only book (regression: The Expanse)', async () => {
+    // Regression test for a real bug found reviewing the user's library:
+    // a flat series folder can hold several *different* books with uneven
+    // format coverage (some epub-only, some mobi-only, some both) — the
+    // original "any epub in this folder suppresses every mobi in it" rule
+    // silently dropped the mobi-only ones whenever the folder happened to
+    // contain any epub at all, even for a completely unrelated book.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestEpub, makeTestMobi } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-series-mixed-format-'))
+    const seriesDir = path.join(tempRoot, 'Corey, James S A', 'The Expanse')
+    await mkdir(seriesDir, { recursive: true })
+    // Book 1: epub only.
+    await makeTestEpub(path.join(seriesDir, 'The Expanse 01 - Leviathan Wakes.epub'), {
+      title: 'Leviathan Wakes',
+      author: 'James S. A. Corey',
+    })
+    // Book 5: mobi only, no epub anywhere in the folder — must NOT be
+    // suppressed just because the folder also has an epub for book 1.
+    await makeTestMobi(path.join(seriesDir, 'The Expanse 5 - Nemesis Games.mobi'), {
+      title: 'Nemesis Games',
+      author: 'James S. A. Corey',
+    })
+    // Book 5.5: both formats present for the *same* entry — the mobi
+    // here should still be suppressed in favor of its own epub.
+    await makeTestEpub(path.join(seriesDir, 'The Expanse 5.5 - The Vital Abyss.epub'), {
+      title: 'The Vital Abyss',
+      author: 'James S. A. Corey',
+    })
+    await makeTestMobi(path.join(seriesDir, 'The Expanse 5.5 - The Vital Abyss.mobi'), {
+      title: 'The Vital Abyss',
+      author: 'James S. A. Corey',
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Mixed Format Series Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.found).toBe(3) // 2 epubs + the one genuinely mobi-only book — not 4
+    expect(result.created).toBe(3)
+    expect(result.failed).toBe(0)
+
+    const titles = (db.prepare('SELECT title FROM books WHERE source_id = ?').all(sourceId) as any[])
+      .map((b) => b.title)
+      .sort()
+    expect(titles).toEqual(['Leviathan Wakes', 'Nemesis Games', 'The Vital Abyss'])
+
+    const nemesis = db.prepare('SELECT * FROM books WHERE title = ?').get('Nemesis Games') as any
+    expect(nemesis.format).toBe('epub') // converted from its mobi
+    expect(nemesis.file_path).toContain('converted-ebooks')
+  }, 60_000)
+
+  it('ignores a .AppleDouble shadow-copy folder entirely, without a duplicate or failed-scan entry', async () => {
+    // Regression test for a real find while reviewing the user's library:
+    // macOS auto-creates .AppleDouble folders on some network shares,
+    // each holding a shadow copy of a file that's frequently truncated —
+    // a genuine "Trumps of Doom - Roger Zelazny.mobi" inside one failed
+    // conversion with "Unknown book type" while the real file next to it
+    // converted fine. Recursing into these should be a no-op, not a
+    // second candidate or a spurious scan failure.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile, copyFile } = await import('node:fs/promises')
+    const { makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-appledouble-'))
+    const bookDir = path.join(tempRoot, 'Zelazny, Roger', 'Trumps of Doom')
+    await mkdir(bookDir, { recursive: true })
+    const realEpubPath = path.join(bookDir, 'Trumps of Doom - Roger Zelazny.epub')
+    await makeTestEpub(realEpubPath, { title: 'Trumps of Doom', author: 'Roger Zelazny' })
+
+    const shadowDir = path.join(bookDir, '.AppleDouble')
+    await mkdir(shadowDir, { recursive: true })
+    await copyFile(realEpubPath, path.join(shadowDir, 'Trumps of Doom - Roger Zelazny.epub'))
+    await writeFile(path.join(shadowDir, '.Parent'), 'not a real book')
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'AppleDouble Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.found).toBe(1) // the .AppleDouble copy was never a candidate at all
+    expect(result.created).toBe(1)
+    expect(result.failed).toBe(0)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].file_path).toBe(realEpubPath)
   }, 30_000)
 })

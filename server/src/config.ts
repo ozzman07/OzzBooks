@@ -38,3 +38,7 @@ export const config = {
 
 export const dbPath = path.join(config.dataDir, 'ingestion.sqlite3')
 export const artworkDir = path.join(config.dataDir, 'artwork')
+// Calibre-converted mobi->epub output, cached per book id — see
+// ingestion/mobiConvert.ts. Kept separate from artworkDir since these are
+// full book files, not thumbnails.
+export const convertedEbooksDir = path.join(config.dataDir, 'converted-ebooks')
