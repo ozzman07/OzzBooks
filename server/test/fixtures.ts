@@ -169,6 +169,31 @@ export async function makeTestEpub(
 }
 
 /**
+ * Builds a real, valid .mobi by round-tripping through Calibre itself:
+ * a test epub (via makeTestEpub) converted mobi via ebook-convert. Hand-
+ * building a MOBI fixture isn't practical — it's an old, complex binary
+ * format — and this way ingestion/mobiConvert.ts's actual conversion path
+ * (mobi -> real epub via the same ebook-convert CLI it uses in
+ * production) gets exercised against a real file, not an assumption about
+ * its shape. Requires calibre's ebook-convert on PATH, same as the rest
+ * of this suite already requires ffmpeg.
+ */
+export async function makeTestMobi(
+  outPath: string,
+  opts: { title: string; author: string } = { title: 'Test Book', author: 'Test Author' },
+): Promise<void> {
+  // Built in a separate temp dir, well outside outPath's own directory —
+  // that's typically inside a scanned test library tree, and an
+  // intermediate .epub left sitting there would get picked up as its own
+  // (unwanted) epub candidate by the very scan the resulting .mobi is
+  // meant to be tested against.
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-mobi-source-'))
+  const tempEpubPath = path.join(tempDir, 'source.epub')
+  await makeTestEpub(tempEpubPath, opts)
+  await execFileAsync('ebook-convert', [tempEpubPath, outPath], { timeout: 120_000 })
+}
+
+/**
  * Builds a real (tiny) MP3-folder book and a real M4B book with embedded
  * chapters, using ffmpeg — so ingestion is tested against actual valid
  * audio containers rather than hand-waved fixtures.
