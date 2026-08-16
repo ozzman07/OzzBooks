@@ -803,6 +803,13 @@ export function Library() {
               placeholder="Search title or author"
               className="w-full rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-sm text-primary placeholder:text-subtle sm:w-auto sm:flex-1"
             />
+          </div>
+
+          {/* Every other control — view mode, display mode, sort, and the
+              facet filters — shares this one row, rather than the filter
+              button/chips sitting alone below looking disconnected from the
+              rest of the toolbar. */}
+          <div className="mb-4 flex flex-wrap items-center gap-2">
             <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
               <button
                 onClick={() => setViewMode('list')}
@@ -850,9 +857,6 @@ export function Library() {
                 ))}
               </select>
             )}
-          </div>
-
-          <div className="mb-4 flex flex-wrap items-center gap-2">
             <button
               onClick={() => setFilterSheetOpen(true)}
               className="flex items-center gap-1 rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-xs text-secondary"
