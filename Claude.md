@@ -513,6 +513,18 @@ Don't remove them for being "unused."
   language/ecosystem. Hold off unless a concrete, specific need for
   native-level audio (not just "feels nicer") shows up, or PWA polish
   demonstrably hits a ceiling.
+- **Speculative, not committed — comics/graphic novel support:** surfaced
+  while reorganizing the audiobook library (2026-08-30) — real .cbr comic
+  issues (Butcher, Jim's Dresden Files) and graphic novel PDFs (Corey,
+  James S. A.'s Expanse Origins) turned up mixed into the audiobook/ebook
+  folders with no home in either pipeline today. There's also a whole
+  separate, already-substantial comics library sitting unconnected to
+  OzzBooks entirely: `/Volumes/Books/Comics` on the same NAS, 67 series
+  folders and ~3,440 files (mostly .cbr/.cbz, some .png/.jpg/.pdf) — a
+  real second source, not just stray files, if this ever gets scoped.
+  Worth exploring native support (likely CBR/CBZ page-image rendering,
+  distinct from both the audio player and the EPUB text renderer) once
+  there's a concrete need; not scoped or committed yet.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
