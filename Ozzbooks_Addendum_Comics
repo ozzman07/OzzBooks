@@ -185,6 +185,17 @@ New `server/src/ingestion/comic.ts`:
   alphabetic — `page2.jpg` must sort before `page10.jpg`), piped through
   the existing artwork resize pipeline (`sharp` is already a dependency).
 
+**v1 blocker, found 2026-09-02 auditing the real code: `enrichBooks.ts`
+needs an explicit format exclusion.** Its candidate query is `WHERE
+status = 'active' AND metadata_enrichment_attempted_at IS NULL` — no
+format filter at all today. Left as-is, every newly-ingested comic
+becomes a candidate for the Open Library genre/synopsis/cover backfill
+pass, which is a prose-book search API — "Batman: Hush" or "The Long
+Halloween" could easily match an unrelated novel and silently write a
+wrong genre/synopsis/cover onto a comic, which is worse than leaving it
+unenriched. Add `AND format != 'cbz'` (or equivalent) to that query
+before comics ship, not as a fast-follow.
+
 ## CBR handling
 
 Corrected 2026-09-02 — see the reversed decision at the top of this
@@ -287,6 +298,19 @@ ebook reader doesn't need to care about:
 - Offline: whole-issue download only, not per-page granularity — see
   its own section below (the storage-budget story turned out to need
   more than "reuse what's there as-is").
+- **v1 gap, found 2026-09-02: no page-load-failure/retry design.**
+  Everything above covers fit/zoom/chrome/tap-zones, but never designed
+  what happens when a single page request fails mid-read (a network
+  blip, the Mac mini hiccuping). Audio has an explicit self-healing
+  policy for exactly this — check IndexedDB first, retry the stream a
+  few times with backoff, only surface an error if all of that fails
+  (per `Claude.md`'s stream-failure fallback). The comic reader needs
+  the equivalent: on a failed page fetch, check the `comicPages` cache
+  first (the opportunistic pre-fetch means the next page or two is
+  often already there), then retry the network request with backoff,
+  and only then show an in-chrome "couldn't load this page, retry"
+  state — never leave a blank page with no explanation and no way
+  forward.
 - Library UI: see its own section below.
 - Book Detail page: see its own section below.
 - Offline download experience: see its own section below.
@@ -425,6 +449,16 @@ unmount/remount would otherwise reset it).
 - **Search box, sort dropdown, tile/row toggle stay shared UI** — same
   component, same interaction, just operating over whichever collection
   the content-type toggle currently selects.
+- **v1 fix, found 2026-09-02 auditing the real code: search needs to
+  match `series_name`, not just title/author.** `Library.tsx`'s filter
+  predicate today is `query && !title.includes(query) &&
+  !author.includes(query)` — `series_name` was never part of it, for
+  any format. That gap barely matters for audiobooks (the title usually
+  carries enough on its own), but it matters a lot here: "Batman" is
+  the primary mental model for this library, and a volume titled just
+  "Hush" has zero chance of surfacing on a "Batman" search without this
+  fix. Add `series_name` to the same predicate — a one-line change,
+  benefits both content types, not comics-specific plumbing.
 
 ## Series-browsing view
 
@@ -633,6 +667,29 @@ comic, an explicit per-page "zoom to panels" gesture, or a reader-wide
 setting — revisit once the base reader UI and real detection-accuracy
 results (against actual library pages) exist to design against.
 
+## Known gaps, deliberately not v1
+
+Raised while auditing the plan for v1-readiness (2026-09-02), and
+explicitly decided rather than accidentally dropped:
+
+- **Accessibility (VoiceOver) has no story for the comic reader, and
+  that's accepted as a future-state gap, not solved here.** `Claude.md`
+  states VoiceOver support as a deliberate, explicit value elsewhere in
+  the app ("audiobooks are a naturally accessibility-relevant use case,
+  don't leave this implicit") — comics are the one format where that's
+  genuinely hard, since a page is a raw image with no text and no
+  alt-text/OCR/description layer anywhere in this plan. Worth writing
+  down precisely so it reads as a conscious decision revisited later
+  (an OCR-derived alt-text or panel-description pass is the likely
+  eventual shape of a fix), not a silent oversight.
+- **Stray `.cbr`/graphic-novel files sitting outside `/Volumes/Books/
+  Comics`** (the original misfiled Dresden Files issues and Expanse
+  Origins files that started this whole feature) **are explicitly out
+  of scope for both the app and the conversion hand-off document** —
+  Jim is moving those into the Comics source's folder manually. Neither
+  `Ozzbooks_Addendum_Comics` nor `Ozzbooks_Addendum_CbrToCbzConversion`
+  need to do anything about locating or relocating them.
+
 ## Testing
 
 Per `Claude.md`'s existing testing philosophy (personal project, scope
@@ -661,16 +718,24 @@ is unchanged when no comics/epub are cached yet.
 1. Schema migration: `books.format` CHECK + `page_count` column,
    `position.type` union extended to `'page'`.
 2. `comic.ts` ingestion (`.cbz` only) + magic-byte-aware `.cbr` detect-
-   and-skip, wired into `scan.ts`'s candidate pipeline. Point a new
-   source at `/Volumes/Books/Comics`, run a scan, verify real metadata/
-   cover extraction against whatever's already `.cbz` in the real
-   3,440-file library before building any UI on top of guessed
-   behavior. No `unrar`/Mac-mini dependency to stand up first.
-3. Page-serving route + archive-entry-list caching.
+   and-skip, wired into `scan.ts`'s candidate pipeline. **Also add the
+   `enrichBooks.ts` format exclusion here** (see Ingestion changes
+   above) — do it alongside ingestion, not as an afterthought once
+   comics are already live and enrichment has had a chance to run
+   against them. Point a new source at `/Volumes/Books/Comics`, run a
+   scan, verify real metadata/cover extraction against whatever's
+   already `.cbz` in the real 3,440-file library before building any UI
+   on top of guessed behavior. No `unrar`/Mac-mini dependency to stand
+   up first.
+3. Page-serving route + archive-entry-list caching, **with the page-
+   load-failure/retry policy built in from the start** (see Frontend
+   changes above), not bolted on after the happy path ships.
 4. `ComicReader.tsx` — single-page fit-height first, then spread mode
    and pinch-zoom, then the reading-direction toggle.
 5. Library UI: content-type toggle, comics grid/list mode, series
-   cards + Series Detail page (see Series-browsing view above).
+   cards + Series Detail page (see Series-browsing view above), **plus
+   the `series_name` search fix** (see Library & browsing UI above) —
+   small, but do it in this same pass rather than a later cleanup.
 6. Offline download experience (see its own section above): generalize
    `ensureBudget()`/`getTotalCachedBytes()` across formats first, with
    its own test coverage, *before* wiring up the comics download
