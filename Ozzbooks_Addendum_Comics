@@ -221,11 +221,79 @@ ebook reader doesn't need to care about:
   here. Reuses the existing storage-budget/LRU eviction model
   (`downloads` table, `last_played_at`-based eviction) rather than a new
   mechanism.
-- Library UI: comics need their own grid/list mode (portrait cover
-  thumbnails read fine in the existing grid) plus series-grouped
-  browsing by issue number — likely a light extension of the existing
-  series-grouping code already used for audiobook series, not a new
-  concept.
+- Library UI: see its own section below.
+
+## Library & browsing UI
+
+Discussed 2026-09-02. `Library.tsx` today handles My Library and Store
+as two routes sharing one component, with view modes (List / By Author
+/ By Series), tile/row display, faceted filters (Status, Format,
+Source, Genre, Narrator via `FilterSheet.tsx`), and an "In Progress"
+shelf mixing audio+ebook progress.
+
+**Correction to an earlier decision in this same discussion**: a
+dedicated bottom-nav "Comics" tab was floated and initially preferred,
+but reconsidered — the bottom nav already carries 5 tabs (Store,
+Library, Playlists, Now Playing, Settings), and a 6th makes an already
+narrow phone nav bar tighter for no real gain over the alternative
+below. Settled instead on:
+
+**A content-type toggle at the top of the existing Library/Store
+screens**, not a new route or nav entry: a segmented control — "Books"
+(today's audio+ebook grid, unchanged) vs. "Comics" — sitting just under
+the page title, above the search/sort/filter row. My Library vs. Store
+stays exactly as it is today (still the two routes, still about
+ownership); the new toggle is an orthogonal axis, scoping *which*
+collection either route is browsing. So the four real states are "My
+Library → Books" (today's default), "My Library → Comics", "Store →
+Books" (today's default), "Store → Comics" — no new routes needed,
+`App.tsx`'s existing `/library`/`/store` → `<Library />` wiring is
+unchanged.
+
+**State**: a new `contentType: 'books' | 'comics'` value in
+`LibraryViewContext`, same plain-React-state-above-the-router pattern
+already used for `viewMode`/`displayMode`/the filter sets — persists
+across navigating away and back, same reason those do today (Route
+unmount/remount would otherwise reset it).
+
+**What actually changes when the toggle flips:**
+- **Default view mode switches with it**: Books keeps today's default
+  (`List`); Comics defaults to `By Series` — given 67 series covering
+  most of ~3,440 files, and (unlike audiobook `series_name`/
+  `series_number`, still unpopulated per `Claude.md`'s Phase 2b notes)
+  `ComicInfo.xml` reliably supplies real issue numbers, series-by-issue
+  order actually works correctly from the first ingestion, not just
+  once a future backfill lands. Explicit switch, not just "whatever the
+  last mode was" — a bySeries-tuned mode is close to useless for a
+  90%-standalone audio/ebook collection and vice versa.
+- **Facets swap, they don't just filter down.** `FilterSheet.tsx`'s
+  Genre/Narrator facets don't mean anything for comics (no narrator;
+  genre optional/lower-value there); Format is moot (everything in the
+  Comics view is, well, a comic). Comics mode instead offers
+  **Publisher** and **Writer/Artist** (from `ComicInfo.xml`, stored the
+  same way audiobook `author`/`narrator` already are) as its facets.
+  Status and Source stay in both modes — page-position-derived Status
+  works identically to today's chapter/CFI-derived version, and Source
+  still matters once/if a comic ever comes from more than one place.
+  Net effect: `FilterSheet` takes a facet *set* keyed by `contentType`,
+  not a fixed prop list — Genre/Narrator/Format's props simply aren't
+  passed when `contentType === 'comics'`, Publisher/Writer's are.
+- **The "In Progress" shelf filters by the active toggle too** — someone
+  reopening Library to continue an audiobook shouldn't see a mid-issue
+  comic thumbnail interleaved with it, and vice versa. Same underlying
+  progress data, just partitioned by `contentType` before rendering,
+  the same way it's already partitioned by `bookInLibrary`/removed-from-
+  shelf today.
+- **Tile treatment**: reuse `BookTile`/`BookRow`/`BookGrid` as-is rather
+  than building parallel components — just swap the subtitle line
+  (issue number + series instead of author) and the format badge (a
+  comics-specific glyph parallel to `FormatBadge`'s 🎧/📖) when rendering
+  a comic. `dedupeCompanionPairs` doesn't apply (comics have no
+  audio/ebook companion concept), so that step is simply skipped for
+  the Comics collection.
+- **Search box, sort dropdown, tile/row toggle stay shared UI** — same
+  component, same interaction, just operating over whichever collection
+  the content-type toggle currently selects.
 
 ## Fast-follow: panel-guided ("Guided View") reading
 
