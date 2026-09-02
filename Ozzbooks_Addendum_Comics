@@ -1,0 +1,229 @@
+# OzzBooks — Addendum: Comics & graphic novels support
+
+This addendum extends `Claude.md` with a planned (not yet built) third
+content pillar alongside audiobooks and ebooks: native support for comic
+issues and graphic novels (`.cbr`/`.cbz`, plus loose image folders and a
+minority of PDFs). Keep this alongside `Claude.md` and the other addenda
+so future sessions have this context.
+
+**Status: planned, not started.** Discussed and scoped 2026-09-02.
+Supersedes the shorter "Speculative, not committed — comics/graphic
+novel support" bullet in `Claude.md`'s Future phases section — that
+bullet should be replaced with a pointer to this file once this is
+committed to.
+
+**Decisions locked in during scoping (2026-09-02):**
+1. **Scope: the whole Comics library, not just the stray files.**
+   `Claude.md` already flagged a real second library sitting unconnected
+   to OzzBooks: `/Volumes/Books/Comics` on the same NAS, 67 series
+   folders, ~3,440 files (mostly `.cbr`/`.cbz`, some loose `.png`/`.jpg`
+   sequences, some `.pdf` graphic novels). This is being scoped as a
+   real third pillar — new source, real series-grouping UI, sized for
+   the full library — not a small fix for the handful of misfiled
+   Dresden Files/Expanse Origins files that originally surfaced this.
+2. **`.cbr` → convert to `.cbz` once, at ingestion time**, the same
+   proven pattern already shipped for mobi (`ingestion/mobiConvert.ts`
+   converts `.mobi` → `.epub` via Calibre's `ebook-convert`, cached at a
+   deterministic path, skipped on later scans, downstream code never
+   knows mobi was involved). Comics get the same treatment: shell out to
+   `unrar` once, cache the re-zipped `.cbz`, and every reader/serving/
+   offline-cache code path only ever deals with zip. Rejected
+   alternative: extracting RAR on demand at page-serve time — no extra
+   disk usage, but pays RAR-extraction cost on every page request and
+   surfaces RAR bugs at read time instead of at ingestion time (where
+   `scan_issues` already exists to catch exactly this kind of per-file
+   failure).
+
+## Why comics are a different shape than the existing two formats
+
+- **No text reflow.** Audio has timestamps, ebooks have CFIs from
+  reflowable text. A comic page is a fixed-layout image — "position" is
+  just page N of M, and the interesting UI problem is *fitting* an image
+  to the screen, not flowing text into it.
+- **Real estate matters more than it does today.** iPad landscape has
+  room for a two-page spread; phone portrait wants single-page
+  fit-height with pinch-zoom for panel detail. Pinch/pan is a genuinely
+  new interaction — neither the audio player nor `EbookReader.tsx` needs
+  it.
+- **Better native metadata than epub, when present.** Most real .cbr/
+  .cbz files carry a `ComicInfo.xml` (the ComicRack/ComicTagger
+  standard) with series, issue number, writer, penciller, publisher,
+  year — more reliable than epub's messy `<dc:subject>` tags ever were.
+  `books.series_name`/`series_number` already exist and map onto this
+  almost for free: a comic issue's "series number" is its issue number.
+- **`.cbr` is RAR, not zip.** Node has no reliable pure-JS RAR reader.
+  `.cbz` is just a zip — trivially readable with `jszip`, which is
+  already a **devDependency** in `server/package.json` (currently only
+  used to build test fixtures) and would need promoting to a real
+  runtime dependency for this.
+
+## Scope
+
+**Adds:**
+- A new source pointed at `/Volumes/Books/Comics` — reuses the existing
+  `sources.type` values (`'synology'`/`'local'`, whichever matches how
+  it's actually mounted), same as the two "Ozzstation" audio/ebook
+  sources today; no new source `type` needed, just a different
+  `path_scope`.
+- `.cbz` as a new `books.format` value (CHECK constraint update). `.cbr`
+  files are ingested but always converted and served as `.cbz` — no
+  separate `'cbr'` format value, matching the mobi→epub precedent.
+- A `page_count` column on `books`.
+- A third `position.type` value, `'page'` (value = page index), joining
+  the existing `'timestamp' | 'cfi'` union already used by
+  `progress`/`bookmarks`.
+- A new ingestion module, new page-serving route, and a new
+  `ComicReader.tsx` frontend page — see below.
+
+**Explicitly deferred to a fast-follow, not core v1:**
+- **PDF graphic novels** (a real minority in the actual NAS library).
+  The reader UI could plausibly be shared (render each PDF page to an
+  image via `pdf.js` and feed it through the same paged-image viewer),
+  but the extraction path is different enough (no re-zip step, pages
+  rendered on demand rather than read from a zip entry) that it
+  shouldn't block shipping the core `.cbr`/`.cbz` path. Revisit once the
+  archive-based path is working end to end.
+- **Loose image-sequence folders** (a comic scanned as a folder of
+  `page001.jpg`, `page002.jpg`, ... with no archive at all). This is the
+  comics equivalent of `mp3_folder` (audio without an M4B container) —
+  same shape of problem, likely a `comic_folder` format value inferring
+  page order from filename/track order. Worth doing, but only after
+  confirming from real NAS data how common this actually is versus a
+  handful of one-off exports.
+
+**Does not change:** the existing audio/ebook ingestion, streaming, or
+reader code paths. This is additive — a third parallel pipeline, not a
+generalization of the existing two.
+
+## Data model changes
+
+```
+books
+  format TEXT ... CHECK (format IN ('m4b', 'mp3_folder', 'epub', 'cbz'))
+  page_count INTEGER  -- comics only; null for audio/epub
+
+progress / bookmarks
+  position { type: 'timestamp' | 'cfi' | 'page', value }
+```
+
+No new `pages` table — a zip's central directory already gives page
+order and count for free; pages are addressed by index at serve time,
+not pre-extracted into rows. `series_name`/`series_number` are reused
+as-is for issue grouping (an "issue" is a series entry, same column,
+same manual-edit UI already on Book Detail for audiobooks).
+
+## Ingestion changes
+
+New `server/src/ingestion/comic.ts`:
+- Parse `ComicInfo.xml` from the archive root when present: series,
+  issue number, title, writer, penciller, publisher, year, page count.
+- Fall back to filename/folder heuristics (reuse `seriesNumber.ts`'s
+  existing parsing) when no `ComicInfo.xml` exists — expect this to be
+  common; scanned/scene-released back-catalog comics often lack it.
+- Cover art: first page image (natural-sort the zip's file list, not
+  alphabetic — `page2.jpg` must sort before `page10.jpg`), piped through
+  the existing artwork resize pipeline (`sharp` is already a dependency).
+
+New `server/src/ingestion/cbrConvert.ts`, mirroring `mobiConvert.ts`
+structurally:
+- `isCbrFile()`, `convertedCbzPath(bookId)` (under a new
+  `convertedComicsDir`, parallel to `convertedEbooksDir`).
+- `convertCbrToCbz(cbrPath, bookId)`: skip if the cached output already
+  exists; otherwise shell out to `unrar x` (via `execFile`, same as
+  `ebook-convert`) into a temp dir, then re-zip with `jszip` (promoted
+  from devDependency to a real dependency) into the cached `.cbz` path.
+- **Operational requirement**: `unrar` must be installed on the Mac
+  mini, the same way Calibre's `ebook-convert` already is for mobi — add
+  this to the Operational notes section of `Claude.md` once built.
+- A conversion failure (corrupt/password-protected RAR) is treated the
+  same as a DRM-encumbered mobi today: caught by the per-candidate
+  try/catch in `scan.ts`, surfaced via `scan_issues`, doesn't abort the
+  rest of the scan.
+
+## Serving changes
+
+- A new route, e.g. `GET /api/books/:id/pages/:index`, opens the book's
+  `.cbz` (original if it was already cbz, converted-cache path if it was
+  cbr) and streams that single page's image bytes — same idea as
+  chapter-file streaming today, but zip-entry-addressed by index instead
+  of filesystem-path-addressed.
+- Needs an in-memory or on-disk cache of "already-opened archive →
+  sorted entry list" per book to avoid re-reading and re-sorting the zip
+  central directory on every single page request during a reading
+  session — a real perf concern given some issues run 30+ pages and a
+  reader flips through them in seconds.
+
+## Frontend changes
+
+New `app/src/pages/ComicReader.tsx`, peer to `EbookReader.tsx`:
+- `<img>` per page; fit-width/fit-height toggle; pinch-zoom + pan (new
+  gesture handling, nothing existing to reuse here).
+- Tap-left/tap-right zones for prev/next page — same proven pattern as
+  the ebook reader's existing tap zones.
+- A spread-mode toggle (two pages side by side) offered only above some
+  viewport-width threshold — phone stays single-page always.
+- Reading-direction toggle (left-to-right vs right-to-left) — the real
+  library here is Western comics (Dresden Files, Expanse) so
+  left-to-right is the correct default, but the toggle is cheap to build
+  now and avoids a bigger retrofit if any right-to-left material shows
+  up later.
+- Position tracking: current page index, synced through the existing
+  `progress` API extended for `type: 'page'` — same debounced-save
+  pattern `EbookReader.tsx` already uses for CFIs.
+- Offline: whole-issue download only (all page images for one book),
+  not per-page granularity — comics are read start-to-finish in one
+  sitting far more often than a multi-hour audiobook is, so the
+  audiobook's per-chapter partial-download model doesn't map cleanly
+  here. Reuses the existing storage-budget/LRU eviction model
+  (`downloads` table, `last_played_at`-based eviction) rather than a new
+  mechanism.
+- Library UI: comics need their own grid/list mode (portrait cover
+  thumbnails read fine in the existing grid) plus series-grouped
+  browsing by issue number — likely a light extension of the existing
+  series-grouping code already used for audiobook series, not a new
+  concept.
+
+## Testing
+
+Per `Claude.md`'s existing testing philosophy (personal project, scope
+automated tests to ingestion/parsing logic, not UI): automated coverage
+belongs on `comic.ts`'s `ComicInfo.xml` parsing and filename-fallback
+heuristics, and on `cbrConvert.ts`'s convert-once/skip-if-cached logic —
+the same category of "fiddly, easy to silently break, hard to notice by
+eye" as the existing M4B chapter-atom and MP3-folder chapter-inference
+tests. The reader UI (page fitting, zoom, spread mode) is manual
+click-through verification, same as playback controls today.
+
+## Suggested build order
+
+1. Schema migration: `books.format` CHECK + `page_count` column,
+   `position.type` union extended to `'page'`.
+2. `cbrConvert.ts` (needs `unrar` installed on the Mac mini first) +
+   `comic.ts` ingestion, wired into `scan.ts`'s candidate pipeline. Point
+   a new source at `/Volumes/Books/Comics`, run a scan, verify real
+   metadata/cover extraction against the real 3,440-file library before
+   building any UI on top of guessed behavior.
+3. Page-serving route + archive-entry-list caching.
+4. `ComicReader.tsx` — single-page fit-height first, then spread mode
+   and pinch-zoom, then the reading-direction toggle.
+5. Library UI: comics grid/list mode, series-by-issue grouping, offline
+   download action.
+6. Fast-follows: PDF graphic novels, loose image-folder comics (see
+   Scope above) — only once real data shows how much of the 3,440 files
+   these two minority cases actually cover.
+
+## Open questions to settle before/while implementing (not decided here)
+
+- Exact `sources.type` value for the new Comics source — `'local'` or
+  `'synology'` depending on how `/Volumes/Books/Comics` is actually
+  mounted relative to the two existing Ozzstation sources; check against
+  real config rather than assuming.
+- Whether `jszip` (currently a devDependency only) has any real-world
+  performance/memory concern reading large `.cbz` files (some
+  omnibus-style graphic novel scans can run 40-80MB) on the Mac mini
+  under concurrent requests — worth a quick real-file benchmark before
+  committing to it as the runtime zip reader, vs. a streaming-friendlier
+  alternative (e.g. `yauzl`).
+- Whether comics need their own `companion_book_id`-style linking (e.g.
+  a graphic novel that also exists as an audiobook) — no evidence this
+  is a real case in the current library; don't build it speculatively.
