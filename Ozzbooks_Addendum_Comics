@@ -90,6 +90,10 @@ committed to.
   page order from filename/track order. Worth doing, but only after
   confirming from real NAS data how common this actually is versus a
   handful of one-off exports.
+- **Panel-guided reading** ("Guided View" in ComiXology's terms) —
+  auto-detect individual panels on a page and let the reader tap/arrow
+  through them one at a time, zoomed in, instead of viewing a whole page
+  at once. Discussed 2026-09-02; see its own section below.
 
 **Does not change:** the existing audio/ebook ingestion, streaming, or
 reader code paths. This is additive — a third parallel pipeline, not a
@@ -183,6 +187,66 @@ New `app/src/pages/ComicReader.tsx`, peer to `EbookReader.tsx`:
   series-grouping code already used for audiobook series, not a new
   concept.
 
+## Fast-follow: panel-guided ("Guided View") reading
+
+Discussed 2026-09-02, prompted by comic apps (ComiXology's "Guided
+View," some manga readers' "Smart Panel" mode) that locate the first
+panel on a page, zoom in on it, and let the reader tap/arrow through
+each panel in reading order instead of viewing the whole page at once.
+Deliberately scoped as a fast-follow **after** the core paged reader
+(fit-height + pinch-zoom) ships and has been used for real against the
+3,440-file library — not part of core v1.
+
+**Two ways to get panel boundaries, very different reliability:**
+1. *Embedded panel metadata* (e.g. ACBF-style per-panel bounding boxes,
+   authored by whoever produced the file — this is how ComiXology's own
+   Guided View actually works, hand-marked by their pipeline). Real
+   library files here are scanned/scene-released `.cbr`s — essentially
+   none of them will carry this. Not a realistic primary path.
+2. *Automatic detection at ingestion time* — analyze each page image,
+   find the gutters (whitespace/black bands separating panels) via a
+   projection-profile algorithm, derive bounding boxes + reading order.
+   [Kumiko](https://github.com/njean42/kumiko) is established open-source
+   prior art here (Python/OpenCV), already used by manga-reader projects.
+   Works well on clean, gutter-separated layouts; degrades on splash
+   pages, bleeding art, or borderless panels — false positives/negatives
+   are expected, not an edge case to design away.
+
+**How it fits the existing architecture:**
+- Detection runs **once at ingestion**, not on-device — same posture as
+  `unrar`/`ebook-convert` already being shelled out to on the Mac mini.
+  A new ingestion step per page, results cached in a new `panels` table:
+  `book_id, page_index, panel_index, x, y, width, height` (fractions of
+  the page image), reading order implied by `panel_index`.
+- **No separate cropped image files.** The client's guided-view mode
+  loads the same full page image already used by plain paged reading and
+  applies a CSS transform (scale + translate) to frame one panel at a
+  time, animating between panels on tap/arrow — this is how ComiXology
+  does it under the hood, and it avoids multiplying per-page storage.
+- **Confidence fallback is mandatory, not optional.** A page with no
+  detected gutters (or panel boxes that don't sanely tile the page) must
+  fall back to plain whole-page view rather than presenting a bad crop
+  as if it were a real panel — a wrong crop is a worse experience than
+  the plain page the user already has today. Store a per-page
+  detection-confidence flag (or simply: null `panels` rows for that page
+  = "not detected, don't offer guided mode here") rather than always
+  forcing a guess.
+- Reuses the reading-direction toggle from the core reader (panel order
+  within a page also needs to respect left-to-right vs right-to-left).
+
+**New dependency implication:** Kumiko is Python/OpenCV — a heavier,
+different-ecosystem addition than anything else in `server/` today
+(Node/TypeScript throughout, plus CLI shell-outs to `unrar` and
+Calibre's `ebook-convert`). Same shell-out pattern applies (invoke it as
+a subprocess per page, parse its output), but confirm it installs
+cleanly on the Mac mini before committing to it over a from-scratch
+lighter-weight gutter-detection script.
+
+**Not decided:** whether this ships as an always-on mode toggle per
+comic, an explicit per-page "zoom to panels" gesture, or a reader-wide
+setting — revisit once the base reader UI and real detection-accuracy
+results (against actual library pages) exist to design against.
+
 ## Testing
 
 Per `Claude.md`'s existing testing philosophy (personal project, scope
@@ -210,7 +274,9 @@ click-through verification, same as playback controls today.
    download action.
 6. Fast-follows: PDF graphic novels, loose image-folder comics (see
    Scope above) — only once real data shows how much of the 3,440 files
-   these two minority cases actually cover.
+   these two minority cases actually cover — and panel-guided reading
+   (see its own section above), only once the base reader has real
+   usage behind it.
 
 ## Open questions to settle before/while implementing (not decided here)
 
