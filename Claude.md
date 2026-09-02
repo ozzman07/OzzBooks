@@ -472,6 +472,19 @@ Don't remove them for being "unused."
 - **Phase 3a — Ebook integration:** chapter-level audio↔ebook sync, basic
   EPUB rendering (epub.js is the likely library — it produces CFIs, the
   standard EPUB position format)
+
+  **Related gap, surfaced 2026-09-02, not yet fixed:** Playlists
+  ("Add to Playlist"/"Up Next") only works for audiobooks today —
+  `BookDetail.tsx` hides `AddToPlaylist` for ebooks entirely, which
+  turned out to be a real gap rather than a deliberate restriction. See
+  `Ozzbooks_Addendum_PlaylistsForReading` for the planned fix (split
+  into an easy part — just let ebooks/comics be added to playlists,
+  no engineering blocker — and a harder part — real Up Next
+  auto-advance needs a "finished reading" signal invented per reader,
+  since neither ebooks nor comics have a native "ended" event the way
+  audio does). Tracked as its own addendum rather than folded into
+  Phase 3a because it also applies to comics (see
+  `Ozzbooks_Addendum_Comics`).
 - **Phase 3b — Transcription pipeline:** Whisper, run locally on the Mac
   mini — shared infrastructure for both fine-grained sync (3c) and recap
   generation (Phase 5)

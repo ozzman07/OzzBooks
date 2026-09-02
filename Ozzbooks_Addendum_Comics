@@ -222,6 +222,65 @@ ebook reader doesn't need to care about:
   (`downloads` table, `last_played_at`-based eviction) rather than a new
   mechanism.
 - Library UI: see its own section below.
+- Book Detail page: see its own section below.
+
+## Book Detail page for a comic
+
+Discussed 2026-09-02, against the current `BookDetail.tsx`. Most of the
+page reuses existing pieces unchanged; a few things swap for
+comics-appropriate fields, and one thing is new.
+
+**Reused as-is:**
+- Cover art, the missing-book banner + relink flow, "Add to My Library"
+  toggle, "Remove from In Progress," source label, and the synopsis
+  block (`ComicInfo.xml`'s `Summary` field maps straight onto the
+  existing `book.synopsis` display).
+- **The series name/number inline-edit UI, completely unchanged.** The
+  existing `editingSeries`/`seriesNameDraft`/`seriesNumberDraft` block
+  already edits exactly `series_name`/`series_number` — precisely what
+  a comic issue needs (series + issue #). No new component.
+- **`AddToPlaylist`, enabled** — see `Ozzbooks_Addendum_PlaylistsForReading`
+  for the full fix (this was wrongly assumed hidden-by-design earlier
+  in this same discussion; it turns out to be a pre-existing ebook gap,
+  not a deliberate audio-only restriction, and comics should ship with
+  it working rather than inheriting the same gap).
+
+**Changed:**
+- **Narrator inline-edit → Writer/Artist.** The narrator block
+  (`book.format !== 'epub' && ...`) is audio-specific; comics show
+  `Writer: X · Artist: Y` from `ComicInfo.xml` (the same two credits
+  already chosen as Publisher/Writer facets in the Library & browsing UI
+  plan). Genre stays, reusing `GENRE_OPTIONS` as-is for now — not worth
+  inventing a comics-specific vocabulary before seeing whether the
+  existing prose-tuned list actually feels wrong in practice.
+- **Duration → page count.** The `{book.totalDuration > 0 && ...}` row
+  becomes "32 pages" — same slot, same zero-guard pattern, different
+  field.
+- **Primary action button simplifies** — comics never have a companion
+  (no audio+ebook dual-button case to handle), so it's just `Keep
+  Reading`/`Start Reading` → `/book/:id/read`, the same route pattern
+  the epub reader already hangs off `book.format === 'epub'` for, just
+  mounting `ComicReader` instead based on `format === 'cbz'`.
+- **Download badge becomes single-toggle, not per-chapter.** Whole-issue
+  downloads only (see Frontend changes above) makes this closer to
+  `EbookDownloadBadge`'s "cached or not, no partial state" shape than
+  `DownloadBadge`'s per-chapter list — even though under the hood it's
+  fetching N page images, the user only ever sees one aggregate
+  cached/not-cached/downloading state.
+- **The chapters list at the bottom is simply absent.** Comics have no
+  `chapters` rows at all (pages are addressed by index straight from
+  the archive per the Data model section above) — nothing to render
+  there.
+
+**New:** a **"More in this series"** strip — nearby issue covers
+(previous/current/next, or the whole run if short), each tappable
+straight to *that* issue's own Book Detail page. Deliberately mirrors
+existing behavior rather than inventing a shortcut: everywhere else in
+the app (`BookTile`/`BookRow`), tapping a cover goes to Detail, not
+straight into playback/reading, so this strip does the same rather than
+jumping directly into the reader. This is the one thing audiobooks have
+no real equivalent of — "next issue" is a one-tap browsing gesture for
+comics in a way "next audiobook in a series" isn't.
 
 ## Library & browsing UI
 

@@ -1,0 +1,97 @@
+# OzzBooks — Addendum: Playlists for ebooks & comics
+
+This addendum extends `Claude.md` with a planned (not yet built) fix:
+**Playlists (the "Add to Playlist" / "Up Next" feature) currently only
+works for audiobooks.** Keep this alongside `Claude.md` and the other
+addenda so future sessions have this context.
+
+**Status: planned, not started.** Surfaced 2026-09-02 while scoping the
+comics Book Detail page (`Ozzbooks_Addendum_Comics`) — Jim's expectation
+was that this already worked for ebooks, which turned out not to be
+true (`BookDetail.tsx` hides `AddToPlaylist` behind `book.format !==
+'epub'` today). This is being tracked separately from the comics work
+because it's a pre-existing ebook gap, not something new comics
+introduced — comics shouldn't ship with the same gap a second time.
+
+## What "Playlists" actually does today (why this isn't just deleting a guard)
+
+Two kinds of playlist exist, and they have very different relationships
+to auto-advance:
+
+- **Named/custom playlists** (created via `Playlists.tsx`) are purely
+  organizational — add, reorder, remove, browse (`PlaylistDetail.tsx`).
+  Nothing in the app currently treats "finished this book" as a signal
+  to jump to the next item in one of these; you just come back and pick
+  your next read/listen manually. **This half is already completely
+  format-agnostic** — nothing about add/reorder/remove/browse assumes
+  audio.
+- **"Up Next"** is a single reserved playlist (`is_reserved`) with real
+  auto-advance behavior, and that behavior is audio-specific under the
+  hood: `NowPlaying.tsx`'s effect watches `player.finished`, which
+  `PlayerContext.tsx` derives from the `<audio>` element's native
+  `ended` event. When a book finishes playing *and* it was the head of
+  Up Next, the effect pops it and auto-loads + auto-plays the next
+  item. **Ebooks and comics have no native "ended" event** — there's no
+  browser-level signal for "the reader closed the last page" the way
+  there is for "the audio file stopped."
+
+So this isn't one gap, it's two different-sized ones layered together.
+
+## Recommended split
+
+**1. Ship immediately — low risk, fixes the actual reported gap.**
+Remove the `book.format !== 'epub'` guard on `AddToPlaylist` in
+`BookDetail.tsx`, and extend the same check to exclude comics too once
+`ComicReader` exists (or rather, extend it to *include* them — the
+guard becomes "hide only if there's truly nothing to queue," which
+never applies to a real book). Named playlists and adding-to-Up-Next
+both work immediately for ebooks and comics exactly as they do for
+audio today, since neither depends on the `ended`-event machinery —
+only *advancing out of* Up Next automatically does. This alone fixes
+what Jim already expected to work for ebooks, and comics get it from
+day one instead of needing a second follow-up fix later.
+
+**2. Real auto-advance needs a "finished" signal invented for each
+reader, since none exists natively.** Define it explicitly:
+- **Ebook**: reached (or passed) the CFI corresponding to the end of
+  the last chapter — the same "last chapter reached" heuristic
+  `Library.tsx`'s `bookStatus()` already uses to bucket a book as
+  "finished" for the Status filter, just evaluated live inside
+  `EbookReader.tsx` as it happens, instead of read back from stored
+  progress after the fact.
+- **Comic**: current page index reaches `page_count - 1` (or the
+  reader advances past it from the last page).
+
+**3. Don't silently auto-navigate on finish, unlike audio — this is a
+deliberate difference, not a shortcut.** Audio's silent auto-advance
+fits passive listening: nobody's watching the screen when one file
+rolls into the next, so silently starting the next one is the whole
+point. Reading is active — yanking someone straight into a new ebook or
+comic the instant they tap past the last page would be jarring, not
+convenient, and risks feeling like a bug ("why did the screen just
+change on me?"). Instead, both readers should show an explicit prompt
+at the end-of-book/issue screen when the just-finished item was the
+head of Up Next — something like **"Up Next: [cover] — Continue to
+[title]?"** — a deliberate tap, not an automatic transition.
+
+**4. Share the advance logic instead of duplicating it a third time.**
+The fetch-Up-Next / check-if-head-matches / pop-the-consumed-item /
+look-up-the-next-item sequence currently lives inline in
+`NowPlaying.tsx`, coupled to `player.finished`. Pull it into a small
+shared hook (e.g. `useUpNextAdvance(book, finishedSignal)`) that all
+three surfaces — `NowPlaying.tsx`, `EbookReader.tsx`, `ComicReader.tsx`
+— call with their own definition of "finished," rather than copying the
+fetch/pop/lookup sequence three times or leaving it stranded inside a
+component only the audio player renders.
+
+## Open questions to settle before implementing (not decided here)
+
+- Where does the "Continue to [title]?" prompt actually render for
+  ebooks/comics — an overlay on the last page itself, or a dedicated
+  "you finished this" screen replacing the reader chrome? Needs a
+  concrete mock, not decided here.
+- Should partial progress ever get treated as "close enough to
+  finished" to surface the Up Next prompt early (e.g. last page of an
+  epilogue that's mostly blank)? No evidence this is a real problem —
+  don't build a fuzzy threshold speculatively; exact "reached the end"
+  is fine to start.
