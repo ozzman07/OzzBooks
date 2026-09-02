@@ -1,0 +1,132 @@
+# OzzBooks — Addendum: CBR → CBZ conversion (NAS file-maintenance task)
+
+**This is a hand-off document, not app code.** It was drafted in a
+Claude Code session working on the OzzBooks git repo (the "Comic/
+graphic novel support" planning session, 2026-09-02), for execution by
+a *different* session — one with real filesystem access to the NAS/Mac
+mini, the same kind of session already doing the audiobook merging/
+renaming work. That session should be able to follow this document on
+its own, without having read the planning conversation it came from.
+
+**Status: planned, not started.**
+
+## Why this exists
+
+`Ozzbooks_Addendum_Comics` (the OzzBooks app-side plan for native
+comics/graphic novel support) settled on **`.cbz` as the only archive
+format OzzBooks itself ingests** — no in-app RAR handling, no `unrar`
+shell-out, no conversion-at-scan-time. That decision was made
+specifically so this conversion work could be a normal NAS
+file-maintenance task, done directly against the files, the same
+category of work as the audiobook merging/renaming already happening —
+rather than something the OzzBooks Node/TypeScript codebase needs to
+solve internally.
+
+**The goal**: every `.cbr` file under `/Volumes/Books/Comics` (67
+series folders, ~3,440 files, a meaningful fraction of which are
+currently `.cbr` per the original scoping notes) gets a faithful
+`.cbz` sibling. Also worth checking: the handful of stray `.cbr` issues
+(Dresden Files) that were found misfiled into the audiobook folders,
+which is what originally surfaced the whole comics idea.
+
+**No sequencing dependency with the OzzBooks app work.** OzzBooks scans
+and ingests whatever's already `.cbz` immediately, and picks up newly
+converted files automatically on its next nightly rescan — this
+conversion pass can run in the background, in batches, over however
+long it takes, without blocking or being blocked by the app-side build.
+
+## Per-file conversion procedure
+
+1. **Detect by magic bytes, not just the extension** — `Rar!\x1a\x07`
+   for RAR, `PK\x03\x04` for zip. A `.cbr`-extensioned file that's
+   already zip data internally (or vice versa) shows up occasionally in
+   scanned/scene-released collections; this rescues it from needing
+   conversion at all rather than either mishandling it or flagging it
+   as broken.
+2. **Skip if already done.** If a sibling file with the same base name
+   and a `.cbz` extension already exists next to the `.cbr`, skip —
+   idempotent by construction, safe to re-run this whole process across
+   multiple work sessions without re-doing finished files. If such a
+   sibling exists but looks unrelated (very different size/page count),
+   flag for manual review rather than guessing which one is right.
+3. **Extract** via `unrar x` (RARLab's official CLI — free for
+   extraction use, current versions handle RAR5) into a scratch/temp
+   directory. Treat **any non-zero exit code as a failure**, including
+   RAR's own "non-fatal warning" codes, not just hard errors — don't
+   produce a `.cbz` from a partial/suspect extraction. Clean up the
+   scratch directory afterward regardless of success or failure (a
+   try/finally, not just a happy-path `rm`) — matters at this file
+   count, since leftover temp directories would otherwise accumulate
+   across thousands of runs.
+4. **Sanity-check the extraction**: if it produced zero recognized
+   image files (`.jpg`/`.jpeg`/`.png`/`.gif`/`.webp`), this isn't a
+   valid comic archive — don't produce a `.cbz`, flag for manual review
+   (mislabeled file, or genuinely corrupt).
+5. **Re-zip as a faithful, dumb repackage** — every extracted file
+   included (including `ComicInfo.xml`), original filenames preserved,
+   no renaming. **Entry order inside the zip doesn't matter** — OzzBooks'
+   own page-serving logic always natural-sorts filenames at read time
+   rather than trusting archive order (an explicit invariant on the app
+   side, specifically so this conversion pass doesn't need to fuss over
+   getting insertion order right). Whatever's convenient on this
+   session's own toolchain — the `zip` CLI, a scripting language's zip
+   library, whatever's idiomatic there — is fine; nothing here needs to
+   match OzzBooks' own Node/`jszip` stack, since this document has no
+   code dependency on that codebase at all.
+6. **Output path**: same folder, same base filename as the original
+   `.cbr`, just a `.cbz` extension. This matters beyond tidiness —
+   OzzBooks derives a comic's series name from its *folder* path
+   (first path segment under the Comics source root), so keeping the
+   converted file in the exact same location is what makes it ingest
+   correctly, not an incidental choice.
+7. **Verify before calling it done**: list the new `.cbz`'s contents
+   and confirm the recognized-image-file count matches what step 4
+   found in the extraction — a lightweight check that nothing silently
+   truncated during the re-zip, not a full pixel-level comparison.
+8. **Move the original `.cbr` aside, never delete it.** Move it into a
+   sibling folder named `zzzSource files` (or `Source`/`source files` —
+   any of these already match `scan.ts`'s `BACKUP_FOLDER_RE` on the
+   OzzBooks side). Two things this gets for free: the original stays
+   recoverable as a safety net, and OzzBooks' own scanner already
+   excludes anything under a folder matching that name — so the backed-
+   up original won't show up as a confusing duplicate, and won't keep
+   generating a "still needs conversion" `scan_issues` entry once it's
+   out of the scanned tree. Actually deleting the backed-up originals
+   later, to reclaim disk space, is a deliberate manual decision for
+   another day — not something this pass does on its own.
+
+## Explicitly out of scope for this pass
+
+- **Renaming or reorganizing files/folders.** Keep format conversion
+  and any file-hygiene/renaming pass separate, even if the audiobook
+  workflow bundles both — a bad rename is much harder to untangle from
+  inside a large batch conversion than on its own. If reorganization is
+  wanted for the Comics library too, treat it as its own follow-up
+  pass, after conversion is verified stable.
+- **PDF or loose-image-folder comics.** Nothing to convert — these
+  aren't RAR archives. (Both are separately flagged as fast-follow app
+  work in `Ozzbooks_Addendum_Comics`, unaffected by this document.)
+- **Editing `ComicInfo.xml` content.** Preserve it exactly as found;
+  cleaning up metadata quality is a separate concern, not this pass's
+  job.
+
+## Progress visibility
+
+Given the file count, expect this to run across multiple work sessions.
+The idempotency check in step 2 makes re-running the whole pass safe at
+any time, so no separate tracking file is strictly required — but a
+short summary at the end of each run (converted / flagged for review /
+already done / remaining) is worth keeping, if only so it's obvious at
+a glance how much of the library is left. On the OzzBooks app side,
+once ingestion is running, `scan_issues` for the Comics source doubles
+as a live view of exactly which files are still waiting on this
+conversion — worth checking there too, not just tracking separately.
+
+## Open questions (for whoever executes this)
+
+- Exact re-zip tooling — whatever this session already has available
+  and trusts; not prescribed here.
+- Whether to process the library in one long pass or per-series-folder
+  batches — a per-folder batch probably makes the "flagged for review"
+  list easier to work through incrementally, but that's a preference
+  call for whoever's running it.
