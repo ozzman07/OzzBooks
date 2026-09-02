@@ -256,15 +256,12 @@ ebook reader doesn't need to care about:
 - Position tracking: current page index, synced through the existing
   `progress` API extended for `type: 'page'` — same debounced-save
   pattern `EbookReader.tsx` already uses for CFIs.
-- Offline: whole-issue download only (all page images for one book),
-  not per-page granularity — comics are read start-to-finish in one
-  sitting far more often than a multi-hour audiobook is, so the
-  audiobook's per-chapter partial-download model doesn't map cleanly
-  here. Reuses the existing storage-budget/LRU eviction model
-  (`downloads` table, `last_played_at`-based eviction) rather than a new
-  mechanism.
+- Offline: whole-issue download only, not per-page granularity — see
+  its own section below (the storage-budget story turned out to need
+  more than "reuse what's there as-is").
 - Library UI: see its own section below.
 - Book Detail page: see its own section below.
+- Offline download experience: see its own section below.
 
 ## Book Detail page for a comic
 
@@ -464,6 +461,89 @@ series" bucket, same as `groupBySeries` already does today.
   information is already available at ingestion time either way, so
   this is cheap to add later without a re-ingestion.
 
+## Offline download experience
+
+Discussed 2026-09-02, grounded in what the offline code actually does
+today rather than what `Claude.md` summarizes it as doing.
+
+**Finding: the storage-budget/LRU eviction model isn't actually
+format-wide today.** `downloadManager.ts`'s `ensureBudget()` and
+`getTotalCachedBytes()` only ever sum over the `audioFiles` IndexedDB
+store. `useEbookDownload.ts` has **no budget check or eviction at
+all** — it fetches and stores an epub unconditionally. This has been
+harmless in practice because epub files are small; it would not be
+harmless for comics, where a single graphic novel's page images can
+plausibly run tens to over a hundred MB, closer to audiobook-chapter
+sizes than epub-file sizes. Shipping comics downloads by copying the
+epub pattern verbatim would mean someone downloading a handful of
+issues before a trip could blow straight through their configured
+`storage_budget_mb` with zero eviction, silently consuming real device
+storage until iOS's own unpredictable eviction kicks in — exactly the
+scenario the budget system exists to avoid.
+
+**Decision: unify storage-budget accounting across all formats now,
+rather than giving comics its own isolated check.** `ensureBudget()`/
+`getTotalCachedBytes()` (`downloadManager.ts`) generalize to sum across
+`audioFiles` + a new `comicPages` store + `epubFiles` (fixing the
+existing epub gap as a side effect of the same change), evicting the
+globally least-recently-used item regardless of format when a new
+download needs room. This touches code the existing audio download
+feature depends on, so it needs real care and its own test coverage
+(per the Testing section below), not just a drive-by generalization.
+
+**New `comicPages` IndexedDB store** (`db.ts`, schema version bump),
+keyed by `(bookId, pageIndex)`, parallel to `audioFiles`/`epubFiles`.
+Eviction granularity is **whole-issue, not per-page** — every cached
+page for a `bookId` is pulled together, keyed by a book-level
+`lastReadAt` timestamp, mirroring how `deleteCachedAudioFilesForBook`
+already does bulk book-level deletion for audio's "remove all" action.
+There's no such thing as evicting "half a comic" — matches the
+whole-issue-download-only decision from the reading-screen plan above.
+
+**Download flow**: "download whole issue" fetches all `page_count` page
+endpoints and stores each blob, refreshing the UI's cached-count after
+each page lands (not just once at the end) — same incremental-progress
+pattern `useDownloads.downloadAll()` already uses per audio chapter —
+feeding the single aggregate cached/downloading/not-cached badge state
+already planned for Book Detail.
+
+**Completion is tracked explicitly, not inferred by counting cached
+blobs.** Audio's per-chapter model tolerates partial caching by design
+— that's the point of chapter-level downloads. Comics deliberately
+aren't supposed to expose a partial state to the user, but a download
+that fails or gets interrupted mid-issue does leave a genuinely partial
+set of cached pages behind. Without an explicit completion flag
+(alongside the expected `page_count`), the UI can't distinguish "fully
+downloaded" from "died at page 14 of 30" — store a boolean, don't infer
+it from a blob count.
+
+**Opportunistic pre-fetch while actively reading, independent of the
+explicit download action.** Audio already background-caches the
+current + next 1–2 chapters for resilience against short offline gaps,
+per `Claude.md`'s stated design priority ("short offline gaps, not
+extended offline"). Page images are typically small enough that doing
+the same for comics — silently caching the next few pages while
+someone's actively reading, with no explicit download tap required —
+costs little and buys the same resilience. The reader's per-page fetch
+resolution should be cache-first-unconditionally, the same pattern
+`EbookReader.tsx`/`PlayerContext` already use for their own content:
+check IndexedDB first, fall back to network, regardless of
+connectivity state.
+
+**Storage visibility breaks down by content type**, not just one
+aggregate number — the existing `navigator.storage.estimate()` screen
+(per `Claude.md`'s Phase 1 scope) should show audio/ebook/comics
+separately once comics are a real presence, so "why did my audiobooks
+get evicted" has an answerable "comics used the budget" rather than
+being a mystery.
+
+**Deliberately deferred, not core v1**: a "download whole series" bulk
+action from the Series Detail page (handy before a trip — grab the next
+few volumes at once). Real risk of someone one-tapping a 50-volume
+series into instantly consuming the entire storage budget; doing that
+safely needs its own size-estimate/confirmation UX, easier to design
+once the single-issue download path is proven in real use.
+
 ## Fast-follow: panel-guided ("Guided View") reading
 
 Discussed 2026-09-02, prompted by comic apps (ComiXology's "Guided
@@ -535,6 +615,17 @@ eye" as the existing M4B chapter-atom and MP3-folder chapter-inference
 tests. The reader UI (page fitting, zoom, spread mode) is manual
 click-through verification, same as playback controls today.
 
+**The generalized `ensureBudget()`/`getTotalCachedBytes()` (see Offline
+download experience above) also needs real automated coverage, not just
+manual verification** — this is existing, currently-untested-by-name
+logic the shipped audio download feature depends on, being reshaped to
+also cover comics and epub. A regression here silently breaks working
+audio downloads, which is a materially worse failure than a new
+feature shipping incomplete. Cover at minimum: eviction picks the
+globally oldest item regardless of format, a whole comic issue's pages
+evict together (never partially), and the existing audio-only behavior
+is unchanged when no comics/epub are cached yet.
+
 ## Suggested build order
 
 1. Schema migration: `books.format` CHECK + `page_count` column,
@@ -548,9 +639,13 @@ click-through verification, same as playback controls today.
 4. `ComicReader.tsx` — single-page fit-height first, then spread mode
    and pinch-zoom, then the reading-direction toggle.
 5. Library UI: content-type toggle, comics grid/list mode, series
-   cards + Series Detail page (see Series-browsing view above), offline
-   download action.
-6. Fast-follows: PDF graphic novels, loose image-folder comics (see
+   cards + Series Detail page (see Series-browsing view above).
+6. Offline download experience (see its own section above): generalize
+   `ensureBudget()`/`getTotalCachedBytes()` across formats first, with
+   its own test coverage, *before* wiring up the comics download
+   action on top of it — the shared budget code is the part with the
+   most blast radius if it's wrong.
+7. Fast-follows: PDF graphic novels, loose image-folder comics (see
    Scope above) — only once real data shows how much of the 3,440 files
    these two minority cases actually cover — and panel-guided reading
    (see its own section above), only once the base reader has real
