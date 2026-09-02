@@ -94,6 +94,8 @@ committed to.
   auto-detect individual panels on a page and let the reader tap/arrow
   through them one at a time, zoomed in, instead of viewing a whole page
   at once. Discussed 2026-09-02; see its own section below.
+- **Swipe/drag page-turning** as an alternative to v1's tap zones —
+  discussed 2026-09-02, see the reading-screen section below.
 
 **Does not change:** the existing audio/ebook ingestion, streaming, or
 reader code paths. This is additive — a third parallel pipeline, not a
@@ -157,15 +159,53 @@ structurally:
   session — a real perf concern given some issues run 30+ pages and a
   reader flips through them in seconds.
 
-## Frontend changes
+## Frontend changes: the reading screen
 
-New `app/src/pages/ComicReader.tsx`, peer to `EbookReader.tsx`:
-- `<img>` per page; fit-width/fit-height toggle; pinch-zoom + pan (new
-  gesture handling, nothing existing to reuse here).
-- Tap-left/tap-right zones for prev/next page — same proven pattern as
-  the ebook reader's existing tap zones.
-- A spread-mode toggle (two pages side by side) offered only above some
-  viewport-width threshold — phone stays single-page always.
+Discussed in more detail 2026-09-02. New `app/src/pages/ComicReader.tsx`,
+peer to `EbookReader.tsx` but deliberately different in a few ways the
+ebook reader doesn't need to care about:
+
+- **Immersive canvas, not a chrome-first screen.** `EbookReader.tsx`
+  keeps a thin top bar always visible, which is fine there since it
+  never competes with a full page of art. A comic page *is* the content
+  edge-to-edge, so the top bar + page counter here **auto-hide** after a
+  couple seconds and get summoned back with a tap, canvas going fully
+  edge-to-edge in between. Background behind the page (and any
+  letterboxing when a page's aspect ratio doesn't fill the screen) is
+  **black**, not the app's light/dark theme colors — deliberately reads
+  as a dedicated photo/comic viewer (matches Comixology, Apple Books'
+  image mode, most manga readers), not an extension of the app chrome.
+- **Three-way tap zones**, not the ebook reader's two edge-strips: left
+  third / right third for prev/next, **center third summons the
+  chrome** (since chrome isn't passively visible here the way the ebook
+  reader's is, it needs a reliable, accidental-proof way back).
+- **v1 page-turn gesture: tap zones only** — same proven, low-risk
+  pattern as the ebook reader, no new gesture code needed to ship.
+  **Fast-follow: add swipe/drag as an alternative** once the tap-based
+  reader is live and being used for real — swipe needs its own gesture
+  handling (nothing to reuse from the ebook reader) and has to be
+  disambiguated from the pinch-zoom pan gesture below, so it's worth
+  doing as a deliberate second pass rather than bundling into the first
+  ship.
+- **Fit-to-screen (contain) by default, not fit-width.** Fit-width often
+  means scrolling vertically within a single page to see the bottom
+  half, which fights the one-tap-equals-one-page model. Fit-to-screen
+  keeps the whole page visible at once; pinch-to-zoom + double-tap-to-
+  zoom (standard convention: double-tap zooms ~2x centered on the tap
+  point, tap again to reset) is how you get to panel-level detail. While
+  zoomed, swipe pans instead of turning the page — needs an explicit
+  "currently zoomed" state (e.g. a small reset-zoom control appears in
+  the chrome) so it's never ambiguous what a swipe does next. This is
+  all new gesture handling — nothing to reuse from the ebook reader.
+- **Jump-to-page thumbnail strip.** Ebooks don't benefit from this (a
+  CFI list means nothing visually), but comic pages are instantly
+  recognizable at a glance — a horizontal filmstrip of page thumbnails
+  in the chrome, tap one to jump straight there, is a much better
+  "find that splash page again" tool than a page-number slider.
+- **Spread mode is opportunistic, not default** — only offered when the
+  viewport is wide enough that two portrait pages side by side wouldn't
+  be tiny (realistically iPad landscape only); phone stays single-page
+  at any orientation.
 - Reading-direction toggle (left-to-right vs right-to-left) — the real
   library here is Western comics (Dresden Files, Expanse) so
   left-to-right is the correct default, but the toggle is cheap to build
