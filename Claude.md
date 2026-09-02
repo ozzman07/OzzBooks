@@ -93,6 +93,13 @@ which user is using the app.
 2. **Background playback test:** confirm lock-screen/background audio via
    Media Session survives realistic session lengths (not just a minute or
    two) without the OS killing it.
+3. **Comics storage test (once comics ship — see
+   `Ozzbooks_Addendum_Comics`):** download a real whole-issue comic (tens
+   to 100+ MB across many small page-image blobs, not one big file) to an
+   installed iOS PWA and confirm actual behavior. This is a different
+   storage shape than audio/ebook (many small IndexedDB writes instead of
+   one or two large ones) — don't assume it inherits audio's already-
+   validated behavior; verify separately on a real device.
 
 ## Testing strategy
 
