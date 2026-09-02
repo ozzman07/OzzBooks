@@ -45,12 +45,21 @@ committed to.
   fit-height with pinch-zoom for panel detail. Pinch/pan is a genuinely
   new interaction — neither the audio player nor `EbookReader.tsx` needs
   it.
-- **Better native metadata than epub, when present.** Most real .cbr/
-  .cbz files carry a `ComicInfo.xml` (the ComicRack/ComicTagger
-  standard) with series, issue number, writer, penciller, publisher,
-  year — more reliable than epub's messy `<dc:subject>` tags ever were.
-  `books.series_name`/`series_number` already exist and map onto this
-  almost for free: a comic issue's "series number" is its issue number.
+- **Metadata quality varies, and the real library is graphic-novel-
+  heavy, not numbered single-issue runs.** `.cbr`/`.cbz` files can carry
+  a `ComicInfo.xml` (the ComicRack/ComicTagger standard) with series,
+  issue number, writer, penciller, publisher, year — a real asset when
+  present. But Jim's actual library (confirmed 2026-09-02) is mostly
+  **collected graphic novels organized by franchise folder** ("all
+  Batman graphic novels together"), not sequential numbered issues like
+  Dresden Files — closer in shape to a loosely-ordered book series than
+  to comic-book-continuity numbering. Expect `ComicInfo.xml` presence/
+  quality to be inconsistent across a scanned collection like this, the
+  same real-world pattern already documented for audiobook genre tags
+  ("usable on well under 20%" per `Claude.md`'s Phase 2b notes) — so
+  **folder structure, which Jim has already deliberately curated, is
+  the primary series signal**, not the embedded tag. See Ingestion
+  changes below for exactly how that's derived.
 - **`.cbr` is RAR, not zip.** Node has no reliable pure-JS RAR reader.
   `.cbz` is just a zip — trivially readable with `jszip`, which is
   already a **devDependency** in `server/package.json` (currently only
@@ -114,18 +123,51 @@ progress / bookmarks
 
 No new `pages` table — a zip's central directory already gives page
 order and count for free; pages are addressed by index at serve time,
-not pre-extracted into rows. `series_name`/`series_number` are reused
-as-is for issue grouping (an "issue" is a series entry, same column,
-same manual-edit UI already on Book Detail for audiobooks).
+not pre-extracted into rows. `series_name`/`series_number` (and
+`series_number_source`) are reused as-is — a graphic novel/issue is a
+series entry, same columns, same manual-edit UI already on Book Detail
+for audiobooks. See Ingestion changes below for how those get derived
+for comics specifically (folder-first, not tag-first — corrected
+2026-09-02 once the real library's shape was clarified).
 
 ## Ingestion changes
 
 New `server/src/ingestion/comic.ts`:
 - Parse `ComicInfo.xml` from the archive root when present: series,
-  issue number, title, writer, penciller, publisher, year, page count.
-- Fall back to filename/folder heuristics (reuse `seriesNumber.ts`'s
-  existing parsing) when no `ComicInfo.xml` exists — expect this to be
-  common; scanned/scene-released back-catalog comics often lack it.
+  issue number, title, writer, penciller, publisher, year, page count,
+  summary.
+- **Series name: folder-derived by default, tag overrides only when
+  present and legitimate** — the reverse precedence from what was
+  originally assumed here, corrected 2026-09-02 once the real library's
+  shape was clarified (see "Why comics are a different shape" above).
+  Concretely: **series name = the first path segment of the file's path
+  relative to the source's `path_scope`** — not the file's immediate
+  parent folder. This matters because the real structure can nest
+  deeper than one level (confirmed 2026-09-02): `Comics/Batman/some-
+  gn.cbr` and `Comics/Batman/Elseworlds/some-gn.cbr` must both resolve
+  to series "Batman," not fragment into "Batman" and "Elseworlds" as
+  two separate series. A file sitting directly at the source root with
+  no subfolder at all gets no folder-derived series — same "Not part of
+  a series" bucket `groupBySeries` already has for audiobooks. This
+  lines up with `Claude.md`'s original scoping note that the real NAS
+  library has "67 series folders" — that count only makes sense if
+  depth-1 folders are themselves the series unit.
+- **Series number: `series_number_source` (`'tag' | 'folder' |
+  'manual'`), already in the schema for exactly this precedence,
+  reused as-is.** `'tag'` = `ComicInfo.xml`'s `Number`/`Volume` field;
+  `'folder'` = a leading "Vol 02 -" style prefix parsed the same way
+  `seriesNumber.ts` already parses audiobook filenames; `'manual'` = the
+  existing inline-edit UI on Book Detail, which — per that column's
+  existing contract — is never overwritten by a later automatic guess.
+  **Expect this to commonly be null for graphic novels** — a franchise
+  folder full of trades has no inherent "issue number" the way a
+  numbered single-issue run does. That's fine, not an error case:
+  ordering falls back to title within the series, exactly like
+  `compareBySeriesThenTitle` already does for audiobook series today.
+  A publication-year tiebreaker (from `ComicInfo.xml`'s `Year`, before
+  falling back to title) is worth adding as a small parameterization of
+  that same shared sort function, since it'd get "closer to right"
+  automatically for an unnumbered franchise — not required for v1.
 - Cover art: first page image (natural-sort the zip's file list, not
   alphabetic — `page2.jpg` must sort before `page10.jpg`), piped through
   the existing artwork resize pipeline (`sharp` is already a dependency).
@@ -317,14 +359,19 @@ unmount/remount would otherwise reset it).
 
 **What actually changes when the toggle flips:**
 - **Default view mode switches with it**: Books keeps today's default
-  (`List`); Comics defaults to `By Series` — given 67 series covering
-  most of ~3,440 files, and (unlike audiobook `series_name`/
-  `series_number`, still unpopulated per `Claude.md`'s Phase 2b notes)
-  `ComicInfo.xml` reliably supplies real issue numbers, series-by-issue
-  order actually works correctly from the first ingestion, not just
-  once a future backfill lands. Explicit switch, not just "whatever the
-  last mode was" — a bySeries-tuned mode is close to useless for a
-  90%-standalone audio/ebook collection and vice versa.
+  (`List`); Comics defaults to `By Series` — given 67 franchise-organized
+  series folders covering most of ~3,440 files, series-first is clearly
+  the right default browsing shape here, unlike the mostly-standalone
+  audio/ebook collection. (Ordering *within* a series often falls back
+  to title rather than a real issue number, same as audiobooks today —
+  see Ingestion changes above — but that doesn't change which grouping
+  mode is the sane default, only how each group sorts internally.)
+  Explicit switch, not just "whatever the last mode was" — a
+  bySeries-tuned mode is close to useless for a 90%-standalone audio/
+  ebook collection and vice versa. **See "Series-browsing view" below —
+  comics' By Series can't just be the audiobook By Series view reused
+  verbatim**, since inline-expanding all 67 series' full grids on one
+  page doesn't hold up at this scale.
 - **Facets swap, they don't just filter down.** `FilterSheet.tsx`'s
   Genre/Narrator facets don't mean anything for comics (no narrator;
   genre optional/lower-value there); Format is moot (everything in the
@@ -353,6 +400,69 @@ unmount/remount would otherwise reset it).
 - **Search box, sort dropdown, tile/row toggle stay shared UI** — same
   component, same interaction, just operating over whichever collection
   the content-type toggle currently selects.
+
+## Series-browsing view
+
+Discussed 2026-09-02. Today's audiobook "By Series" view inline-expands
+every series' full book grid, stacked down one page. With 67 series
+averaging ~51 files each, that model breaks down completely for comics
+— up to 3,440 tiles rendered in one unbroken scroll, both unusable to
+browse and a real performance concern: `CoverArt.tsx`'s `<img>` has no
+`loading="lazy"` and `BookGrid` does no virtualization at all today,
+so an unfiltered flat view means requesting thousands of cover images
+at once. That's already a latent cost at today's ~5,470-book library;
+comics is what actually makes it bite. **Worth fixing regardless of
+comics** — add `loading="lazy"` to `CoverArt`'s `<img>`, a one-line,
+no-downside change that helps both this new view and the existing flat
+Library.
+
+So comics' By Series needs **two levels**, not the audiobook pattern
+reused as-is:
+
+**Level 1 — series cards.** The By Series landing view shows one card
+per series: cover (the lowest-`series_number`/earliest-by-fallback-
+order book's cover, by convention), series name, item count, and an
+**aggregate progress indicator** ("12 of 45 read") — genuinely new
+computation, not something `groupBySeries` needs today since it only
+clusters tiles, never reasons about status across them. For Jim's
+actual library this literally is "the Batman card," "the Expanse
+card," etc.
+
+**Level 2 — a new Series Detail page**, opened by tapping a card: a
+grid of just that series' items, ordered using the same fallback chain
+as the rest of this plan (`series_number` when one of tag/folder/manual
+supplied it, else title — see Ingestion changes) rather than assuming a
+strict numeric sequence exists. Tapping an item still goes to its own
+Book Detail page, not straight into the reader — consistent with the
+"More in this series" strip decision and with how `BookTile`/`BookRow`
+already behave everywhere else in the app.
+
+**Real wrinkle: series aren't a normalized table.** `series_name` is a
+denormalized string column on `books`, so Series Detail's route has to
+key off that string (URL-encoded), not a stable id. Functionally fine,
+but it means editing a series' name (already possible via the existing
+inline-edit UI) effectively changes that series' URL — never mattered
+before because the old By Series view never linked anywhere; it does
+now.
+
+Standalone/one-shot graphic novels reuse the existing convention
+exactly: a lone book under a "series" folds into a flat "Not part of a
+series" bucket, same as `groupBySeries` already does today.
+
+**Fast-follows, not required for v1:**
+- A jump-to-item-number control for very long runs — worth doing once
+  real data shows how long the longest series in this library actually
+  are, not worth guessing at now.
+- **Sub-headings within a series from deeper folder nesting.** Since
+  series identity is pinned at the first path segment (see Ingestion
+  changes), a real nested structure like `Batman/Elseworlds/` doesn't
+  have to be thrown away — that second segment could become an optional
+  sub-heading grouping those particular items together within the
+  Batman Series Detail page, a display nicety layered on top of the
+  same series identity rather than either ignoring the nesting or
+  wrongly promoting it to its own top-level series. The raw path
+  information is already available at ingestion time either way, so
+  this is cheap to add later without a re-ingestion.
 
 ## Fast-follow: panel-guided ("Guided View") reading
 
@@ -437,7 +547,8 @@ click-through verification, same as playback controls today.
 3. Page-serving route + archive-entry-list caching.
 4. `ComicReader.tsx` — single-page fit-height first, then spread mode
    and pinch-zoom, then the reading-direction toggle.
-5. Library UI: comics grid/list mode, series-by-issue grouping, offline
+5. Library UI: content-type toggle, comics grid/list mode, series
+   cards + Series Detail page (see Series-browsing view above), offline
    download action.
 6. Fast-follows: PDF graphic novels, loose image-folder comics (see
    Scope above) — only once real data shows how much of the 3,440 files
