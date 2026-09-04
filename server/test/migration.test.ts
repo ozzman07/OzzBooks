@@ -5,11 +5,15 @@ import Database from 'better-sqlite3'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 // Seeds a database matching the *pre-epub* books table shape (no
-// companion_book_id, format CHECK limited to m4b/mp3_folder) — this is
-// what every real database created before this feature shipped actually
-// looks like on disk. migrate() (db/index.ts) must detect this old shape
-// and run the one-time rebuild described in rebuildBooksTableForEpubSupport,
-// rather than the plain ADD COLUMN path every other migration uses.
+// companion_book_id, format CHECK limited to m4b/mp3_folder, no
+// page_count) — this is what every real database created before the epub
+// (and later cbz) features shipped actually looks like on disk. migrate()
+// (db/index.ts) must detect this old shape and run BOTH one-time rebuilds
+// (rebuildBooksTableForEpubSupport, then rebuildBooksTableForComicSupport)
+// in the same call, rather than the plain ADD COLUMN path every other
+// migration uses. See migrationComicSupport.test.ts for the narrower case
+// of a DB that already has companion_book_id (already epub-migrated) and
+// only needs the comic rebuild.
 function seedOldShapeDatabase(dbFilePath: string) {
   const raw = new Database(dbFilePath)
   raw.pragma('foreign_keys = ON')
@@ -79,7 +83,7 @@ beforeAll(async () => {
   seedOldShapeDatabase(dbPath)
 }, 30_000)
 
-describe('migrate() rebuilding the books table for epub support', () => {
+describe('migrate() rebuilding the books table for epub + cbz support', () => {
   it('preserves every existing row and column, and accepts the new shape afterward', async () => {
     const { getDb } = await import('../src/db/index.js')
     const db = getDb()
@@ -115,6 +119,20 @@ describe('migrate() rebuilding the books table for epub support', () => {
     expect((db.prepare('SELECT * FROM books WHERE id = ?').get('book-1') as any).companion_book_id).toBe('book-2')
 
     expect(db.pragma('foreign_key_check')).toEqual([])
+
+    // This seed shape is old enough to need BOTH rebuilds (no
+    // companion_book_id, no page_count) — confirms migrate() correctly runs
+    // rebuildBooksTableForEpubSupport then rebuildBooksTableForComicSupport
+    // in the same call, rather than only the first gate firing (the second
+    // gate's `!booksColumns.has('page_count')` check is evaluated against
+    // the same booksColumns snapshot captured at the top of migrate(), so it
+    // must still see page_count as absent after the epub rebuild already ran).
+    expect(book.page_count).toBeNull()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, page_count, created_at, updated_at)
+       VALUES ('book-3', 'src-1', '/old/c.cbz', 'cbz', 'New Comic', 32, datetime('now'), datetime('now'))`,
+    ).run()
+    expect((db.prepare('SELECT * FROM books WHERE id = ?').get('book-3') as any).page_count).toBe(32)
   })
 
   it('cascade-deletes chapters through the rebuilt books table, same as before the rebuild', async () => {

@@ -5,7 +5,10 @@ export interface UserRow {
   created_at: string
 }
 
-export type Position = { type: 'timestamp'; value: number } | { type: 'cfi'; value: string }
+export type Position =
+  | { type: 'timestamp'; value: number }
+  | { type: 'cfi'; value: string }
+  | { type: 'page'; value: number }
 
 export interface ProgressRow {
   user_id: string

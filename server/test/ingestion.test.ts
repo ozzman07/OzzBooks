@@ -599,6 +599,66 @@ describe('ingestion', () => {
     expect(paths.some((p) => p.includes('Random Book'))).toBe(false)
   }, 30_000)
 
+  it('never suggests a .cbz comic as a relink candidate for a missing audiobook', async () => {
+    // Regression test: widening Candidate.format to include 'cbz' (for
+    // comics ingestion) would otherwise silently let a comic leak into the
+    // relink-suggestion pool for a missing audiobook, since the old
+    // isAudioCandidate filter only excluded 'epub'.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { findRelinkCandidates } = await import('../src/ingestion/relink.js')
+    const { mkdir, rm } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const { makeTestComic } = await import('./fixtures.js')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-relink-cbz-'))
+    const targetDir = path.join(tempRoot, 'Jane Doe', 'Great Adventure')
+    await mkdir(targetDir, { recursive: true })
+    // Frequency 199 is not reused by any other fixture in this file — the
+    // ranking test above already established that identical ffmpeg params
+    // produce byte-identical (and therefore hash-identical) output, which
+    // would otherwise trip this file's shared DB's cross-source duplicate
+    // detection (content_hash matches across sources get skipped, not
+    // created) and leave missingBook undefined below.
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=199:duration=1',
+      '-c:a',
+      'libmp3lame',
+      path.join(targetDir, '01.mp3'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Relink Cbz Exclusion Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const missingBook = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+
+    await rm(targetDir, { recursive: true, force: true })
+    await scanSource(source) // marks it missing
+
+    // A .cbz sitting in the same author folder, with a name that would
+    // otherwise word-overlap-match the missing audiobook.
+    const comicPath = path.join(tempRoot, 'Jane Doe', 'Great Adventure Comic.cbz')
+    await makeTestComic(comicPath, { pages: ['a.jpg'], comicInfo: null })
+
+    const missingBookAfter = db.prepare('SELECT * FROM books WHERE id = ?').get(missingBook.id) as any
+    const candidates = await findRelinkCandidates(source, missingBookAfter)
+    expect(candidates.some((c) => c.path.includes('Great Adventure Comic'))).toBe(false)
+  }, 30_000)
+
   it('fails cleanly with no provider registered for a non-local source type, without touching local sources', async () => {
     const { getDb } = await import('../src/db/index.js')
     const { scanSource } = await import('../src/ingestion/scan.js')
@@ -1221,6 +1281,233 @@ describe('ingestion', () => {
     expect(nemesis.format).toBe('epub') // converted from its mobi
     expect(nemesis.file_path).toContain('converted-ebooks')
   }, 60_000)
+
+  it('ingests a .cbz comic, deriving series from the first path segment regardless of nesting depth', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestComic } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-'))
+    const batmanDir = path.join(tempRoot, 'Batman')
+    await mkdir(batmanDir, { recursive: true })
+    await makeTestComic(path.join(batmanDir, 'Batman - Hush.cbz'), {
+      pages: ['page1.jpg', 'page2.jpg'],
+      comicInfo: { title: 'Hush', writer: 'Jeph Loeb', penciller: 'Jim Lee', publisher: 'DC Comics', year: 2003 },
+    })
+    // Nested one level deeper than its series folder — must still resolve
+    // to series "Batman", not fragment into a separate "Elseworlds" series
+    // (the real Batman/Batman - Hush/ structure found on the NAS).
+    const elseworldsDir = path.join(batmanDir, 'Elseworlds')
+    await mkdir(elseworldsDir, { recursive: true })
+    await makeTestComic(path.join(elseworldsDir, 'Gotham by Gaslight.cbz'), {
+      pages: ['p1.jpg', 'p2.jpg', 'p3.jpg'],
+      comicInfo: null,
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Comics Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(2)
+    expect(result.failed).toBe(0)
+
+    const hush = db.prepare('SELECT * FROM books WHERE title = ?').get('Hush') as any
+    expect(hush.format).toBe('cbz')
+    expect(hush.series_name).toBe('Batman')
+    expect(hush.author).toBeNull()
+    expect(hush.page_count).toBe(2)
+    expect(hush.writer).toBe('Jeph Loeb')
+    expect(hush.penciller).toBe('Jim Lee')
+    expect(hush.publisher).toBe('DC Comics')
+    // Not asserting artwork_thumb_path here — makeTestComic's page content
+    // is a plain marker buffer, not a real decodable image, so sharp can't
+    // produce a thumbnail from it (saveArtworkBuffer degrades gracefully,
+    // same "corrupt cover doesn't fail the book" precedent as elsewhere in
+    // this suite). Real cover extraction against actual JPEG bytes is
+    // covered by comic.test.ts's readComicMetadata tests (coverBuffer
+    // content) plus artwork.ts's own saveArtworkBuffer coverage.
+
+    // No ComicInfo.xml at all — falls back to the filename for title, still
+    // resolves series from the folder alone.
+    const gaslight = db.prepare('SELECT * FROM books WHERE title = ?').get('Gotham by Gaslight') as any
+    expect(gaslight.format).toBe('cbz')
+    expect(gaslight.series_name).toBe('Batman')
+    expect(gaslight.page_count).toBe(3)
+    expect(gaslight.writer).toBeNull()
+    expect(gaslight.penciller).toBeNull()
+    expect(gaslight.publisher).toBeNull()
+  }, 30_000)
+
+  it('routes a real .cbr to scan_issues with the locked message, without ever ingesting it', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-cbr-'))
+    const seriesDir = path.join(tempRoot, 'Batgirl')
+    await mkdir(seriesDir, { recursive: true })
+    const cbrPath = path.join(seriesDir, 'Batgirl - Year One.cbr')
+    // Real RAR magic bytes — findCandidates only reads the first 8 bytes,
+    // no need for an actually-extractable archive to exercise routing.
+    await writeFile(cbrPath, Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0, 0]))
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'CBR Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.found).toBe(0) // a .cbr never becomes a candidate
+    expect(result.created).toBe(0)
+    expect(result.failed).toBe(0)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId)
+    expect(books).toHaveLength(0)
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(1)
+    expect(issues[0].file_path).toBe(cbrPath)
+    expect(issues[0].error).toBe('still .cbr — convert to .cbz to add this to the library')
+  }, 30_000)
+
+  it('classifies a comic archive by magic bytes, not its extension, in both mislabeled directions', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { makeTestComic } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-mislabeled-'))
+    const seriesDir = path.join(tempRoot, 'Mislabeled Series')
+    await mkdir(seriesDir, { recursive: true })
+
+    // A .cbr-extensioned file that's actually real zip data — rescued and
+    // ingested rather than routed to scan_issues. Page content is unique
+    // to this fixture (this file's shared DB does a cross-source
+    // content_hash duplicate check, so identical page bytes anywhere else
+    // in this suite would otherwise get silently skipped instead of
+    // created).
+    const actuallyZipPath = path.join(seriesDir, 'actually-zip.cbr')
+    await makeTestComic(actuallyZipPath, { pages: ['mislabeled-actually-zip.jpg'], comicInfo: null })
+
+    // A .cbz-extensioned file that's actually real RAR data — must still
+    // be treated as needing conversion, not silently ingested as garbage.
+    const actuallyRarPath = path.join(seriesDir, 'actually-rar.cbz')
+    await writeFile(actuallyRarPath, Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0, 0]))
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Mislabeled Comic Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].file_path).toBe(actuallyZipPath)
+    expect(books[0].format).toBe('cbz')
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(1)
+    expect(issues[0].file_path).toBe(actuallyRarPath)
+    expect(issues[0].error).toBe('still .cbr — convert to .cbz to add this to the library')
+  }, 30_000)
+
+  it('flags a loose image-only folder via scan_issues, but not a folder that also has a real archive', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { makeTestComic } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-loose-images-'))
+    // Loose-image-only folder — the real Batman/Batman - Hush/01 The Ransom/
+    // structure found on the NAS: extracted pages, no archive at all.
+    const looseOnlyDir = path.join(tempRoot, 'Batman', 'Batman - Hush', '01 The Ransom')
+    await mkdir(looseOnlyDir, { recursive: true })
+    await writeFile(path.join(looseOnlyDir, 'Batman #608 p00.jpg'), Buffer.from('fake page bytes'))
+    await writeFile(path.join(looseOnlyDir, 'Batman #608 p01.jpg'), Buffer.from('fake page bytes'))
+
+    // Mixed folder: loose images sitting alongside a real .cbz — must NOT
+    // be flagged, only image-only folders are.
+    const mixedDir = path.join(tempRoot, 'Batman', 'Mixed Folder')
+    await mkdir(mixedDir, { recursive: true })
+    await writeFile(path.join(mixedDir, 'stray-cover.jpg'), Buffer.from('fake cover bytes'))
+    // Unique page content, same cross-source content_hash reasoning as the
+    // mislabeled-archive test above.
+    await makeTestComic(path.join(mixedDir, 'real-comic.cbz'), { pages: ['mixed-folder-real-comic.jpg'], comicInfo: null })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Loose Image Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.created).toBe(1) // only the real comic in the mixed folder
+
+    const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
+    expect(issues).toHaveLength(1)
+    expect(issues[0].file_path).toBe(looseOnlyDir)
+    expect(issues[0].error).toBe('loose image folder — extracted pages not yet re-archived as .cbz')
+  }, 30_000)
+
+  it('re-scanning a cbz source is idempotent — the second scan updates the existing row, not a duplicate', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { makeTestComic } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-rescan-'))
+    const seriesDir = path.join(tempRoot, 'Avengers')
+    await mkdir(seriesDir, { recursive: true })
+    await makeTestComic(path.join(seriesDir, 'Heart of Stone.cbz'), { pages: ['heart-of-stone-page.jpg'], comicInfo: null })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Comic Rescan Test Source',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const first = await scanSource(source)
+    expect(first.created).toBe(1)
+    const firstBook = db.prepare('SELECT * FROM books WHERE source_id = ?').get(sourceId) as any
+
+    // .cbz has no conversion step (unlike mobi) — the stored file_path
+    // equals the scanned path, so the normal file_path-matching lookup
+    // branch must find and update the same row, not create a second one.
+    const second = await scanSource(source)
+    expect(second.created).toBe(0)
+    expect(second.updated).toBe(1)
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].id).toBe(firstBook.id)
+  }, 30_000)
 
   it('ignores a .AppleDouble shadow-copy folder entirely, without a duplicate or failed-scan entry', async () => {
     // Regression test for a real find while reviewing the user's library:

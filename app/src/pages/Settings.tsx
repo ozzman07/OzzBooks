@@ -20,7 +20,14 @@ import {
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
-import { deleteBookDownload } from '../offline/downloadManager'
+import { getAllCachedEpubFiles } from '../offline/epubFileStore'
+import { getAllCachedComicPages } from '../offline/comicPageStore'
+import {
+  deleteBookDownload,
+  deleteEpubDownload,
+  deleteComicDownload,
+  getCachedBytesByContentType,
+} from '../offline/downloadManager'
 import { SourceStatusCard } from '../components/SourceStatusCard'
 import { useAppData } from '../data/AppDataContext'
 
@@ -561,6 +568,7 @@ interface DownloadedBook {
   bookId: string
   title: string
   bytes: number
+  contentType: 'audio' | 'ebook' | 'comics'
 }
 
 export function Settings() {
@@ -570,6 +578,9 @@ export function Settings() {
   const [budgetMb, setBudgetMb] = useState<number | null>(null)
   const [estimate, setEstimate] = useState<{ usage: number; quota: number } | null>(null)
   const [downloadedBooks, setDownloadedBooks] = useState<DownloadedBook[]>([])
+  const [bytesByContentType, setBytesByContentType] = useState<{ audio: number; ebook: number; comics: number } | null>(
+    null,
+  )
   const [persisted, setPersisted] = useState<boolean | null>(null)
   const [sources, setSources] = useState<ApiSource[]>([])
   // Distinct from `sources.length === 0` — an empty array is ALSO the
@@ -598,20 +609,49 @@ export function Settings() {
     data.invalidate()
   }, [refreshSources, data])
 
+  // Combines all three offline stores into one list — previously audio-
+  // only, silently leaving epub/comic downloads invisible here even though
+  // they consume the same storage budget (see Ozzbooks_Addendum_Comics'
+  // Offline download experience finding).
   const refreshDownloads = useCallback(async () => {
-    const cached = await getAllCachedAudioFiles()
+    const [audio, epubs, comicPages] = await Promise.all([
+      getAllCachedAudioFiles(),
+      getAllCachedEpubFiles(),
+      getAllCachedComicPages(),
+    ])
     const titleById = new Map(data.books.map((b) => [b.id, b.title]))
-    const bytesByBook = new Map<string, number>()
-    for (const entry of cached) {
-      bytesByBook.set(entry.bookId, (bytesByBook.get(entry.bookId) ?? 0) + entry.sizeBytes)
+
+    const bytesByAudioBook = new Map<string, number>()
+    for (const entry of audio) {
+      bytesByAudioBook.set(entry.bookId, (bytesByAudioBook.get(entry.bookId) ?? 0) + entry.sizeBytes)
     }
-    setDownloadedBooks(
-      [...bytesByBook.entries()].map(([bookId, bytes]) => ({
+    const bytesByComicBook = new Map<string, number>()
+    for (const entry of comicPages) {
+      bytesByComicBook.set(entry.bookId, (bytesByComicBook.get(entry.bookId) ?? 0) + entry.sizeBytes)
+    }
+
+    const books: DownloadedBook[] = [
+      ...[...bytesByAudioBook.entries()].map(([bookId, bytes]) => ({
         bookId,
         title: titleById.get(bookId) ?? 'Unknown book',
         bytes,
+        contentType: 'audio' as const,
       })),
-    )
+      ...epubs.map((e) => ({
+        bookId: e.bookId,
+        title: titleById.get(e.bookId) ?? 'Unknown book',
+        bytes: e.sizeBytes,
+        contentType: 'ebook' as const,
+      })),
+      ...[...bytesByComicBook.entries()].map(([bookId, bytes]) => ({
+        bookId,
+        title: titleById.get(bookId) ?? 'Unknown book',
+        bytes,
+        contentType: 'comics' as const,
+      })),
+    ]
+    setDownloadedBooks(books)
+    setBytesByContentType(await getCachedBytesByContentType())
   }, [data.books])
 
   useEffect(() => {
@@ -655,8 +695,10 @@ export function Settings() {
     await putSettings(auth.token, { storageBudgetMb: budgetMb })
   }
 
-  async function removeBookDownload(bookId: string) {
-    await deleteBookDownload(bookId)
+  async function removeBookDownload(book: DownloadedBook) {
+    if (book.contentType === 'audio') await deleteBookDownload(book.bookId)
+    else if (book.contentType === 'ebook') await deleteEpubDownload(book.bookId)
+    else await deleteComicDownload(book.bookId)
     await refreshDownloads()
   }
 
@@ -675,9 +717,23 @@ export function Settings() {
               Device storage: {formatBytes(estimate.usage)} used of {formatBytes(estimate.quota)} available
             </p>
           )}
-          <p className="mb-3 text-xs text-muted">
+          <p className="mb-1 text-xs text-muted">
             Downloaded for offline: {formatBytes(totalDownloadedBytes)}
           </p>
+          {/* Broken down by content type — not just one aggregate number —
+              so "why did my audiobooks get evicted" has an answerable
+              "comics used the budget" instead of being a mystery, per the
+              addendum's Offline download experience section. Only shown
+              once there's actually more than one content type downloaded;
+              a single-format library gains nothing from the breakdown. */}
+          {bytesByContentType &&
+            [bytesByContentType.audio > 0, bytesByContentType.ebook > 0, bytesByContentType.comics > 0].filter(Boolean)
+              .length > 1 && (
+              <p className="mb-3 text-xs text-subtle">
+                🎧 {formatBytes(bytesByContentType.audio)} · 📖 {formatBytes(bytesByContentType.ebook)} · 💥{' '}
+                {formatBytes(bytesByContentType.comics)}
+              </p>
+            )}
 
           <label className="mb-3 flex items-center justify-between text-sm text-secondary">
             <span>Storage budget</span>
@@ -706,13 +762,16 @@ export function Settings() {
           {downloadedBooks.length > 0 && (
             <ul className="divide-y divide-border border-t border-border pt-2">
               {downloadedBooks.map((b) => (
-                <li key={b.bookId} className="flex items-center justify-between py-2">
+                <li key={`${b.contentType}-${b.bookId}`} className="flex items-center justify-between py-2">
                   <div>
-                    <p className="text-sm text-primary">{b.title}</p>
+                    <p className="text-sm text-primary">
+                      {b.contentType === 'audio' ? '🎧 ' : b.contentType === 'ebook' ? '📖 ' : '💥 '}
+                      {b.title}
+                    </p>
                     <p className="text-xs text-subtle">{formatBytes(b.bytes)}</p>
                   </div>
                   <button
-                    onClick={() => void removeBookDownload(b.bookId)}
+                    onClick={() => void removeBookDownload(b)}
                     className="text-xs text-red-400"
                   >
                     Delete

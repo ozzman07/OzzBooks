@@ -1,4 +1,4 @@
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { Book, Position } from '../types'
 
 export interface LocalProgressEntry {
@@ -31,6 +31,43 @@ export interface CachedEpubFileEntry {
   blob: Blob
   sizeBytes: number
   downloadedAt: string
+  // Added alongside the generalized storage budget (see downloadManager.ts)
+  // so an epub can participate in the same globally-least-recently-used
+  // eviction audio already uses, instead of never being evicted at all.
+  // Optional, not required: a real cached entry written by the app before
+  // this field existed has no lastReadAt at all (IndexedDB enforces no
+  // schema — old rows keep their old shape until rewritten) — eviction
+  // code must fall back to downloadedAt for those rather than assume this
+  // is always present.
+  lastReadAt?: string
+}
+
+// A comic page is small enough on its own that keying per-page (not per-
+// book like epub) is the natural fit — but eviction is still whole-issue
+// (see CachedComicDownloadEntry below), never per-page.
+export interface CachedComicPageEntry {
+  key: string // `${bookId}:${pageIndex}`
+  bookId: string
+  pageIndex: number
+  blob: Blob
+  sizeBytes: number
+  downloadedAt: string
+}
+
+// The per-book metadata a comic's pages don't carry themselves: whether an
+// explicit "download whole issue" ever completed (stored explicitly, never
+// inferred from a blob count — a download that dies partway through
+// otherwise looks identical to "fully downloaded, just fewer pages"; see
+// Ozzbooks_Addendum_Comics' Offline download experience section), and the
+// book-level lastReadAt eviction evicts by — a comic's cached pages are
+// evicted together as one unit, never partially, so there's one shared
+// timestamp per book rather than one per page.
+export interface CachedComicDownloadEntry {
+  bookId: string
+  pageCount: number
+  complete: boolean
+  startedAt: string
+  lastReadAt: string
 }
 
 // epub.js's book.locations.generate() indexes the whole book's text into
@@ -97,13 +134,22 @@ interface OzzBooksDB extends DBSchema {
     key: string // bookId
     value: CachedBookDetailEntry
   }
+  comicPages: {
+    key: string // `${bookId}:${pageIndex}`
+    value: CachedComicPageEntry
+    indexes: { bookId: string }
+  }
+  comicDownloads: {
+    key: string // bookId
+    value: CachedComicDownloadEntry
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<OzzBooksDB>> | null = null
 
 export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<OzzBooksDB>('ozzbooks', 4, {
+    dbPromise = openDB<OzzBooksDB>('ozzbooks', 5, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'bookId' })
@@ -115,6 +161,13 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
         }
         if (!db.objectStoreNames.contains('epubFiles')) {
           db.createObjectStore('epubFiles', { keyPath: 'bookId' })
+        }
+        if (!db.objectStoreNames.contains('comicPages')) {
+          const comicPages = db.createObjectStore('comicPages', { keyPath: 'key' })
+          comicPages.createIndex('bookId', 'bookId')
+        }
+        if (!db.objectStoreNames.contains('comicDownloads')) {
+          db.createObjectStore('comicDownloads', { keyPath: 'bookId' })
         }
         if (!db.objectStoreNames.contains('bookLocations')) {
           db.createObjectStore('bookLocations', { keyPath: 'bookId' })
@@ -129,4 +182,16 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
     })
   }
   return dbPromise
+}
+
+/** Test-only — closes and deletes the database so the next getDb() call
+ * opens a genuinely fresh one. Real app code never calls this; there's no
+ * legitimate reason to delete a user's offline cache at runtime. Exists so
+ * offline/*.test.ts files can start each test from clean IndexedDB state
+ * instead of accumulating rows across tests in the same file. */
+export async function resetDbForTests(): Promise<void> {
+  const db = await getDb()
+  db.close()
+  dbPromise = null
+  await deleteDB('ozzbooks')
 }

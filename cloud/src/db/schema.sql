@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS progress (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   book_id TEXT NOT NULL,
-  position JSONB NOT NULL, -- {type: 'timestamp'|'cfi', value}
+  position JSONB NOT NULL, -- {type: 'timestamp'|'cfi'|'page', value}
   chapter_id TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, book_id)

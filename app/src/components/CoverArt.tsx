@@ -27,6 +27,7 @@ export function CoverArt({ title, coverUrl, className = '' }: CoverArtProps) {
       <img
         src={coverUrl}
         alt={`Cover art for ${title}`}
+        loading="lazy"
         className={`aspect-square w-full rounded-lg object-cover ${className}`}
       />
     )

@@ -81,10 +81,18 @@ function markAttempted(bookId: string): void {
  */
 export async function enrichBooks(): Promise<EnrichmentResult> {
   const db = getDb()
+  // Comics are excluded outright, not just left unenriched by chance — Open
+  // Library is a prose-book search API, and a comic's title ("Batman:
+  // Hush", "The Long Halloween") could easily match an unrelated novel and
+  // silently write a wrong genre/synopsis/cover onto it, which is worse
+  // than leaving it unenriched. ingestion/comic.ts fills synopsis directly
+  // from ComicInfo.xml's Summary when present instead (see scan.ts's cbz
+  // branch of applyIngestedCandidate).
   const candidates = db
     .prepare(
       `SELECT * FROM books
        WHERE status = 'active'
+         AND format != 'cbz'
          AND metadata_enrichment_attempted_at IS NULL
          AND (genre IS NULL OR synopsis IS NULL OR (artwork_thumb_path IS NULL AND artwork_full_path IS NULL))
        ORDER BY created_at, rowid`,

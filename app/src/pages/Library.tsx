@@ -6,8 +6,21 @@ import { useAsync } from '../hooks/useAsync'
 import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
-import { formatDuration } from '../lib/format'
+import { BookGrid } from '../components/BookGrid'
 import { bookInLibrary } from '../library/companion'
+import {
+  isAudioFormat,
+  isComicFormat,
+  dedupeCompanionPairs,
+  bookStatus,
+  isBookRead,
+  collate,
+  titleSortKey,
+  collateByAuthor,
+  compareBySeriesThenTitle,
+  groupBySeries,
+  groupByAuthor,
+} from '../library/bookOrganize'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
 import {
@@ -16,7 +29,6 @@ import {
   type SortOption,
   type StatusFilter,
   type FormatFilter,
-  type DisplayMode,
   type LibraryViewMode,
 } from '../library/LibraryViewContext'
 import { FilterSheet, type FacetOption } from '../library/FilterSheet'
@@ -47,13 +59,9 @@ const LIBRARY_VIEW_LABELS: Record<LibraryViewMode, string> = {
   store: 'Store',
 }
 
-function isAudioFormat(book: Book): boolean {
-  return book.format === 'm4b' || book.format === 'mp3_folder'
-}
-
 // Genre applies to every book, audio or ebook — a plain "is this value in
 // the selected set" check (an empty selected set means the facet isn't
-// active, so everything passes).
+// active, so everything passes). Only used in Books mode.
 function matchesGenreFacet(book: Book, selected: Set<string>): boolean {
   if (selected.size === 0) return true
   return selected.has(book.genre ?? FACET_UNSET)
@@ -63,11 +71,24 @@ function matchesGenreFacet(book: Book, selected: Set<string>): boolean {
 // exclude ebooks entirely (they can't be "narrated by" anyone), not fold
 // them into "Unset" alongside genuinely untagged audiobooks. That would
 // flood the Unset bucket with ~every ebook in the library and defeat its
-// point as a "needs a narrator tag" worklist.
+// point as a "needs a narrator tag" worklist. Only used in Books mode.
 function matchesNarratorFacet(book: Book, selected: Set<string>): boolean {
   if (selected.size === 0) return true
   if (!isAudioFormat(book)) return false
   return selected.has(book.narrator ?? FACET_UNSET)
+}
+
+// Comics-mode counterparts — every comic could plausibly have a publisher/
+// writer, so (unlike narrator) this doesn't need a format guard beyond the
+// contentType split already applied before these run.
+function matchesPublisherFacet(book: Book, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  return selected.has(book.publisher ?? FACET_UNSET)
+}
+
+function matchesWriterFacet(book: Book, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  return selected.has(book.writer ?? FACET_UNSET)
 }
 
 // Every book always has exactly one source — no FACET_UNSET case needed
@@ -95,336 +116,6 @@ function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }
       {label}
       <span aria-hidden="true">✕</span>
     </button>
-  )
-}
-
-// A companion pair (an audiobook and an ebook linked to each other — see
-// companionLink.ts server-side) exists as two separate book rows, one per
-// format. Shown as a single tile with a combo badge rather than two
-// separate tiles for what a person thinks of as one book: drops the
-// ebook-side row whenever its audio companion is also in this list, which
-// then carries both badges instead.
-function dedupeCompanionPairs(books: Book[]): Book[] {
-  const audioIds = new Set(books.filter(isAudioFormat).map((b) => b.id))
-  return books.filter((b) => !(b.format === 'epub' && b.companionBookId && audioIds.has(b.companionBookId)))
-}
-
-// Reached-the-last-chapter is a proxy for "finished," not literally
-// "played to the last second" — getting that precise would mean fetching
-// every book's full chapter list just to compare position against that
-// chapter's own duration, which doesn't scale to a library this size.
-// Close enough to be useful as a coarse filter.
-function bookStatus(book: Book, progress: LocalProgressEntry | undefined): StatusFilter {
-  if (!progress) return 'not-started'
-  if (book.lastChapterId && progress.chapterId === book.lastChapterId) return 'finished'
-  return 'in-progress'
-}
-
-function collate(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-}
-
-// Many titles in this library are still raw filename fragments rather
-// than clean human titles — ingestion doesn't clean these up yet (see
-// Claude.md's planned Phase 2b title-cleaning work, not built). Sorting
-// on the raw string clusters unrelated numbered-prefix files together
-// ("01 - Ender's Game - Orson Scott Card - 1985", "01_light_of_other_days")
-// under digits instead of landing near where a person would actually look
-// for them. This only computes a sort KEY — the displayed title is never
-// changed, and a title without any of these artifacts passes through
-// unchanged. Known limitation: doesn't strip trailing "- Author - Year"
-// noise, since that pattern is too variable to target safely without the
-// full title-cleaning pass.
-function titleSortKey(title: string): string {
-  return title
-    .replace(/^\d{1,3}\s*[._-]\s*/, '') // leading track-number-style prefix ("01 - ", "001.", "00_")
-    .replace(/_/g, ' ') // raw filename fragments use underscores instead of spaces
-    .replace(/^(the|a|an)\s+/i, '') // ignore a leading article, matching conventional library alphabetization
-    .trim()
-}
-
-// Author tags in this library are a mix of "First Last" (the common case)
-// and already-inverted "Last, First" (e.g. "Clarke, Arthur C.") — plus some
-// multi-author/role-annotated strings ("Eric Flint, Andrew Dennis",
-// "Arthur Conan Doyle, Stephen Fry - introductions"). The two single-author
-// formats are reliably told apart by word count before the first comma:
-// "Last, First" always has exactly one word there ("Clarke"), while
-// multi-author strings have two or more ("Eric Flint"). Falls back to the
-// last word of that segment either way, which also handles plain
-// "First Last" (no comma at all).
-//
-// Known limitation: a tag with the narrator listed first, e.g.
-// "Will Patton, Stephen King" (Patton narrates, King wrote it), sorts under
-// "Patton" — there's no reliable way to tell narrator-first from
-// author-first in a plain string tag. Display is never affected, only sort
-// order.
-function authorSortKey(author: string): string {
-  const [firstSegment] = author.split(',')
-  const words = firstSegment.trim().split(/\s+/).filter(Boolean)
-  if (words.length === 0) return author
-  const isAlreadyLastFirst = words.length === 1 && author.includes(',')
-  return isAlreadyLastFirst ? words[0] : words[words.length - 1]
-}
-
-function collateByAuthor(a: string, b: string): number {
-  return collate(authorSortKey(a), authorSortKey(b)) || collate(a, b)
-}
-
-// Books outside a series sort by their own title, alongside series names,
-// so everything still lands in one coherent list rather than being split
-// into separate "grouped"/"ungrouped" runs. No series *number* yet (folder
-// names alone aren't a reliable source for it — see scan.ts), so books
-// within the same series currently land in title order, not reading order;
-// the planned LLM-assisted extraction will backfill series_number and this
-// will automatically start using it once populated.
-function compareBySeriesThenTitle(a: Book, b: Book): number {
-  const seriesCompare = collate(
-    titleSortKey(a.seriesName ?? a.title),
-    titleSortKey(b.seriesName ?? b.title),
-  )
-  if (seriesCompare !== 0) return seriesCompare
-  // No-op today (seriesNumber is always null until the LLM pass populates
-  // it), kept so ordering within a series automatically switches from
-  // title order to reading order the moment that data exists.
-  return (a.seriesNumber ?? 0) - (b.seriesNumber ?? 0) || collate(titleSortKey(a.title), titleSortKey(b.title))
-}
-
-interface SeriesGroup {
-  seriesName: string
-  books: Book[]
-}
-
-// Only a folder-derived series with 2+ books reads as an actual series for
-// browsing purposes — a lone book under a detected "series" folder is more
-// likely an incidental intermediate folder than a real series, so it folds
-// into the standalone bucket instead of cluttering the view with singleton
-// groups.
-function groupBySeries(books: Book[]): { series: SeriesGroup[]; standalone: Book[] } {
-  const bySeriesName = new Map<string, Book[]>()
-  const standalone: Book[] = []
-  for (const book of books) {
-    if (!book.seriesName) {
-      standalone.push(book)
-      continue
-    }
-    const list = bySeriesName.get(book.seriesName) ?? []
-    list.push(book)
-    bySeriesName.set(book.seriesName, list)
-  }
-
-  const series: SeriesGroup[] = []
-  for (const [seriesName, group] of bySeriesName) {
-    if (group.length < 2) {
-      standalone.push(...group)
-      continue
-    }
-    series.push({ seriesName, books: group.slice().sort((a, b) => collate(titleSortKey(a.title), titleSortKey(b.title))) })
-  }
-
-  series.sort((a, b) => collate(titleSortKey(a.seriesName), titleSortKey(b.seriesName)))
-  standalone.sort((a, b) => collate(titleSortKey(a.title), titleSortKey(b.title)))
-  return { series, standalone }
-}
-
-interface AuthorGroup {
-  author: string
-  seriesGroups: SeriesGroup[]
-  standalone: Book[]
-}
-
-// Nests the same series-vs-standalone grouping used by the By Series view
-// inside each author, instead of just sorting an author's books by series
-// (which put same-series books adjacent but with no visual separation from
-// whatever came before/after — hard to tell "these 3 tiles are one series"
-// from a flat grid at a glance).
-function groupByAuthor(books: Book[]): AuthorGroup[] {
-  const byAuthor = new Map<string, Book[]>()
-  for (const book of books) {
-    const list = byAuthor.get(book.author) ?? []
-    list.push(book)
-    byAuthor.set(book.author, list)
-  }
-  return [...byAuthor.entries()]
-    .map(([author, group]) => {
-      const { series, standalone } = groupBySeries(group)
-      return { author, seriesGroups: series, standalone }
-    })
-    .sort((a, b) => collateByAuthor(a.author, b.author))
-}
-
-// Shown on every tile/row, not just the ebook-capable exceptions, per the
-// user's explicit ask — a badge that only appears sometimes reads as an
-// error state at a glance; always showing one makes "what can I do with
-// this book" consistent to scan across a mixed audio/ebook library.
-function FormatBadge({ book, className = '' }: { book: Book; className?: string }) {
-  const hasAudio = isAudioFormat(book)
-  const hasEbook = book.format === 'epub' || Boolean(book.companionBookId)
-  return (
-    <span className={`whitespace-nowrap ${className}`} title={hasAudio && hasEbook ? 'Audiobook + ebook' : hasAudio ? 'Audiobook' : 'Ebook'}>
-      {hasAudio && '🎧'}
-      {hasEbook && '📖'}
-    </span>
-  )
-}
-
-// Only rendered in Store mode (see BookGrid) — lets someone shelve a book
-// straight from the grid without drilling into BookDetail first. Sits
-// outside the tile/row's own <Link> (same pattern as the existing
-// In Progress ✕ button) so tapping it doesn't also navigate.
-function LibraryToggleButton({
-  inMyLibrary,
-  onToggle,
-  className,
-}: {
-  inMyLibrary: boolean
-  onToggle: (e: React.MouseEvent) => void
-  className: string
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      aria-label={inMyLibrary ? 'Remove from My Library' : 'Add to My Library'}
-      title={inMyLibrary ? 'Remove from My Library' : 'Add to My Library'}
-      className={className}
-    >
-      {inMyLibrary ? '✓' : '+'}
-    </button>
-  )
-}
-
-function BookTile({
-  book,
-  inMyLibrary,
-  onToggleLibrary,
-}: {
-  book: Book
-  inMyLibrary?: boolean
-  onToggleLibrary?: (e: React.MouseEvent) => void
-}) {
-  return (
-    <Link to={`/book/${book.id}`} className="block">
-      <div className="relative">
-        <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
-        <FormatBadge
-          book={book}
-          className="absolute right-1 top-1 rounded bg-slate-950/70 px-1 py-0.5 text-xs leading-none text-white"
-        />
-        {onToggleLibrary && (
-          <LibraryToggleButton
-            inMyLibrary={inMyLibrary ?? false}
-            onToggle={(e) => {
-              e.preventDefault()
-              e.stopPropagation()
-              onToggleLibrary(e)
-            }}
-            className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/70 text-xs text-white"
-          />
-        )}
-      </div>
-      <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
-      <p className="truncate text-xs text-muted">{book.author}</p>
-      {/* A pure ebook has no chapters, so totalDuration is 0 — showing
-          "0m" next to it reads as broken, not as "this book has no
-          runtime." Audio books and companion pairs (which use the audio
-          side's totalDuration) always have a real value here. */}
-      {book.totalDuration > 0 && <p className="text-xs text-subtle">{formatDuration(book.totalDuration)}</p>}
-    </Link>
-  )
-}
-
-function BookRow({
-  book,
-  inMyLibrary,
-  onToggleLibrary,
-}: {
-  book: Book
-  inMyLibrary?: boolean
-  onToggleLibrary?: (e: React.MouseEvent) => void
-}) {
-  return (
-    <Link to={`/book/${book.id}`} className="flex items-center gap-3 py-2">
-      <div className="w-12 shrink-0">
-        <CoverArt title={book.title} coverUrl={book.coverThumbUrl} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 truncate text-sm text-primary">
-          <FormatBadge book={book} className="text-xs" />
-          {book.title}
-        </p>
-        <p className="truncate text-xs text-muted">
-          {book.author}
-          {book.seriesName && (
-            <span className="text-subtle">
-              {' '}
-              · {book.seriesName}
-              {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
-            </span>
-          )}
-        </p>
-        {book.synopsis && <p className="line-clamp-2 text-xs text-subtle">{book.synopsis}</p>}
-      </div>
-      {onToggleLibrary && (
-        <LibraryToggleButton
-          inMyLibrary={inMyLibrary ?? false}
-          onToggle={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onToggleLibrary(e)
-          }}
-          className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary"
-        />
-      )}
-      {book.totalDuration > 0 && (
-        <p className="shrink-0 text-xs text-subtle">{formatDuration(book.totalDuration)}</p>
-      )}
-    </Link>
-  )
-}
-
-function BookGrid({
-  books,
-  displayMode,
-  myLibraryIds,
-  onToggleLibrary,
-}: {
-  books: Book[]
-  displayMode: DisplayMode
-  /** Only passed in Store mode — presence (even an empty Set) is what turns on the add/remove affordance. */
-  myLibraryIds?: Set<string>
-  onToggleLibrary?: (book: Book, currentlyIn: boolean) => void
-}) {
-  const showToggle = myLibraryIds !== undefined && onToggleLibrary !== undefined
-  if (displayMode === 'row') {
-    return (
-      <ul className="divide-y divide-border">
-        {books.map((book) => (
-          <li key={book.id}>
-            <BookRow
-              book={book}
-              inMyLibrary={myLibraryIds ? bookInLibrary(book, myLibraryIds) : undefined}
-              onToggleLibrary={
-                showToggle ? () => onToggleLibrary!(book, bookInLibrary(book, myLibraryIds!)) : undefined
-              }
-            />
-          </li>
-        ))}
-      </ul>
-    )
-  }
-  return (
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
-      {books.map((book) => (
-        <li key={book.id}>
-          <BookTile
-            book={book}
-            inMyLibrary={myLibraryIds ? bookInLibrary(book, myLibraryIds) : undefined}
-            onToggleLibrary={
-              showToggle ? () => onToggleLibrary!(book, bookInLibrary(book, myLibraryIds!)) : undefined
-            }
-          />
-        </li>
-      ))}
-    </ul>
   )
 }
 
@@ -456,6 +147,8 @@ export function Library() {
   // page this is.
   const libraryViewMode: LibraryViewMode = location.pathname === '/store' ? 'store' : 'mine'
   const {
+    contentType,
+    setContentType,
     search,
     setSearch,
     sortBy,
@@ -472,6 +165,10 @@ export function Library() {
     setGenreFilter,
     narratorFilter,
     setNarratorFilter,
+    publisherFilter,
+    setPublisherFilter,
+    writerFilter,
+    setWriterFilter,
     sourceFilter,
     setSourceFilter,
     scrollPositionsRef,
@@ -577,19 +274,31 @@ export function Library() {
   // its own current selection (standard faceted-search behavior: checking
   // one Genre option shouldn't make the other Genre options' counts drop
   // to 0, since checking another one of them is still a valid next click).
-  type Facet = 'status' | 'format' | 'genre' | 'narrator' | 'source'
+  type Facet = 'status' | 'format' | 'genre' | 'narrator' | 'publisher' | 'writer' | 'source'
   function passesFilters(b: Book, exclude?: Facet): boolean {
+    if (isComicFormat(b) !== (contentType === 'comics')) return false
     const query = search.trim().toLowerCase()
-    if (query && !b.title.toLowerCase().includes(query) && !b.author.toLowerCase().includes(query)) return false
+    if (
+      query &&
+      !b.title.toLowerCase().includes(query) &&
+      !b.author.toLowerCase().includes(query) &&
+      !(b.seriesName ?? '').toLowerCase().includes(query)
+    )
+      return false
     if (libraryViewMode === 'mine' && !bookInLibrary(b, data.myLibraryIds)) return false
     if (exclude !== 'status' && statusFilter !== 'all' && bookStatus(b, progressByBookId.get(b.id)) !== statusFilter)
       return false
-    if (exclude !== 'format') {
+    if (exclude !== 'format' && contentType === 'books') {
       if (formatFilter === 'audio' && !isAudioFormat(b)) return false
       if (formatFilter === 'ebook' && !(b.format === 'epub' || b.companionBookId)) return false
     }
-    if (exclude !== 'genre' && !matchesGenreFacet(b, genreFilter)) return false
-    if (exclude !== 'narrator' && !matchesNarratorFacet(b, narratorFilter)) return false
+    if (contentType === 'books') {
+      if (exclude !== 'genre' && !matchesGenreFacet(b, genreFilter)) return false
+      if (exclude !== 'narrator' && !matchesNarratorFacet(b, narratorFilter)) return false
+    } else {
+      if (exclude !== 'publisher' && !matchesPublisherFacet(b, publisherFilter)) return false
+      if (exclude !== 'writer' && !matchesWriterFacet(b, writerFilter)) return false
+    }
     if (exclude !== 'source' && !matchesSourceFacet(b, sourceFilter)) return false
     return true
   }
@@ -597,7 +306,7 @@ export function Library() {
   const filteredBooks = useMemo(
     () => activeBooks.filter((b) => passesFilters(b)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeBooks, search, statusFilter, formatFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId],
+    [activeBooks, contentType, search, statusFilter, formatFilter, genreFilter, narratorFilter, publisherFilter, writerFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId],
   )
 
   const statusCounts = useMemo(() => {
@@ -609,7 +318,7 @@ export function Library() {
     }
     return counts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBooks, search, formatFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+  }, [activeBooks, contentType, search, formatFilter, genreFilter, narratorFilter, publisherFilter, writerFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const formatCounts = useMemo(() => {
     const counts: Record<FormatFilter, number> = { all: 0, audio: 0, ebook: 0 }
@@ -621,7 +330,7 @@ export function Library() {
     }
     return counts
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBooks, search, statusFilter, genreFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+  }, [activeBooks, contentType, search, statusFilter, genreFilter, narratorFilter, publisherFilter, writerFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const genreOptions: FacetOption[] = useMemo(() => {
     const counts = new Map<string, number>()
@@ -636,7 +345,7 @@ export function Library() {
     options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
     return options
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBooks, search, statusFilter, formatFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId, genreFilter])
+  }, [activeBooks, contentType, search, statusFilter, formatFilter, narratorFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId, genreFilter])
 
   const narratorOptions: FacetOption[] = useMemo(() => {
     const counts = new Map<string, number>()
@@ -656,7 +365,40 @@ export function Library() {
     options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
     return options
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBooks, search, statusFilter, formatFilter, genreFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+  }, [activeBooks, contentType, search, statusFilter, formatFilter, genreFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+
+  // Comics-mode facets — same "most-used first, Unset pinned last" shape
+  // as narrator above, since a real library can have dozens of publishers/
+  // writers once the whole 3,440-file collection is scanned.
+  const publisherOptions: FacetOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'publisher')) continue
+      const key = b.publisher ?? FACET_UNSET
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    const entries = [...counts.entries()].filter(([key]) => key !== FACET_UNSET)
+    entries.sort((a, b) => b[1] - a[1])
+    const options: FacetOption[] = entries.map(([value, count]) => ({ value, label: value, count }))
+    options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
+    return options
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, contentType, search, statusFilter, writerFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+
+  const writerOptions: FacetOption[] = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const b of activeBooks) {
+      if (!passesFilters(b, 'writer')) continue
+      const key = b.writer ?? FACET_UNSET
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    const entries = [...counts.entries()].filter(([key]) => key !== FACET_UNSET)
+    entries.sort((a, b) => b[1] - a[1])
+    const options: FacetOption[] = entries.map(([value, count]) => ({ value, label: value, count }))
+    options.push({ value: FACET_UNSET, label: 'Unset', count: counts.get(FACET_UNSET) ?? 0 })
+    return options
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBooks, contentType, search, statusFilter, publisherFilter, sourceFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const sourceOptions: FacetOption[] = useMemo(() => {
     const counts = new Map<string, number>()
@@ -670,15 +412,15 @@ export function Library() {
       .sort((a, b) => a.label.localeCompare(b.label))
     return options
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeBooks, search, statusFilter, formatFilter, genreFilter, narratorFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
+  }, [activeBooks, contentType, search, statusFilter, formatFilter, genreFilter, narratorFilter, publisherFilter, writerFilter, libraryViewMode, data.myLibraryIds, progressByBookId])
 
   const visibleBooks = useMemo(() => sortBooks(filteredBooks, sortBy), [filteredBooks, sortBy])
 
   const activeFilterCount =
     (statusFilter !== 'all' ? 1 : 0) +
-    (formatFilter !== 'all' ? 1 : 0) +
-    genreFilter.size +
-    narratorFilter.size +
+    (contentType === 'books'
+      ? (formatFilter !== 'all' ? 1 : 0) + genreFilter.size + narratorFilter.size
+      : publisherFilter.size + writerFilter.size) +
     sourceFilter.size
 
   function clearAllFilters() {
@@ -686,6 +428,8 @@ export function Library() {
     setFormatFilter('all')
     setGenreFilter(new Set())
     setNarratorFilter(new Set())
+    setPublisherFilter(new Set())
+    setWriterFilter(new Set())
     setSourceFilter(new Set())
   }
 
@@ -723,7 +467,7 @@ export function Library() {
               the text, since Store and My Library otherwise share the
               exact same grid/toolbar layout. */}
           <span aria-hidden="true">{libraryViewMode === 'store' ? '🛍️' : '📚'}</span>
-          {libraryViewMode === 'store' ? 'Store' : 'Your Library'}
+          {libraryViewMode === 'store' ? 'OzzBooks Store' : 'Your Library'}
         </h1>
         {/* Pull-to-refresh doesn't work in the installed PWA (only in a
             browser tab) — this is the escape hatch for "someone else just
@@ -743,6 +487,25 @@ export function Library() {
         </button>
       </div>
 
+      {/* Orthogonal to the My Library/Store route split above — scopes
+          *which* collection either route browses. Sits just under the page
+          title, above the search/sort/filter row, per the addendum's
+          Library & browsing UI plan. */}
+      <div className="mb-4 flex w-fit overflow-hidden rounded-lg border border-border-strong text-sm">
+        <button
+          onClick={() => setContentType('books')}
+          className={`px-3 py-1.5 ${contentType === 'books' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+        >
+          📚 Books
+        </button>
+        <button
+          onClick={() => setContentType('comics')}
+          className={`px-3 py-1.5 ${contentType === 'comics' ? 'bg-amber-400 text-slate-950' : 'bg-surface text-secondary'}`}
+        >
+          💥 Comics
+        </button>
+      </div>
+
       {data.status === 'loading' && <p className="text-center text-muted">Loading your library…</p>}
 
       {data.status === 'error' && <LibraryError onRetry={data.refresh} error={data.error} />}
@@ -755,7 +518,12 @@ export function Library() {
 
       {data.status === 'success' &&
         (() => {
+          // Partitioned by the active content-type toggle, same reason it's
+          // already partitioned by bookInLibrary/removed-from-shelf below —
+          // someone reopening Library to continue an audiobook shouldn't
+          // see a mid-issue comic thumbnail interleaved with it.
           const continueListening = continueListeningCandidates
+            .filter((b) => isComicFormat(b) === (contentType === 'comics'))
             .filter((b) => !removedFromShelf.has(b.id))
             .filter((b) => bookInLibrary(b, data.myLibraryIds))
           if (continueListening.length === 0) return null
@@ -800,7 +568,7 @@ export function Library() {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search title or author"
+              placeholder={contentType === 'comics' ? 'Search title or series' : 'Search title, author, or series'}
               className="w-full rounded-lg border border-border-strong bg-surface px-3 py-1.5 text-sm text-primary placeholder:text-subtle sm:w-auto sm:flex-1"
             />
           </div>
@@ -869,26 +637,47 @@ export function Library() {
             {statusFilter !== 'all' && (
               <FilterChip label={STATUS_LABELS[statusFilter]} onRemove={() => setStatusFilter('all')} />
             )}
-            {formatFilter !== 'all' && (
+            {contentType === 'books' && formatFilter !== 'all' && (
               <FilterChip label={FORMAT_LABELS[formatFilter]} onRemove={() => setFormatFilter('all')} />
             )}
             {[...sourceFilter].map((s) => (
               <FilterChip key={s} label={s} onRemove={() => setSourceFilter((prev) => toggleInSet(prev, s))} />
             ))}
-            {[...genreFilter].map((g) => (
-              <FilterChip
-                key={g}
-                label={g === FACET_UNSET ? 'Genre: Unset' : g}
-                onRemove={() => setGenreFilter((prev) => toggleInSet(prev, g))}
-              />
-            ))}
-            {[...narratorFilter].map((n) => (
-              <FilterChip
-                key={n}
-                label={n === FACET_UNSET ? 'Narrator: Unset' : n}
-                onRemove={() => setNarratorFilter((prev) => toggleInSet(prev, n))}
-              />
-            ))}
+            {contentType === 'books' ? (
+              <>
+                {[...genreFilter].map((g) => (
+                  <FilterChip
+                    key={g}
+                    label={g === FACET_UNSET ? 'Genre: Unset' : g}
+                    onRemove={() => setGenreFilter((prev) => toggleInSet(prev, g))}
+                  />
+                ))}
+                {[...narratorFilter].map((n) => (
+                  <FilterChip
+                    key={n}
+                    label={n === FACET_UNSET ? 'Narrator: Unset' : n}
+                    onRemove={() => setNarratorFilter((prev) => toggleInSet(prev, n))}
+                  />
+                ))}
+              </>
+            ) : (
+              <>
+                {[...publisherFilter].map((p) => (
+                  <FilterChip
+                    key={p}
+                    label={p === FACET_UNSET ? 'Publisher: Unset' : p}
+                    onRemove={() => setPublisherFilter((prev) => toggleInSet(prev, p))}
+                  />
+                ))}
+                {[...writerFilter].map((w) => (
+                  <FilterChip
+                    key={w}
+                    label={w === FACET_UNSET ? 'Writer: Unset' : w}
+                    onRemove={() => setWriterFilter((prev) => toggleInSet(prev, w))}
+                  />
+                ))}
+              </>
+            )}
           </div>
 
           {filteredBooks.length === 0 ? (
@@ -927,6 +716,33 @@ export function Library() {
                 )
               })}
             </div>
+          ) : contentType === 'comics' ? (
+            // Comics' By Series can't be the audiobook By Series view reused
+            // verbatim — inline-expanding all 67 series' full grids on one
+            // page doesn't hold up at this scale (up to ~3,440 tiles in one
+            // unbroken scroll). Level 1 here is just series cards; tapping
+            // one opens the real grid on its own Series Detail page.
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-4">
+              {seriesGroups.series.map((group) => {
+                const readCount = group.books.filter((b) => isBookRead(b, progressByBookId.get(b.id))).length
+                return (
+                  <Link
+                    key={group.seriesName}
+                    to={`${libraryViewMode === 'store' ? '/store' : '/library'}/series/${encodeURIComponent(group.seriesName)}`}
+                    className="block"
+                  >
+                    <CoverArt title={group.seriesName} coverUrl={group.books[0]?.coverThumbUrl} />
+                    <p className="mt-1 truncate text-sm text-primary">{group.seriesName}</p>
+                    <p className="truncate text-xs text-muted">
+                      {group.books.length} item{group.books.length === 1 ? '' : 's'}
+                    </p>
+                    <p className="truncate text-xs text-subtle">
+                      {readCount} of {group.books.length} read
+                    </p>
+                  </Link>
+                )
+              })}
+            </div>
           ) : (
             <div className="space-y-6">
               {seriesGroups.series.map((group) => (
@@ -947,6 +763,19 @@ export function Library() {
               )}
             </div>
           )}
+
+          {/* Standalone/one-shot comics fold into a flat "Not part of a
+              series" section below the series-cards grid, same convention
+              groupBySeries already uses for a lone book — a real Book Detail
+              grid, not another card level (there's nothing to drill into). */}
+          {contentType === 'comics' && viewMode === 'bySeries' && seriesGroups.standalone.length > 0 && (
+            <div className="mt-6">
+              <h3 className="mb-2 text-sm font-medium text-secondary">
+                Not part of a series · {seriesGroups.standalone.length}
+              </h3>
+              <BookGrid books={seriesGroups.standalone} displayMode={displayMode} {...storeToggleProps} />
+            </div>
+          )}
         </section>
       )}
 
@@ -964,32 +793,60 @@ export function Library() {
             count: statusCounts[value],
           })),
         }}
-        format={{
-          value: formatFilter,
-          onChange: setFormatFilter,
-          options: (Object.entries(FORMAT_LABELS) as [FormatFilter, string][]).map(([value, label]) => ({
-            value,
-            label,
-            count: formatCounts[value],
-          })),
-        }}
+        format={
+          contentType === 'books'
+            ? {
+                value: formatFilter,
+                onChange: setFormatFilter,
+                options: (Object.entries(FORMAT_LABELS) as [FormatFilter, string][]).map(([value, label]) => ({
+                  value,
+                  label,
+                  count: formatCounts[value],
+                })),
+              }
+            : undefined
+        }
         source={{
           selected: sourceFilter,
           onToggle: (value) => setSourceFilter((prev) => toggleInSet(prev, value)),
           options: sourceOptions,
           searchThreshold: 12,
         }}
-        genre={{
-          selected: genreFilter,
-          onToggle: (value) => setGenreFilter((prev) => toggleInSet(prev, value)),
-          options: genreOptions,
-        }}
-        narrator={{
-          selected: narratorFilter,
-          onToggle: (value) => setNarratorFilter((prev) => toggleInSet(prev, value)),
-          options: narratorOptions,
-          searchThreshold: 12,
-        }}
+        genre={
+          contentType === 'books'
+            ? { selected: genreFilter, onToggle: (value) => setGenreFilter((prev) => toggleInSet(prev, value)), options: genreOptions }
+            : undefined
+        }
+        narrator={
+          contentType === 'books'
+            ? {
+                selected: narratorFilter,
+                onToggle: (value) => setNarratorFilter((prev) => toggleInSet(prev, value)),
+                options: narratorOptions,
+                searchThreshold: 12,
+              }
+            : undefined
+        }
+        publisher={
+          contentType === 'comics'
+            ? {
+                selected: publisherFilter,
+                onToggle: (value) => setPublisherFilter((prev) => toggleInSet(prev, value)),
+                options: publisherOptions,
+                searchThreshold: 12,
+              }
+            : undefined
+        }
+        writer={
+          contentType === 'comics'
+            ? {
+                selected: writerFilter,
+                onToggle: (value) => setWriterFilter((prev) => toggleInSet(prev, value)),
+                options: writerOptions,
+                searchThreshold: 12,
+              }
+            : undefined
+        }
       />
     </div>
   )

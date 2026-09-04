@@ -42,20 +42,23 @@ async function insertBook(
     status: string
     title: string
     author: string | null
+    format: string
   }> = {},
 ) {
   const { getDb } = await import('../src/db/index.js')
   const db = getDb()
   const id = randomUUID()
+  const format = overrides.format ?? 'm4b'
   db.prepare(
     `INSERT INTO books (
        id, source_id, file_path, format, title, author, status,
        genre, synopsis, artwork_thumb_path, artwork_full_path, metadata_enrichment_attempted_at
-     ) VALUES (?, ?, ?, 'm4b', ?, ?, ?, ?, ?, ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     sourceId,
-    `/fake/${id}.m4b`,
+    `/fake/${id}.${format}`,
+    format,
     overrides.title ?? 'Mistborn: The Final Empire',
     overrides.author ?? 'Brandon Sanderson',
     overrides.status ?? 'active',
@@ -106,6 +109,32 @@ describe('enrichBooks', () => {
     expect((db.prepare('SELECT metadata_enrichment_attempted_at FROM books WHERE id = ?').get(alreadyAttempted) as any).metadata_enrichment_attempted_at).toBe('2026-01-01T00:00:00Z')
     expect((db.prepare('SELECT metadata_enrichment_attempted_at FROM books WHERE id = ?').get(missingGenre) as any).metadata_enrichment_attempted_at).toBeTruthy()
     expect((db.prepare('SELECT metadata_enrichment_attempted_at FROM books WHERE id = ?').get(missingCover) as any).metadata_enrichment_attempted_at).toBeTruthy()
+  })
+
+  it('never selects a cbz (comic) row, even when it would otherwise match every predicate', async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue(null)
+
+    const sourceId = await insertSource()
+    const comic = await insertBook(sourceId, {
+      format: 'cbz',
+      genre: null,
+      synopsis: null,
+      artworkThumbPath: null,
+      artworkFullPath: null,
+    })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    const result = await enrichBooks()
+
+    expect(result.attempted).toBe(0)
+    expect(vi.mocked(searchWork)).not.toHaveBeenCalled()
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    expect(
+      (db.prepare('SELECT metadata_enrichment_attempted_at FROM books WHERE id = ?').get(comic) as any)
+        .metadata_enrichment_attempted_at,
+    ).toBeNull()
   })
 
   it('strips trailing "- Author" and parenthetical noise before querying Open Library', async () => {

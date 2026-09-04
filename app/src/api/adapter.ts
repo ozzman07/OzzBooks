@@ -29,6 +29,9 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     synopsis: book.synopsis ?? undefined,
     genre: book.genre ?? undefined,
     narrator: book.narrator ?? undefined,
+    writer: book.writer ?? undefined,
+    penciller: book.penciller ?? undefined,
+    publisher: book.publisher ?? undefined,
     sourceLabel: book.source_label,
     status: book.status,
     isOrphanedConversion: book.is_orphaned_conversion,
@@ -36,6 +39,7 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     companionBookId: book.companion_book_id ?? undefined,
     coverThumbUrl: book.artwork_thumb_path ? artworkUrl(book.id, 'thumb') : undefined,
     coverFullUrl: book.artwork_full_path ? artworkUrl(book.id, 'full') : undefined,
+    pageCount: book.page_count ?? undefined,
     createdAt: book.created_at,
   }
 }

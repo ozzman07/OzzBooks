@@ -62,7 +62,7 @@ export interface ApiBook {
    * a full per-book detail fetch. */
   source_label: string
   file_path: string
-  format: 'm4b' | 'mp3_folder' | 'epub'
+  format: 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
   companion_book_id: string | null
   title: string
   author: string | null
@@ -71,11 +71,17 @@ export interface ApiBook {
   synopsis: string | null
   genre: string | null
   narrator: string | null
+  /** Comics only ('cbz'); null for every other format. */
+  writer: string | null
+  penciller: string | null
+  publisher: string | null
   status: 'active' | 'missing'
   artwork_thumb_path: string | null
   artwork_full_path: string | null
   volume_normalization_gain: number | null
   content_hash: string | null
+  /** Comics only ('cbz'); null for every other format. */
+  page_count: number | null
   created_at: string
   updated_at: string
   /** True only for a 'missing' book converted from a mobi before the
@@ -392,4 +398,11 @@ export function streamUrl(chapterId: string): string {
 
 export function artworkUrl(bookId: string, size: 'thumb' | 'full'): string {
   return mediaUrl(`/api/books/${bookId}/artwork/${size}`)
+}
+
+// Zero-indexed, matching page_count/the archive's own natural-sorted entry
+// list server-side. Uses the same `?token=` trick as artworkUrl — this is
+// an <img> src, which can't set an Authorization header.
+export function comicPageUrl(bookId: string, pageIndex: number): string {
+  return mediaUrl(`/api/books/${bookId}/pages/${pageIndex}`)
 }

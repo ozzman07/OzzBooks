@@ -28,7 +28,11 @@ export async function deleteCachedAudioFilesForBook(bookId: string): Promise<voi
   await tx.done
 }
 
-export async function getTotalCachedBytes(): Promise<number> {
+// Audio-only total — downloadManager.ts's own getTotalCachedBytes() sums
+// this together with epub/comic totals for the real, format-wide figure.
+// Named distinctly (not just getTotalCachedBytes) so nothing accidentally
+// imports the audio-only version expecting the whole-app total.
+export async function getAudioTotalCachedBytes(): Promise<number> {
   const all = await getAllCachedAudioFiles()
   return all.reduce((sum, f) => sum + f.sizeBytes, 0)
 }
