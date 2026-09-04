@@ -404,6 +404,83 @@ describe('sources + ingestion via the API', () => {
     })
   })
 
+  describe('GET /api/books/:id/pages/:index', () => {
+    let comicBookId: string
+    let audioBookId: string
+
+    it('sets up a real .cbz file on disk and an audiobook for the not-a-comic case', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      const { mkdtemp } = await import('node:fs/promises')
+      const { tmpdir } = await import('node:os')
+      const path = await import('node:path')
+      const { makeTestComic } = await import('./fixtures.js')
+
+      const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-serve-'))
+      const cbzPath = path.join(dir, 'Real Comic.cbz')
+      // Natural-sort order matters here: page10 must land at index 2, not
+      // index 1 (a plain lexical sort would put it right after page1).
+      await makeTestComic(cbzPath, { pages: ['page1.jpg', 'page2.png', 'page10.jpg'], comicInfo: null })
+
+      const db = getDb()
+      comicBookId = randomUUID()
+      audioBookId = randomUUID()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, status, page_count)
+         VALUES (?, ?, ?, 'cbz', 'Real Comic', 'active', 3)`,
+      ).run(comicBookId, sourceId, cbzPath)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, status)
+         VALUES (?, ?, '/nowhere/audio.m4b', 'm4b', 'Not A Comic', 'active')`,
+      ).run(audioBookId, sourceId)
+    })
+
+    it('serves page 0 with the right content-type and bytes', async () => {
+      const res = await request(app)
+        .get(`/api/books/${comicBookId}/pages/0`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toContain('image/jpeg')
+      expect(res.body.toString()).toBe('page-content-page1.jpg')
+    })
+
+    it('serves a later page in natural-sorted (not lexical) order, with its own content-type', async () => {
+      const res = await request(app)
+        .get(`/api/books/${comicBookId}/pages/1`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.headers['content-type']).toContain('image/png')
+      expect(res.body.toString()).toBe('page-content-page2.png')
+
+      const lastRes = await request(app)
+        .get(`/api/books/${comicBookId}/pages/2`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(lastRes.status).toBe(200)
+      expect(lastRes.body.toString()).toBe('page-content-page10.jpg')
+    })
+
+    it('404s for an out-of-range page index', async () => {
+      const res = await request(app)
+        .get(`/api/books/${comicBookId}/pages/99`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(404)
+    })
+
+    it('400s for a non-numeric page index', async () => {
+      const res = await request(app)
+        .get(`/api/books/${comicBookId}/pages/not-a-number`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(400)
+    })
+
+    it('404s for a book that is not a comic', async () => {
+      const res = await request(app)
+        .get(`/api/books/${audioBookId}/pages/0`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(404)
+    })
+  })
+
   describe('POST /api/sources/:id/disconnect', () => {
     it('clears credentials, flips to needs_reconnect, and marks the source\'s active books missing', async () => {
       const { getDb } = await import('../src/db/index.js')

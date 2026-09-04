@@ -12,6 +12,7 @@ import { contentHash } from './contentHash.js'
 import { extractArtwork, saveArtworkBuffer } from './artwork.js'
 import { readEpubMetadata } from './epub.js'
 import { isMobiFile, convertMobiToEpub } from './mobiConvert.js'
+import { detectArchiveKind, deriveComicSeriesFromSegments, isCbrFile, isCbzFile, isImageFile, readComicMetadata } from './comic.js'
 import { runCompanionLinking } from './companionLink.js'
 import { deriveSeriesNumberFromName } from './seriesNumber.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
@@ -36,6 +37,15 @@ export interface Candidate {
    * series-name derivation and local cover-art lookup need this instead.
    * Undefined everywhere else. */
   groupFolder?: string
+}
+
+/** A file (or folder) found during a scan that can't be ingested as-is —
+ * an unconverted .cbr, or a loose-image folder — surfaced via scan_issues
+ * so it's visible as "needs attention" instead of silently invisible. Never
+ * becomes a Candidate. */
+export interface ScanFindingIssue {
+  filePath: string
+  error: string
 }
 
 // Folders used to stash the original files a book was combined/converted
@@ -378,12 +388,15 @@ function isSameBookAsAnyEpub(mobiName: string, epubFiles: Dirent[]): boolean {
   })
 }
 
-export async function findCandidates(dir: string): Promise<Candidate[]> {
-  if (BACKUP_FOLDER_RE.test(path.basename(dir)) || SYSTEM_METADATA_FOLDER_RE.test(path.basename(dir))) return []
+export async function findCandidates(dir: string): Promise<{ candidates: Candidate[]; issues: ScanFindingIssue[] }> {
+  if (BACKUP_FOLDER_RE.test(path.basename(dir)) || SYSTEM_METADATA_FOLDER_RE.test(path.basename(dir))) {
+    return { candidates: [], issues: [] }
+  }
 
   const entries = await readdir(dir, { withFileTypes: true })
   const files = entries.filter((e) => e.isFile())
   const dirs = entries.filter((e) => e.isDirectory())
+  const issues: ScanFindingIssue[] = []
 
   const drm = files.filter((f) => isDrmFile(f.name))
   for (const f of drm) {
@@ -406,8 +419,48 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
   // epub sibling still converts normally (see mobiConvert.ts) — nothing
   // downstream needs to know mobi was ever involved.
   const mobiFiles = files.filter((f) => isMobiFile(f.name) && !isSameBookAsAnyEpub(f.name, epubFiles))
+  const comicFiles = files.filter((f) => isCbzFile(f.name) || isCbrFile(f.name))
 
   const candidates: Candidate[] = []
+
+  // Comics: a .cbz/.cbr-extensioned file is classified by its actual magic
+  // bytes, not trusted extension — rescues a mislabeled file in either
+  // direction. Real zip data becomes a candidate; anything else (real RAR
+  // data, or neither) is routed to scan_issues rather than ingested — .cbr
+  // handling is entirely external to this codebase (see
+  // Ozzbooks_Addendum_Comics), OzzBooks only ever reads .cbz.
+  for (const f of comicFiles) {
+    const filePath = path.join(dir, f.name)
+    const kind = await detectArchiveKind(filePath)
+    if (kind === 'zip') {
+      candidates.push({ format: 'cbz', filePath, hashInput: filePath })
+    } else if (kind === 'rar') {
+      issues.push({ filePath, error: 'still .cbr — convert to .cbz to add this to the library' })
+    } else {
+      issues.push({ filePath, error: 'unrecognized comic archive (neither zip nor RAR data) — check the file isn\'t corrupt' })
+    }
+  }
+
+  // Loose image-sequence folders (a comic's pages extracted but never
+  // re-archived, e.g. a leftover .cbr extraction) are out of scope for
+  // ingestion here (see Ozzbooks_Addendum_Comics' fast-follow list), but
+  // silently skipping them entirely would make them invisible — the same
+  // "needs attention" visibility .cbr gets. Only flagged when a directory
+  // is *exclusively* loose images (no recognized archive/audio/ebook file
+  // alongside them) — a folder mixing a real book with a stray image isn't
+  // this case. Checked against this directory's own files, not the
+  // recursive subtree — each loose-image folder in a nested tree gets its
+  // own issue when findCandidates visits it directly.
+  const hasAnyRecognizedFile =
+    m4bFiles.length > 0 ||
+    mp3Files.length > 0 ||
+    epubFiles.length > 0 ||
+    files.some((f) => isMobiFile(f.name)) ||
+    comicFiles.length > 0
+  const looseImageFiles = files.filter((f) => isImageFile(f.name))
+  if (!hasAnyRecognizedFile && looseImageFiles.length > 0) {
+    issues.push({ filePath: dir, error: 'loose image folder — extracted pages not yet re-archived as .cbz' })
+  }
 
   // Independent of the audio detection above — an epub is never grouped
   // into a multi-part book the way M4B/mp3 rips are (one file is always
@@ -489,10 +542,12 @@ export async function findCandidates(dir: string): Promise<Candidate[]> {
   // of that one grouped candidate, not scanned individually.
   for (const d of dirs) {
     if (claimedDirNames.has(d.name)) continue
-    candidates.push(...(await findCandidates(path.join(dir, d.name))))
+    const nested = await findCandidates(path.join(dir, d.name))
+    candidates.push(...nested.candidates)
+    issues.push(...nested.issues)
   }
 
-  return candidates
+  return { candidates, issues }
 }
 
 // A handful of top-level author folders on the NAS carry garbled 8.3-style
@@ -685,6 +740,15 @@ export interface ResolvedBook {
   artworkFullPath: string | null
   contentHash: string
   chapters: IngestedChapter[]
+  /** Comics only ('cbz') — every other format's call site omits this and
+   * gets null, same as leaving any other optional field unset. */
+  pageCount?: number | null
+  /** Comics only ('cbz') — from ComicInfo.xml, refreshed on every rescan
+   * like author/series rather than fillIfMissing-gated (no manual-edit
+   * precedence column for these yet, unlike series_number). */
+  writer?: string | null
+  penciller?: string | null
+  publisher?: string | null
 }
 
 /**
@@ -703,7 +767,7 @@ export interface ResolvedBook {
 // null field" rule, just applied at scan time instead of during the
 // separate enrichment pass, since these values come straight from the
 // file rather than a network lookup.
-export function fillIfMissing(bookId: string, field: 'genre' | 'narrator', value: string | null): void {
+export function fillIfMissing(bookId: string, field: 'genre' | 'narrator' | 'synopsis', value: string | null): void {
   if (!value) return
   getDb().prepare(`UPDATE books SET ${field} = ? WHERE id = ? AND ${field} IS NULL`).run(value, bookId)
 }
@@ -719,9 +783,11 @@ export function writeBookAndChapters(
   const upsert = db.prepare(`
     INSERT INTO books (
       id, source_id, file_path, format, title, author, series_name, series_number, series_number_source,
-      status, artwork_thumb_path, artwork_full_path, content_hash, created_at, updated_at
+      status, artwork_thumb_path, artwork_full_path, content_hash, page_count, writer, penciller, publisher,
+      created_at, updated_at
     ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number, @series_number_source,
-      'active', @artwork_thumb_path, @artwork_full_path, @content_hash, datetime('now'), datetime('now'))
+      'active', @artwork_thumb_path, @artwork_full_path, @content_hash, @page_count, @writer, @penciller, @publisher,
+      datetime('now'), datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
       format = excluded.format,
@@ -735,6 +801,10 @@ export function writeBookAndChapters(
       artwork_thumb_path = excluded.artwork_thumb_path,
       artwork_full_path = excluded.artwork_full_path,
       content_hash = excluded.content_hash,
+      page_count = excluded.page_count,
+      writer = excluded.writer,
+      penciller = excluded.penciller,
+      publisher = excluded.publisher,
       updated_at = datetime('now')
       -- created_at deliberately not touched on conflict — set once at
       -- first insert, preserved across every rescan after that. file_path
@@ -756,6 +826,10 @@ export function writeBookAndChapters(
     artwork_thumb_path: resolved.artworkThumbPath,
     artwork_full_path: resolved.artworkFullPath,
     content_hash: resolved.contentHash,
+    page_count: resolved.pageCount ?? null,
+    writer: resolved.writer ?? null,
+    penciller: resolved.penciller ?? null,
+    publisher: resolved.publisher ?? null,
   })
 
   db.prepare('DELETE FROM chapters WHERE book_id = ?').run(bookId)
@@ -887,6 +961,56 @@ export async function applyIngestedCandidate(
     return result
   }
 
+  if (candidate.format === 'cbz') {
+    const meta = await readComicMetadata(candidate.filePath)
+
+    // Folder-first for comics — the reverse of the generic seriesName
+    // computed above (deriveSeriesFromFolder's audiobook/ebook penultimate-
+    // segment rule is structurally the wrong one here; see
+    // deriveComicSeriesFromSegments' own doc comment). ComicInfo.xml's
+    // <Series> is only a fallback for a file sitting directly at the
+    // source root with no folder to read at all.
+    const relativeSegments = path.relative(source.path_scope, candidate.filePath).split(path.sep)
+    const comicSeriesName = deriveComicSeriesFromSegments(relativeSegments) ?? meta.seriesFromTag
+
+    const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
+      existingBookId,
+      comicSeriesName,
+      bookOwnFolder,
+      candidate.filePath,
+      meta.issueNumberFromTag,
+    )
+
+    const artwork = meta.coverBuffer ? await saveArtworkBuffer(bookId, meta.coverBuffer) : null
+
+    const result = writeBookAndChapters(source, bookId, !existingBookId, {
+      filePath: candidate.filePath,
+      format: 'cbz',
+      title: meta.title || path.basename(candidate.filePath, path.extname(candidate.filePath)),
+      // Comics have no "author" concept — Writer/Artist are separate fields
+      // a later Book Detail step maps onto their own display, not onto
+      // books.author.
+      author: null,
+      seriesName: comicSeriesName,
+      seriesNumber,
+      seriesNumberSource,
+      artworkThumbPath: artwork?.thumbPath ?? null,
+      artworkFullPath: artwork?.fullPath ?? null,
+      contentHash: hash,
+      chapters: [], // no chapters — pages are addressed by index from the archive at serve time
+      pageCount: meta.pageCount,
+      writer: meta.writer,
+      penciller: meta.penciller,
+      publisher: meta.publisher,
+    })
+    // Same "only fill a null field" rule as genre/narrator above — a
+    // rescan must never clobber a manual Book Detail edit. ComicInfo.xml's
+    // Summary is the only source for this (comics are excluded from the
+    // Open Library enrichment pass entirely, see enrichBooks.ts).
+    fillIfMissing(bookId, 'synopsis', meta.summary)
+    return result
+  }
+
   const ingested = await ingestCandidate(candidate)
   const author = deriveAuthorFromFolder(source.path_scope, candidate.filePath) ?? ingested.author
   const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
@@ -969,7 +1093,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     return result
   }
 
-  const candidates = await findCandidates(source.path_scope)
+  const { candidates, issues: comicIssues } = await findCandidates(source.path_scope)
   const seriesSiblingCounts = buildSeriesSiblingCounts(source, candidates)
 
   const result: ScanResult = {
@@ -989,6 +1113,18 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
   // Issues reflect the current scan only — clear stale ones from last time
   // so a fixed file drops off the list instead of lingering forever.
   db.prepare('DELETE FROM scan_issues WHERE source_id = ?').run(source.id)
+
+  // Comic-specific findings (unconverted .cbr, loose image folders) never
+  // became Candidates, so they're written here directly rather than going
+  // through the per-candidate try/catch below.
+  for (const issue of comicIssues) {
+    db.prepare('INSERT INTO scan_issues (id, source_id, file_path, error) VALUES (?, ?, ?, ?)').run(
+      randomUUID(),
+      source.id,
+      issue.filePath,
+      issue.error,
+    )
+  }
 
   for (const candidate of candidates) {
     seenFilePaths.add(candidate.filePath)

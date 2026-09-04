@@ -35,8 +35,8 @@ CREATE INDEX IF NOT EXISTS idx_scan_issues_source ON scan_issues(source_id);
 CREATE TABLE IF NOT EXISTS books (
   id TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES sources(id),
-  file_path TEXT NOT NULL, -- the primary content file: audio for m4b/mp3_folder, the epub itself for format='epub'
-  format TEXT NOT NULL CHECK (format IN ('m4b', 'mp3_folder', 'epub')),
+  file_path TEXT NOT NULL, -- the primary content file: audio for m4b/mp3_folder, the epub itself for format='epub', the .cbz itself for format='cbz'
+  format TEXT NOT NULL CHECK (format IN ('m4b', 'mp3_folder', 'epub', 'cbz')),
   -- Links an ebook-primary row to its audiobook-primary counterpart (or
   -- vice versa) when the two were ingested from separate sources (e.g. a
   -- NAS folder of audiobooks and a separate NAS folder of ebooks) — see
@@ -66,9 +66,13 @@ CREATE TABLE IF NOT EXISTS books (
   artwork_full_path TEXT,
   volume_normalization_gain REAL,
   content_hash TEXT, -- for duplicate detection across sources
+  page_count INTEGER, -- comics only ('cbz'); computed once at ingestion from the archive's own entry count, never re-derived at serve time (no pages table — see ingestion/comic.ts)
   genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched; always one of GENRE_OPTIONS, not a raw subject string
   synopsis TEXT, -- backfilled alongside genre, same enrichment pass, null until enriched
   narrator TEXT, -- audiobooks only; read from the composer/writer tag at ingestion, editable on Book Detail
+  writer TEXT, -- comics only; from ComicInfo.xml's <Writer>, refreshed on every scan like author (no manual-edit precedence column — not user-editable yet)
+  penciller TEXT, -- comics only; from ComicInfo.xml's <Penciller>, shown as "Artist" on Book Detail
+  publisher TEXT, -- comics only; from ComicInfo.xml's <Publisher>
   -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
   -- doesn't repeatedly re-query the same already-attempted book — a
   -- future "retry failed lookups" action resets this to NULL.

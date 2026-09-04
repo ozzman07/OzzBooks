@@ -169,6 +169,63 @@ export async function makeTestEpub(
 }
 
 /**
+ * Builds a real, minimal .cbz — a real zip archive via jszip (same
+ * approach as makeTestEpub), so ingestion/comic.ts's readComicMetadata is
+ * tested against an actual container rather than assumptions about its
+ * shape. `comicInfo: null` (the default) omits ComicInfo.xml entirely, to
+ * exercise the no-tag-file fallback path; pass a partial object to include
+ * only the fields set on it. Page content is just a small marker buffer
+ * per filename (comic.ts never decodes image bytes, only forwards them),
+ * unique per page so a cover-buffer assertion can check exact content.
+ */
+export async function makeTestComic(
+  outPath: string,
+  opts: {
+    pages?: string[]
+    comicInfo?: {
+      title?: string
+      series?: string
+      number?: number
+      writer?: string
+      penciller?: string
+      publisher?: string
+      year?: number
+      pageCount?: number
+      summary?: string
+    } | null
+  } = {},
+): Promise<void> {
+  const { pages = ['page1.jpg', 'page2.jpg', 'page10.jpg'], comicInfo = null } = opts
+  const zip = new JSZip()
+
+  if (comicInfo) {
+    const tagOrder: [string, keyof typeof comicInfo][] = [
+      ['Title', 'title'],
+      ['Series', 'series'],
+      ['Number', 'number'],
+      ['Writer', 'writer'],
+      ['Penciller', 'penciller'],
+      ['Publisher', 'publisher'],
+      ['Year', 'year'],
+      ['PageCount', 'pageCount'],
+      ['Summary', 'summary'],
+    ]
+    const tags = tagOrder
+      .filter(([, key]) => comicInfo[key] !== undefined)
+      .map(([tag, key]) => `  <${tag}>${comicInfo[key]}</${tag}>`)
+      .join('\n')
+    zip.file('ComicInfo.xml', `<?xml version="1.0"?>\n<ComicInfo>\n${tags}\n</ComicInfo>`)
+  }
+
+  for (const page of pages) {
+    zip.file(page, Buffer.from(`page-content-${page}`))
+  }
+
+  const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+  await writeFile(outPath, buffer)
+}
+
+/**
  * Builds a real, valid .mobi by round-tripping through Calibre itself:
  * a test epub (via makeTestEpub) converted mobi via ebook-convert. Hand-
  * building a MOBI fixture isn't practical — it's an old, complex binary

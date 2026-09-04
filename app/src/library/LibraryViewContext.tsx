@@ -30,6 +30,11 @@ export const FACET_UNSET = '__unset__'
 // the full shared catalog, browsable/sample-able regardless of who
 // scanned a book in. See the "My Library" plan for the full rationale.
 export type LibraryViewMode = 'mine' | 'store'
+// Orthogonal to LibraryViewMode (ownership) — which collection either
+// route (My Library/Store) is browsing. See Ozzbooks_Addendum_Comics'
+// Library & browsing UI section: a segmented control at the top of the
+// existing Library/Store screens, not a new route or nav entry.
+export type ContentType = 'books' | 'comics'
 // Same idea, scoped to the Needs Attention (missing books) list — 'mine'
 // keeps that list from growing as cluttered as the old unfiltered main
 // grid once more people add their own sources; 'everyone' is there for
@@ -37,6 +42,13 @@ export type LibraryViewMode = 'mine' | 'store'
 export type NeedsAttentionScope = 'mine' | 'everyone'
 
 interface LibraryViewContextValue {
+  contentType: ContentType
+  /** Not a plain dispatch — also resets viewMode to the content type's own
+   * default (List for books, By Series for comics), an explicit switch
+   * rather than "whatever the last mode was." A bySeries-tuned mode is
+   * close to useless for a mostly-standalone audio/ebook collection and
+   * vice versa — see the addendum's Library & browsing UI section. */
+  setContentType: (next: ContentType) => void
   search: string
   setSearch: Dispatch<SetStateAction<string>>
   sortBy: SortOption
@@ -56,6 +68,13 @@ interface LibraryViewContextValue {
   setGenreFilter: Dispatch<SetStateAction<Set<string>>>
   narratorFilter: Set<string>
   setNarratorFilter: Dispatch<SetStateAction<Set<string>>>
+  // Comics-mode facets — swap in for Genre/Narrator, which don't mean
+  // anything for a comic (no narrator; genre optional/lower-value there).
+  // Same FACET_UNSET-sentinel shape as genre/narrator.
+  publisherFilter: Set<string>
+  setPublisherFilter: Dispatch<SetStateAction<Set<string>>>
+  writerFilter: Set<string>
+  setWriterFilter: Dispatch<SetStateAction<Set<string>>>
   // Which source(s) a book came from — every book always has exactly one,
   // so unlike genre/narrator this facet has no FACET_UNSET option.
   sourceFilter: Set<string>
@@ -80,7 +99,16 @@ const LibraryViewContext = createContext<LibraryViewContextValue | null>(null)
 // React Router unmounts a route's own component/state on navigation, which
 // otherwise reset every filter, sort, view mode, and the scroll position
 // back to defaults every time you returned from playing something.
+// Each content type's own sane default grouping — comics is series-first
+// (67 franchise-organized folders covering most of the real library), the
+// existing audio/ebook collection stays List (mostly-standalone today).
+const DEFAULT_VIEW_MODE_FOR_CONTENT_TYPE: Record<ContentType, ViewMode> = {
+  books: 'list',
+  comics: 'bySeries',
+}
+
 export function LibraryViewProvider({ children }: { children: ReactNode }) {
+  const [contentType, setContentTypeRaw] = useState<ContentType>('books')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('title')
   const [viewMode, setViewMode] = useState<ViewMode>('list')
@@ -89,11 +117,38 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [formatFilter, setFormatFilter] = useState<FormatFilter>('all')
   const [genreFilter, setGenreFilter] = useState<Set<string>>(new Set())
   const [narratorFilter, setNarratorFilter] = useState<Set<string>>(new Set())
+  const [publisherFilter, setPublisherFilter] = useState<Set<string>>(new Set())
+  const [writerFilter, setWriterFilter] = useState<Set<string>>(new Set())
   const [sourceFilter, setSourceFilter] = useState<Set<string>>(new Set())
   const [needsAttentionScope, setNeedsAttentionScope] = useState<NeedsAttentionScope>('mine')
   const scrollPositionsRef = useRef(new Map<string, number>())
 
+  function setContentType(next: ContentType) {
+    setContentTypeRaw(next)
+    setViewMode(DEFAULT_VIEW_MODE_FOR_CONTENT_TYPE[next])
+    // Every active filter is cleared on switch, not just the ones whose
+    // facet swaps away (genre/narrator vs publisher/writer) — Source and
+    // Status stay offered as facets in both modes (per the addendum), but
+    // a *selected* value carrying over silently is a real trap: Source in
+    // particular is nearly guaranteed to differ between content types (a
+    // comics source is never also an audio/ebook source), so a Source
+    // filter picked while browsing Books would silently zero out Comics
+    // (and vice versa) with no visible explanation — confirmed live, this
+    // is exactly what happened the first time a freshly-scanned Comics
+    // source got checked against a Source filter left on from Books.
+    setStatusFilter('all')
+    setFormatFilter('all')
+    setGenreFilter(new Set())
+    setNarratorFilter(new Set())
+    setPublisherFilter(new Set())
+    setWriterFilter(new Set())
+    setSourceFilter(new Set())
+    setSearch('')
+  }
+
   const value: LibraryViewContextValue = {
+    contentType,
+    setContentType,
     search,
     setSearch,
     sortBy,
@@ -110,6 +165,10 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
     setGenreFilter,
     narratorFilter,
     setNarratorFilter,
+    publisherFilter,
+    setPublisherFilter,
+    writerFilter,
+    setWriterFilter,
     sourceFilter,
     setSourceFilter,
     needsAttentionScope,

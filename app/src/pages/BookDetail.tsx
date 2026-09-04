@@ -8,6 +8,7 @@ import { useAuth } from '../auth/AuthContext'
 import { useAsync } from '../hooks/useAsync'
 import { useDownloads } from '../hooks/useDownloads'
 import { useEbookDownload } from '../hooks/useEbookDownload'
+import { useComicDownload } from '../hooks/useComicDownload'
 import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
@@ -158,6 +159,39 @@ function EbookDownloadBadge({ download }: { download: ReturnType<typeof useEbook
   )
 }
 
+// Whole-issue downloads only, same single-aggregate-state shape as
+// EbookDownloadBadge above (not DownloadBadge's per-chapter list) — a
+// comic has no chapters to enumerate, and the user only ever sees one
+// cached/downloading/not-cached state even though N page images are
+// fetched underneath. See Ozzbooks_Addendum_Comics' Offline download
+// experience section.
+function ComicDownloadBadge({ book, download }: { book: Book; download: ReturnType<typeof useComicDownload> }) {
+  if (download.complete) {
+    return (
+      <button
+        onClick={() => void download.remove()}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-amber-400"
+      >
+        Downloaded — remove
+      </button>
+    )
+  }
+  const pageCount = book.pageCount ?? 0
+  return (
+    <button
+      onClick={() => void download.download()}
+      disabled={download.pending || pageCount === 0}
+      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
+    >
+      {download.pending
+        ? `${download.cachedCount}/${pageCount} downloaded…`
+        : download.cachedCount > 0
+          ? `${download.cachedCount}/${pageCount} downloaded — finish`
+          : 'Download whole book'}
+    </button>
+  )
+}
+
 export function BookDetail() {
   const { bookId } = useParams()
   const navigate = useNavigate()
@@ -235,6 +269,10 @@ export function BookDetail() {
   const downloads = useDownloads(bookId!, partialBook?.chapters ?? [])
   const epubIdForDownload = partialBook && (partialBook.format === 'epub' ? partialBook.id : partialBook.companionBookId)
   const ebookDownload = useEbookDownload(epubIdForDownload)
+  const comicDownload = useComicDownload(
+    partialBook?.format === 'cbz' ? partialBook.id : undefined,
+    partialBook?.format === 'cbz' ? partialBook.pageCount : undefined,
+  )
 
   // The error screen only wins when there's truly nothing to show — a
   // network failure with a cached book (full or partial) available
@@ -546,7 +584,7 @@ export function BookDetail() {
             </>
           )}
         </div>
-      ) : book.format === 'epub' ? (
+      ) : book.format === 'epub' || book.format === 'cbz' ? (
         <button
           onClick={() => navigate(`/book/${book.id}/read`)}
           className="mt-4 w-full rounded-lg bg-amber-400 py-3 font-medium text-slate-950"
@@ -592,8 +630,9 @@ export function BookDetail() {
             matching guard in Library.tsx's BookTile/BookRow. */}
         {book.totalDuration > 0 && <p className="text-xs text-subtle">{formatDuration(book.totalDuration)} total</p>}
         <div className="flex items-center gap-2">
-          {book.format !== 'epub' && <DownloadBadge book={book} downloads={downloads} />}
+          {book.format !== 'epub' && book.format !== 'cbz' && <DownloadBadge book={book} downloads={downloads} />}
           {epubIdForDownload && <EbookDownloadBadge download={ebookDownload} />}
+          {book.format === 'cbz' && <ComicDownloadBadge book={book} download={comicDownload} />}
         </div>
       </div>
 

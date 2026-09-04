@@ -5,7 +5,7 @@ import type Rendition from 'epubjs/types/rendition'
 import { fetchBook, fetchEpubBytes } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { fetchBookProgress, putProgress } from '../api/cloudClient'
-import { getCachedEpubFile } from '../offline/epubFileStore'
+import { getCachedEpubFile, touchEpubLastRead } from '../offline/epubFileStore'
 import { getCachedLocations, putCachedLocations } from '../offline/bookLocationsStore'
 import { useAuth } from '../auth/AuthContext'
 import {
@@ -201,6 +201,7 @@ export function EbookReader() {
         // same pattern as PlayerContext's audio resolution: if it's
         // downloaded, use it, regardless of connectivity.
         const cached = await getCachedEpubFile(bookId!)
+        if (cached) void touchEpubLastRead(bookId!, new Date().toISOString())
         const [detail, bytes, progress] = await Promise.all([
           fetchBook(bookId!).then(adaptBookDetail),
           cached ? cached.blob.arrayBuffer() : fetchEpubBytes(bookId!),

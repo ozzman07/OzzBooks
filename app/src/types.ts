@@ -19,6 +19,7 @@ export interface Chapter {
 export type Position =
   | { type: 'timestamp'; value: number }
   | { type: 'cfi'; value: string }
+  | { type: 'page'; value: number }
 
 export interface Book {
   id: string
@@ -36,6 +37,10 @@ export interface Book {
    * about this (see genreOptions.ts's sibling narrator doc comment
    * server-side). */
   narrator?: string
+  /** Comics only ('cbz') — from ComicInfo.xml. Undefined for every other format. */
+  writer?: string
+  penciller?: string
+  publisher?: string
   status: 'active' | 'missing'
   /** True only for a 'missing' book that can never be relinked by a scan
    * (a pre-dedup-rule mobi conversion whose original folder isn't
@@ -43,7 +48,7 @@ export interface Book {
    * the user could take that would ever bring one back. Always false for
    * an 'active' book. */
   isOrphanedConversion: boolean
-  format: 'm4b' | 'mp3_folder' | 'epub'
+  format: 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
   /** The linked audiobook/ebook counterpart's id, if any — see companionLink.ts
    * server-side. Together with `format`, this is what BookDetail uses to
    * decide whether to show a "Read" entry point alongside/instead of "Play". */
@@ -51,6 +56,8 @@ export interface Book {
   coverThumbUrl?: string
   coverFullUrl?: string
   totalDuration: number
+  /** Comics only ('cbz'); undefined for every other format. */
+  pageCount?: number
   /** Set once at first ingestion, never touched again — drives the "Recently added" sort. */
   createdAt: string
   /** Only present on list-view books (from ApiBookListItem); used to derive

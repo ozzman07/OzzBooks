@@ -1,4 +1,3 @@
-import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { ThemeProvider } from './theme/ThemeContext'
 import { AuthProvider, useAuth } from './auth/AuthContext'
@@ -10,6 +9,7 @@ import { UpdatePrompt } from './components/UpdatePrompt'
 import { OfflineBanner } from './components/OfflineBanner'
 import { Auth } from './pages/Auth'
 import { Library } from './pages/Library'
+import { SeriesDetail } from './pages/SeriesDetail'
 import { BookDetail } from './pages/BookDetail'
 import { RelinkBook } from './pages/RelinkBook'
 import { NowPlaying } from './pages/NowPlaying'
@@ -18,12 +18,7 @@ import { ActivityLog } from './pages/ActivityLog'
 import { NeedsAttention } from './pages/NeedsAttention'
 import { Playlists } from './pages/Playlists'
 import { PlaylistDetail } from './pages/PlaylistDetail'
-
-// Lazy-loaded — epub.js (+jszip, lodash, xmldom) adds well over 100KB
-// gzipped, entirely dead weight for anyone who never opens an ebook. This
-// keeps that cost out of the main bundle, fetched only when the route is
-// actually visited.
-const EbookReader = lazy(() => import('./pages/EbookReader').then((m) => ({ default: m.EbookReader })))
+import { BookReaderRoute } from './pages/BookReaderRoute'
 
 // The PWA's start_url is '/' (see vite.config.ts's manifest) — this is
 // what actually opens on a cold launch. Landing on an empty My Library
@@ -71,22 +66,11 @@ function AppShell() {
         <Route path="/" element={<RootRedirect />} />
         <Route path="/library" element={<Library />} />
         <Route path="/store" element={<Library />} />
+        <Route path="/library/series/:seriesName" element={<SeriesDetail />} />
+        <Route path="/store/series/:seriesName" element={<SeriesDetail />} />
         <Route path="/book/:bookId" element={<BookDetail />} />
         <Route path="/book/:bookId/relink" element={<RelinkBook />} />
-        <Route
-          path="/book/:bookId/read"
-          element={
-            <Suspense
-              fallback={
-                <div className="fixed inset-0 flex items-center justify-center text-sm" style={{ background: '#F2F0E9', color: '#1A1A1A' }}>
-                  Loading…
-                </div>
-              }
-            >
-              <EbookReader />
-            </Suspense>
-          }
-        />
+        <Route path="/book/:bookId/read" element={<BookReaderRoute />} />
         <Route path="/playlists" element={<Playlists />} />
         <Route path="/playlists/:playlistId" element={<PlaylistDetail />} />
         <Route path="/now-playing" element={<NowPlaying />} />

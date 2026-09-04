@@ -8,6 +8,7 @@ import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
 import { companionMatchScore, linkCompanions, unlinkCompanions } from '../../ingestion/companionLink.js'
 import { isOrphanedConversion } from '../../ingestion/mobiConvert.js'
 import { GENRE_OPTIONS } from '../../ingestion/enrichment/genreOptions.js'
+import { getComicPage } from '../../ingestion/comicArchiveCache.js'
 
 export const booksRouter = Router()
 
@@ -177,6 +178,48 @@ booksRouter.get('/:id/epub', (req, res) => {
       res.status(404).json({ error: 'epub file not found on disk', detail: String(err) })
     }
   })
+})
+
+// Streams one page's raw image bytes from a comic's .cbz — zip-entry-
+// addressed by index instead of filesystem-path-addressed, same idea as
+// stream.ts's chapter route but for a single archive entry rather than a
+// whole (seekable) file. No conversion-cache path to consider here, unlike
+// epub's mobi case — every ingested comic's file_path is already a real
+// .cbz. Local/Synology sources only for now, same limitation /:id/epub has.
+booksRouter.get('/:id/pages/:index', async (req, res) => {
+  const book = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
+  if (!book || book.format !== 'cbz') {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(book.source_id) as SourceRow | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found for book' })
+    return
+  }
+  if (source.type !== 'local' && source.type !== 'synology') {
+    res.status(501).json({ error: 'comic page serving for this source type is not implemented yet' })
+    return
+  }
+
+  const pageIndex = Number(req.params.index)
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) {
+    res.status(400).json({ error: 'invalid page index' })
+    return
+  }
+
+  try {
+    const page = await getComicPage(book.id, book.file_path, pageIndex)
+    if (!page) {
+      res.status(404).json({ error: 'page not found' })
+      return
+    }
+    res.setHeader('Content-Type', page.contentType)
+    res.send(page.buffer)
+  } catch (err) {
+    res.status(404).json({ error: 'comic file not found or unreadable on disk', detail: String(err) })
+  }
 })
 
 booksRouter.get('/:id/relink-candidates', async (req, res) => {

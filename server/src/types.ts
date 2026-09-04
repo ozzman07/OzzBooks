@@ -1,5 +1,5 @@
 export type SourceType = 'local' | 'synology' | 'dropbox' | 'google_drive'
-export type BookFormat = 'm4b' | 'mp3_folder' | 'epub'
+export type BookFormat = 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
 export type BookStatus = 'active' | 'missing'
 export type CredentialsStatus = 'ok' | 'needs_reconnect'
 
@@ -45,9 +45,13 @@ export interface BookRow {
   artwork_full_path: string | null
   volume_normalization_gain: number | null
   content_hash: string | null
+  page_count: number | null
   genre: string | null
   synopsis: string | null
   narrator: string | null
+  writer: string | null
+  penciller: string | null
+  publisher: string | null
   metadata_enrichment_attempted_at: string | null
   missing_since: string | null
   created_at: string

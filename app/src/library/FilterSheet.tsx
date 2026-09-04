@@ -27,10 +27,17 @@ interface FilterSheetProps {
   open: boolean
   onClose: () => void
   status: SingleSelectFacet<StatusFilter>
-  format: SingleSelectFacet<FormatFilter>
+  // Format/genre/narrator are books-mode facets; publisher/writer are
+  // comics-mode facets — each set is optional so the caller passes only
+  // the ones that mean something for the active content type, per
+  // Ozzbooks_Addendum_Comics ("Format is moot... Comics mode instead
+  // offers Publisher and Writer/Artist as its facets").
+  format?: SingleSelectFacet<FormatFilter>
   source: MultiSelectFacet
-  genre: MultiSelectFacet
-  narrator: MultiSelectFacet
+  genre?: MultiSelectFacet
+  narrator?: MultiSelectFacet
+  publisher?: MultiSelectFacet
+  writer?: MultiSelectFacet
   onClearAll: () => void
   resultCount: number
 }
@@ -100,7 +107,19 @@ function MultiSelectSection({ facet }: { facet: MultiSelectFacet }) {
  * so unchecked options still show what you'd get by adding them instead
  * of freezing at whatever the count was before you opened the sheet.
  */
-export function FilterSheet({ open, onClose, status, format, source, genre, narrator, onClearAll, resultCount }: FilterSheetProps) {
+export function FilterSheet({
+  open,
+  onClose,
+  status,
+  format,
+  source,
+  genre,
+  narrator,
+  publisher,
+  writer,
+  onClearAll,
+  resultCount,
+}: FilterSheetProps) {
   if (!open) return null
 
   return (
@@ -121,22 +140,40 @@ export function FilterSheet({ open, onClose, status, format, source, genre, narr
             <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Status</h3>
             <SingleSelectRow facet={status} />
           </section>
-          <section>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Format</h3>
-            <SingleSelectRow facet={format} />
-          </section>
+          {format && (
+            <section>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Format</h3>
+              <SingleSelectRow facet={format} />
+            </section>
+          )}
           <section>
             <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Source</h3>
             <MultiSelectSection facet={source} />
           </section>
-          <section>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Genre</h3>
-            <MultiSelectSection facet={genre} />
-          </section>
-          <section>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Narrator</h3>
-            <MultiSelectSection facet={narrator} />
-          </section>
+          {genre && (
+            <section>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Genre</h3>
+              <MultiSelectSection facet={genre} />
+            </section>
+          )}
+          {narrator && (
+            <section>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Narrator</h3>
+              <MultiSelectSection facet={narrator} />
+            </section>
+          )}
+          {publisher && (
+            <section>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Publisher</h3>
+              <MultiSelectSection facet={publisher} />
+            </section>
+          )}
+          {writer && (
+            <section>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Writer</h3>
+              <MultiSelectSection facet={writer} />
+            </section>
+          )}
         </div>
 
         <div className="border-t border-border-strong px-4 py-3">
