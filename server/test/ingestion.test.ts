@@ -31,8 +31,8 @@ describe('ingestion', () => {
 
     const result = await scanSource(source)
 
-    expect(result.created).toBe(16) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book" + ".m4a Extension Test Book" + 2 flat-series books + lone standalone book
-    expect(result.found).toBe(17) // + the corrupt m4b, which is a candidate but fails to ingest
+    expect(result.created).toBe(19) // + mixed-folder loose book + mixed-folder nested book + legitimate "Sourcery" title + "To Delete Test Book" + "Corrupt Cover Book" + disc-set "Disc Book" + ".m4a Extension Test Book" + 2 flat-series books + lone standalone book + 3 misgrouped-folder books
+    expect(result.found).toBe(20) // + the corrupt m4b, which is a candidate but fails to ingest
     expect(result.failed).toBe(1)
 
     const issues = db.prepare('SELECT * FROM scan_issues WHERE source_id = ?').all(sourceId) as any[]
@@ -44,7 +44,7 @@ describe('ingestion', () => {
     expect(updatedSource.last_scanned_at).toBeTruthy()
 
     const books = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
-    expect(books).toHaveLength(16)
+    expect(books).toHaveLength(19)
 
     // .m4a is the same MPEG-4/AAC container as .m4b (Apple's convention for
     // "this M4A has audiobook chapter markers") — must be discovered and
@@ -64,6 +64,27 @@ describe('ingestion', () => {
     expect(mp3Chapters.map((c) => c.title)).toEqual(['Chapter One', 'Chapter Two', 'Chapter Three'])
     expect(mp3Chapters.every((c) => c.start_time === 0)).toBe(true)
     expect(mp3Chapters.every((c) => c.duration > 0)).toBe(true)
+
+    // A folder of loose mp3s that are actually three DIFFERENT books (each
+    // with its own distinct Album tag), not chapters of one — must ingest
+    // as three separate one-chapter books, not silently collapse into a
+    // single book named after whichever file sorts first (the real bug
+    // found in Koontz's "Frankenstein" and King's "The Dark Tower" folders).
+    const misgroupedTitles = ['First Book', 'Second Book', 'Third Book']
+    const misgroupedBooks = misgroupedTitles.map((title) => books.find((b) => b.title === title))
+    for (const b of misgroupedBooks) expect(b).toBeTruthy()
+    expect(new Set(misgroupedBooks.map((b) => b.id)).size).toBe(3) // three distinct books, not one
+    for (const b of misgroupedBooks) {
+      expect(b.format).toBe('mp3_folder')
+      expect(b.author).toBe('Misgrouped Author')
+      expect(b.series_name).toBe('Shared Folder') // folder shared by >1 book promotes to series, same as flat-series books above
+      const chapters = db.prepare('SELECT * FROM chapters WHERE book_id = ?').all(b.id) as any[]
+      expect(chapters).toHaveLength(1)
+      expect(chapters[0].title).toBe(b.title)
+    }
+    expect(misgroupedBooks.find((b) => b.title === 'First Book').file_path).toBe(library.misgroupedBook1Path)
+    expect(misgroupedBooks.find((b) => b.title === 'Second Book').file_path).toBe(library.misgroupedBook2Path)
+    expect(misgroupedBooks.find((b) => b.title === 'Third Book').file_path).toBe(library.misgroupedBook3Path)
 
     // A book split across sibling MP3-folder discs ("Disc 1"/"Disc 2") must
     // ingest as ONE book, not two — with chapters in disc-then-track order.
@@ -218,6 +239,20 @@ describe('ingestion', () => {
     expect(corruptCoverBook.status).toBe('active')
     expect(corruptCoverBook.artwork_thumb_path).toBeNull()
     expect(corruptCoverBook.artwork_full_path).toBeNull()
+
+    // Rescanning must be stable for the split misgrouped-folder books —
+    // each one's candidate filePath is derived from its own Album-grouped
+    // filenames, not a fixed per-folder path, so this proves that
+    // derivation lands on the same three identities every time instead of
+    // creating duplicates or losing track of one on a second pass.
+    const rescan = await scanSource(source)
+    expect(rescan.created).toBe(0)
+    expect(rescan.updated).toBe(result.created)
+    const booksAfterRescan = db.prepare('SELECT * FROM books ORDER BY title').all() as any[]
+    expect(booksAfterRescan).toHaveLength(19)
+    const misgroupedAfterRescan = misgroupedTitles.map((title) => booksAfterRescan.find((b) => b.title === title))
+    for (const b of misgroupedAfterRescan) expect(b).toBeTruthy()
+    expect(misgroupedAfterRescan.map((b) => b.id).sort()).toEqual(misgroupedBooks.map((b) => b.id).sort())
   }, 30_000)
 
   it('keeps created_at stable across rescans (unlike updated_at, which every scan bumps)', async () => {
@@ -1327,6 +1362,8 @@ describe('ingestion', () => {
     expect(hush.writer).toBe('Jeph Loeb')
     expect(hush.penciller).toBe('Jim Lee')
     expect(hush.publisher).toBe('DC Comics')
+    // Sits directly under its series folder — no arc to group by.
+    expect(hush.arc_name).toBeNull()
     // Not asserting artwork_thumb_path here — makeTestComic's page content
     // is a plain marker buffer, not a real decodable image, so sharp can't
     // produce a thumbnail from it (saveArtworkBuffer degrades gracefully,
@@ -1344,6 +1381,9 @@ describe('ingestion', () => {
     expect(gaslight.writer).toBeNull()
     expect(gaslight.penciller).toBeNull()
     expect(gaslight.publisher).toBeNull()
+    // Nested one level below the series folder — the "Elseworlds" folder
+    // itself becomes the arc grouping.
+    expect(gaslight.arc_name).toBe('Elseworlds')
   }, 30_000)
 
   it('routes a real .cbr to scan_issues with the locked message, without ever ingesting it', async () => {

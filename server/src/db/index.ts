@@ -72,6 +72,7 @@ function migrate(db: Database.Database): void {
     ['writer', 'TEXT'],
     ['penciller', 'TEXT'],
     ['publisher', 'TEXT'],
+    ['arc_name', 'TEXT'],
   ]
   for (const [name, type] of booksTextColumns) {
     if (!booksColumns.has(name)) {
@@ -128,14 +129,15 @@ function migrate(db: Database.Database): void {
  * once it's back in place under the name `books`, confirmed via a
  * dedicated migration test).
  *
- * `narrator`, `writer`, `penciller`, and `publisher` are all included below
- * even though they postdate this rebuild's original authorship — each was
- * added to booksTextColumns after this function was first written, and
- * each omission here was a real latent bug: on any DB still needing this
- * exact rebuild, the ADD COLUMN loop above would populate the column, then
- * this rebuild would silently drop it (never selected into books_new).
- * Found and fixed twice now (narrator, then writer/penciller/publisher)
- * while adding a later rebuild that chains onto this one in the same
+ * `narrator`, `writer`, `penciller`, `publisher`, and `arc_name` are all
+ * included below even though they postdate this rebuild's original
+ * authorship — each was added to booksTextColumns after this function was
+ * first written, and each omission here was a real latent bug: on any DB
+ * still needing this exact rebuild, the ADD COLUMN loop above would
+ * populate the column, then this rebuild would silently drop it (never
+ * selected into books_new). Found and fixed three times now (narrator,
+ * then writer/penciller/publisher, then arc_name) while adding a later
+ * rebuild that chains onto this one in the same
  * migrate() call for old-enough databases, surfacing the gap immediately
  * via a "no such column" failure in that later rebuild's own SELECT. This
  * function's column list needs the same manual update every time a new
@@ -173,6 +175,7 @@ function rebuildBooksTableForEpubSupport(db: Database.Database): void {
           writer TEXT,
           penciller TEXT,
           publisher TEXT,
+          arc_name TEXT,
           metadata_enrichment_attempted_at TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -182,13 +185,13 @@ function rebuildBooksTableForEpubSupport(db: Database.Database): void {
         INSERT INTO books_new (
           id, source_id, file_path, format, companion_book_id, title, author, series_name, series_number,
           series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
-          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher,
+          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, arc_name,
           metadata_enrichment_attempted_at, created_at, updated_at
         )
         SELECT
           id, source_id, file_path, format, NULL, title, author, series_name, series_number,
           series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
-          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher,
+          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, arc_name,
           metadata_enrichment_attempted_at, created_at, updated_at
         FROM books
       `)
@@ -212,9 +215,11 @@ function rebuildBooksTableForEpubSupport(db: Database.Database): void {
  * Deliberately written against the *current* full column list rather than
  * copy-pasting rebuildBooksTableForEpubSupport's — see that function's own
  * docstring for the column-dropping bug this exact pattern has already bit
- * twice. Being current as of today doesn't make this rebuild immune to the
- * same fate: the next column added to booksTextColumns after this one
- * needs updating here too, same as every earlier rebuild in this file.
+ * three times now (most recently arc_name, caught here the same way —
+ * this rebuild's own column list not yet knowing about it). Being current
+ * as of today doesn't make this rebuild immune to the same fate: the next
+ * column added to booksTextColumns after this one needs updating here
+ * too, same as every earlier rebuild in this file.
  */
 function rebuildBooksTableForComicSupport(db: Database.Database): void {
   const wasForeignKeysOn = db.pragma('foreign_keys', { simple: true }) === 1
@@ -245,6 +250,7 @@ function rebuildBooksTableForComicSupport(db: Database.Database): void {
           writer TEXT,
           penciller TEXT,
           publisher TEXT,
+          arc_name TEXT,
           page_count INTEGER,
           metadata_enrichment_attempted_at TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -255,13 +261,13 @@ function rebuildBooksTableForComicSupport(db: Database.Database): void {
         INSERT INTO books_new (
           id, source_id, file_path, format, companion_book_id, title, author, series_name, series_number,
           series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
-          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, page_count,
+          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, arc_name, page_count,
           metadata_enrichment_attempted_at, created_at, updated_at
         )
         SELECT
           id, source_id, file_path, format, companion_book_id, title, author, series_name, series_number,
           series_number_source, status, missing_since, artwork_thumb_path, artwork_full_path,
-          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, NULL,
+          volume_normalization_gain, content_hash, genre, synopsis, narrator, writer, penciller, publisher, arc_name, NULL,
           metadata_enrichment_attempted_at, created_at, updated_at
         FROM books
       `)

@@ -34,6 +34,10 @@ export interface TestLibrary {
   flatSeriesBook1Path: string
   flatSeriesBook2Path: string
   loneStandaloneBookPath: string
+  misgroupedFolderDir: string
+  misgroupedBook1Path: string
+  misgroupedBook2Path: string
+  misgroupedBook3Path: string
 }
 
 async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
@@ -609,6 +613,36 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     'aac',
   ])
 
+  // --- Folder of loose standalone mp3s that are actually THREE different
+  // books (not chapters of one), each with its own distinct Album tag —
+  // reproduces the real-world Koontz "Frankenstein" / King "The Dark
+  // Tower" misgrouping: a shared folder of loose mp3s used to always
+  // collapse into one book (first file's Album wins, the rest become
+  // invisible extra "chapters"). Must ingest as three separate
+  // single-chapter books instead.
+  const misgroupedFolderDir = path.join(root, 'Misgrouped Author', 'Shared Folder')
+  await mkdir(misgroupedFolderDir, { recursive: true })
+  const misgroupedBooks = [
+    { file: '01 - First Book.mp3', album: 'First Book' },
+    { file: '02 - Second Book.mp3', album: 'Second Book' },
+    { file: '03 - Third Book.mp3', album: 'Third Book' },
+  ]
+  for (const b of misgroupedBooks) {
+    await makeTone(path.join(misgroupedFolderDir, b.file), 1, [
+      '-metadata',
+      `title=${b.album}`,
+      '-metadata',
+      `album=${b.album}`,
+      '-metadata',
+      'artist=Misgrouped Author',
+      '-c:a',
+      'libmp3lame',
+    ])
+  }
+  const misgroupedBook1Path = path.join(misgroupedFolderDir, misgroupedBooks[0].file)
+  const misgroupedBook2Path = path.join(misgroupedFolderDir, misgroupedBooks[1].file)
+  const misgroupedBook3Path = path.join(misgroupedFolderDir, misgroupedBooks[2].file)
+
   return {
     root,
     mp3FolderDir,
@@ -636,5 +670,9 @@ export async function buildTestLibrary(): Promise<TestLibrary> {
     flatSeriesBook1Path,
     flatSeriesBook2Path,
     loneStandaloneBookPath,
+    misgroupedFolderDir,
+    misgroupedBook1Path,
+    misgroupedBook2Path,
+    misgroupedBook3Path,
   }
 }

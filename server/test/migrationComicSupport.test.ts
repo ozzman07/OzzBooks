@@ -123,9 +123,13 @@ describe('migrate() rebuilding an already-epub-shaped books table for cbz suppor
 
     // The whole point of the rebuild: format='cbz', page_count, and the
     // writer/penciller/publisher columns are now all accepted together.
+    // arc_name is a later plain-ADD-COLUMN addition (no CHECK, so it never
+    // needed a rebuild of its own) — covered here too since it's still
+    // exercising the same "does this fresh-from-old-shape DB accept every
+    // comic column" question.
     db.prepare(
-      `INSERT INTO books (id, source_id, file_path, format, title, page_count, writer, penciller, publisher, created_at, updated_at)
-       VALUES ('book-2', 'src-1', '/comics/b.cbz', 'cbz', 'New Comic', 24, 'Jeph Loeb', 'Jim Lee', 'DC Comics', datetime('now'), datetime('now'))`,
+      `INSERT INTO books (id, source_id, file_path, format, title, page_count, writer, penciller, publisher, arc_name, created_at, updated_at)
+       VALUES ('book-2', 'src-1', '/comics/b.cbz', 'cbz', 'New Comic', 24, 'Jeph Loeb', 'Jim Lee', 'DC Comics', 'Hush', datetime('now'), datetime('now'))`,
     ).run()
     const comic = db.prepare('SELECT * FROM books WHERE id = ?').get('book-2') as any
     expect(comic.format).toBe('cbz')
@@ -133,6 +137,7 @@ describe('migrate() rebuilding an already-epub-shaped books table for cbz suppor
     expect(comic.writer).toBe('Jeph Loeb')
     expect(comic.penciller).toBe('Jim Lee')
     expect(comic.publisher).toBe('DC Comics')
+    expect(comic.arc_name).toBe('Hush')
 
     expect(db.pragma('foreign_key_check')).toEqual([])
   })

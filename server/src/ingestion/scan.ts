@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readdir, unlink } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
+import { parseFile } from 'music-metadata'
 import { getDb } from '../db/index.js'
 import { logActivity } from '../db/activityLog.js'
 import type { BookFormat, BookRow, SourceRow } from '../types.js'
@@ -12,7 +13,15 @@ import { contentHash } from './contentHash.js'
 import { extractArtwork, saveArtworkBuffer } from './artwork.js'
 import { readEpubMetadata } from './epub.js'
 import { isMobiFile, convertMobiToEpub } from './mobiConvert.js'
-import { detectArchiveKind, deriveComicSeriesFromSegments, isCbrFile, isCbzFile, isImageFile, readComicMetadata } from './comic.js'
+import {
+  detectArchiveKind,
+  deriveComicArcFromSegments,
+  deriveComicSeriesFromSegments,
+  isCbrFile,
+  isCbzFile,
+  isImageFile,
+  readComicMetadata,
+} from './comic.js'
 import { runCompanionLinking } from './companionLink.js'
 import { deriveSeriesNumberFromName } from './seriesNumber.js'
 import { getProvider, getScanner } from '../integrations/remote/registry.js'
@@ -30,13 +39,21 @@ export interface Candidate {
    * folder that's part of this book, in play order — undefined for a
    * standalone (non-grouped) mp3_folder candidate. */
   parts?: string[]
-  /** Set only for a multi-folder mp3_folder group: the parent directory
-   * containing the sibling disc folders (e.g. the "Book Title" folder
-   * containing "Disc 1"/"Disc 2"). filePath/hashInput point one level
-   * deeper (into the first disc folder) than the book's own folder, so
-   * series-name derivation and local cover-art lookup need this instead.
-   * Undefined everywhere else. */
+  /** Set for a multi-folder mp3_folder group (the parent directory
+   * containing sibling disc folders like "Disc 1"/"Disc 2") AND for an
+   * Album-tag-split mp3_folder candidate (the shared folder several
+   * distinct books' loose mp3s sit directly in — see mp3FileNames below).
+   * In both cases filePath/hashInput point one level deeper (into the
+   * first disc folder, or the candidate's own first file) than the book's
+   * own folder, so series-name derivation and local cover-art lookup need
+   * this instead. Undefined everywhere else. */
   groupFolder?: string
+  /** Set only for an Album-tag-split mp3_folder candidate: restricts
+   * ingestion to just these filenames within `groupFolder`, rather than
+   * every .mp3 sitting there — see groupFilenamesByAlbum in findCandidates.
+   * Undefined means "every mp3 in the folder", the ordinary
+   * one-book-per-folder case. */
+  mp3FileNames?: string[]
 }
 
 /** A file (or folder) found during a scan that can't be ingested as-is —
@@ -144,9 +161,22 @@ async function buildTrashHashIndex(pathScope: string): Promise<Map<string, strin
  * just-created duplicate row being folded into an auto-replaced book's
  * identity (autoReplaceMissingBooks), or a user manually clearing a missing
  * book from the Needs Attention page (DELETE /api/books/:id). Progress/
- * bookmarks live in the separate cloud sync layer, unaffected either way. */
+ * bookmarks live in the separate cloud sync layer, unaffected either way.
+ *
+ * Any book can be someone else's companion_book_id (see companionLink.ts)
+ * — that column has no ON DELETE clause, so with foreign_keys pragma ON
+ * (see db/index.ts) deleting a book still referenced that way throws
+ * `SqliteError: FOREIGN KEY constraint failed` and aborts whatever larger
+ * operation was mid-delete (this was silently killing every full rescan's
+ * trailing cleanup pass — see ozzbooks-scan-fk-constraint-crash memory).
+ * Cleared unconditionally by reverse lookup first, rather than trusting
+ * this book's own companion_book_id to be symmetric (unlinkCompanions'
+ * assumption) — guarantees the delete below can never trip this, even
+ * against an already-inconsistent one-sided link. */
 export async function deleteBookAndArtwork(book: BookRow): Promise<void> {
-  getDb().prepare('DELETE FROM books WHERE id = ?').run(book.id)
+  const db = getDb()
+  db.prepare('UPDATE books SET companion_book_id = NULL WHERE companion_book_id = ?').run(book.id)
+  db.prepare('DELETE FROM books WHERE id = ?').run(book.id)
   for (const artworkPath of [book.artwork_thumb_path, book.artwork_full_path]) {
     if (!artworkPath) continue
     try {
@@ -388,6 +418,53 @@ function isSameBookAsAnyEpub(mobiName: string, epubFiles: Dirent[]): boolean {
   })
 }
 
+// Read just the Album tag (never the full metadata music-metadata would
+// otherwise compute, e.g. duration — that's a much more expensive scan of
+// the whole file for a VBR mp3) for one file about to become part of an
+// mp3_folder candidate. An unreadable/corrupt file is treated as having no
+// Album (empty string) rather than thrown — a bad file shouldn't derail
+// candidate detection itself; ingestCandidate's own per-file handling
+// surfaces a genuinely bad file as a scan issue at ingestion time instead.
+async function readAlbumTag(filePath: string): Promise<string> {
+  try {
+    const metadata = await parseFile(filePath, { duration: false })
+    return metadata.common.album?.trim() ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Splits one folder's loose mp3 filenames into one group per distinct
+ * Album tag value (case-insensitively) — the signal that tells "these are
+ * chapters of one book" (every file shares one Album, or none has one)
+ * apart from "these are several different books that happen to share a
+ * folder" (Album values genuinely differ). See
+ * ozzbooks-mp3-folder-misgrouping-bug memory for the concrete cases this
+ * exists to fix — Koontz's "Frankenstein" folder (5 distinct novels) and
+ * King's "The Dark Tower" folder (7 distinct novels) were each silently
+ * collapsing into a single book, with every file after the first invisible
+ * as an unlabeled extra chapter.
+ *
+ * Every file with no Album tag at all lands in the same ('') group — a
+ * blank tag is far more often "this rip just never got tagged" than "one
+ * of several untitled one-chapter books," so an untagged folder keeps
+ * today's single-book-per-folder behavior unchanged. Returns one group
+ * (containing every filename) when all tags agree — the overwhelmingly
+ * common case — so the ordinary single-candidate path below is untouched
+ * whenever a folder's tags don't actually disagree.
+ */
+function groupFilenamesByAlbum(filenames: string[], albumOf: Map<string, string>): string[][] {
+  const byAlbum = new Map<string, string[]>()
+  for (const filename of filenames) {
+    const key = (albumOf.get(filename) ?? '').toLowerCase()
+    const group = byAlbum.get(key)
+    if (group) group.push(filename)
+    else byAlbum.set(key, [filename])
+  }
+  return [...byAlbum.values()]
+}
+
 export async function findCandidates(dir: string): Promise<{ candidates: Candidate[]; issues: ScanFindingIssue[] }> {
   if (BACKUP_FOLDER_RE.test(path.basename(dir)) || SYSTEM_METADATA_FOLDER_RE.test(path.basename(dir))) {
     return { candidates: [], issues: [] }
@@ -488,11 +565,37 @@ export async function findCandidates(dir: string): Promise<{ candidates: Candida
   }
 
   if (m4bFiles.length === 0 && mp3Files.length > 0) {
-    candidates.push({
-      format: 'mp3_folder',
-      filePath: dir,
-      hashInput: path.join(dir, mp3Files[0].name),
-    })
+    const mp3Filenames = mp3Files.map((f) => f.name)
+    const albumOf = new Map<string, string>()
+    await Promise.all(
+      mp3Filenames.map(async (filename) => {
+        albumOf.set(filename, await readAlbumTag(path.join(dir, filename)))
+      }),
+    )
+    const albumGroups = groupFilenamesByAlbum(mp3Filenames, albumOf)
+
+    if (albumGroups.length <= 1) {
+      candidates.push({
+        format: 'mp3_folder',
+        filePath: dir,
+        hashInput: path.join(dir, mp3Files[0].name),
+      })
+    } else {
+      // Tags genuinely disagree — this folder holds several distinct
+      // books' loose mp3s, not one book's chapters. One candidate per
+      // distinct Album value, each scoped (via mp3FileNames) to just its
+      // own files within the shared folder.
+      for (const group of albumGroups) {
+        const sorted = [...group].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        candidates.push({
+          format: 'mp3_folder',
+          filePath: path.join(dir, sorted[0]),
+          hashInput: path.join(dir, sorted[0]),
+          mp3FileNames: sorted,
+          groupFolder: dir,
+        })
+      }
+    }
   }
 
   // Some MP3-folder rips split one book across sibling folders instead of
@@ -677,6 +780,12 @@ export async function ingestCandidate(candidate: Candidate): Promise<IngestedBoo
   if (candidate.format === 'm4b') {
     return ingestM4b(candidate.parts ?? [candidate.filePath])
   }
+  if (candidate.mp3FileNames) {
+    // Album-tag-split candidate (see groupFilenamesByAlbum in
+    // findCandidates): restrict to just this book's own files within the
+    // shared folder, not every mp3 sitting alongside it.
+    return ingestMp3Folder([{ dirPath: candidate.groupFolder ?? candidate.filePath, mp3Filenames: candidate.mp3FileNames }])
+  }
   const folders = candidate.parts ?? [candidate.filePath]
   const parts = await Promise.all(
     folders.map(async (dirPath) => {
@@ -749,6 +858,10 @@ export interface ResolvedBook {
   writer?: string | null
   penciller?: string | null
   publisher?: string | null
+  /** Comics only ('cbz') — see deriveComicArcFromSegments (comic.ts). The
+   * folder-nesting grouping Series Detail clusters by; every other
+   * format's call site omits this and gets null. */
+  arcName?: string | null
 }
 
 /**
@@ -783,10 +896,10 @@ export function writeBookAndChapters(
   const upsert = db.prepare(`
     INSERT INTO books (
       id, source_id, file_path, format, title, author, series_name, series_number, series_number_source,
-      status, artwork_thumb_path, artwork_full_path, content_hash, page_count, writer, penciller, publisher,
+      status, artwork_thumb_path, artwork_full_path, content_hash, page_count, writer, penciller, publisher, arc_name,
       created_at, updated_at
     ) VALUES (@id, @source_id, @file_path, @format, @title, @author, @series_name, @series_number, @series_number_source,
-      'active', @artwork_thumb_path, @artwork_full_path, @content_hash, @page_count, @writer, @penciller, @publisher,
+      'active', @artwork_thumb_path, @artwork_full_path, @content_hash, @page_count, @writer, @penciller, @publisher, @arc_name,
       datetime('now'), datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
@@ -805,6 +918,7 @@ export function writeBookAndChapters(
       writer = excluded.writer,
       penciller = excluded.penciller,
       publisher = excluded.publisher,
+      arc_name = excluded.arc_name,
       updated_at = datetime('now')
       -- created_at deliberately not touched on conflict — set once at
       -- first insert, preserved across every rescan after that. file_path
@@ -830,6 +944,7 @@ export function writeBookAndChapters(
     writer: resolved.writer ?? null,
     penciller: resolved.penciller ?? null,
     publisher: resolved.publisher ?? null,
+    arc_name: resolved.arcName ?? null,
   })
 
   db.prepare('DELETE FROM chapters WHERE book_id = ?').run(bookId)
@@ -972,6 +1087,7 @@ export async function applyIngestedCandidate(
     // source root with no folder to read at all.
     const relativeSegments = path.relative(source.path_scope, candidate.filePath).split(path.sep)
     const comicSeriesName = deriveComicSeriesFromSegments(relativeSegments) ?? meta.seriesFromTag
+    const comicArcName = deriveComicArcFromSegments(relativeSegments)
 
     const { seriesNumber, seriesNumberSource } = resolveSeriesNumber(
       existingBookId,
@@ -1002,6 +1118,7 @@ export async function applyIngestedCandidate(
       writer: meta.writer,
       penciller: meta.penciller,
       publisher: meta.publisher,
+      arcName: comicArcName,
     })
     // Same "only fill a null field" rule as genre/narrator above — a
     // rescan must never clobber a manual Book Detail edit. ComicInfo.xml's

@@ -104,6 +104,31 @@ export function deriveComicSeriesFromSegments(segments: string[]): string | null
   return segments[0] || null
 }
 
+/**
+ * Immediate parent folder name for a comic nested at least two folders
+ * below the series root — the "arc" a Series Detail page groups by, so a
+ * story-arc collection ("Batman/Batman - Death of the Family/...") or a
+ * block of individually-filed weekly issues ("Batman/Batman Eternal/...")
+ * each cluster under their own folder's name instead of flattening every
+ * item directly under the series into one long list. Deliberately the
+ * *last* segment before the filename, not the second segment — real data
+ * has variable nesting depth under a series (e.g.
+ * "Batman Beyond/Batman Beyond (1999-2012)/Batman Beyond v1 01-06/..."),
+ * and the innermost folder is consistently the most specific, meaningful
+ * grouping regardless of how many broader era/omnibus folders sit above
+ * it. Null when the file sits directly under the series folder
+ * (segments.length < 3) — no intermediate folder means no arc to group
+ * by, same "no evidence, don't invent a grouping" reasoning as
+ * deriveComicSeriesFromSegments itself. A single-item arc is still
+ * returned here (this only reports what the folder structure says); it's
+ * up to the caller (groupComicsByArc, app-side) to decide whether a lone
+ * item's arc is worth its own heading.
+ */
+export function deriveComicArcFromSegments(segments: string[]): string | null {
+  if (segments.length < 3) return null
+  return segments[segments.length - 2] || null
+}
+
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
 
 function decodeXmlEntities(s: string): string {

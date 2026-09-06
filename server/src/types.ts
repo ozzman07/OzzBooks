@@ -52,6 +52,7 @@ export interface BookRow {
   writer: string | null
   penciller: string | null
   publisher: string | null
+  arc_name: string | null
   metadata_enrichment_attempted_at: string | null
   missing_since: string | null
   created_at: string
