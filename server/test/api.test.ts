@@ -600,6 +600,24 @@ describe('GET/PATCH /api/settings', () => {
     // Not sent this time — should still be true from the previous PATCH.
     expect(timeRes.body.nightly_rescan_enabled).toBe(true)
   })
+
+  it('rejects an autoPurgeAfterDays below 1 instead of enabling an immediate mass purge', async () => {
+    const zeroRes = await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ autoPurgeAfterDays: 0 })
+    expect(zeroRes.status).toBe(400)
+
+    const negativeRes = await request(app)
+      .patch('/api/settings')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ autoPurgeAfterDays: -5 })
+    expect(negativeRes.status).toBe(400)
+
+    // Rejected requests must not have changed anything.
+    const after = await request(app).get('/api/settings').set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(after.body.auto_purge_after_days).toBe(60)
+  })
 })
 
 describe('PATCH /api/books/:id and series-number backfill', () => {
@@ -660,6 +678,22 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
       .set('Authorization', `Bearer ${TEST_TOKEN}`)
       .send({ seriesNumber: 1 })
     expect(res.status).toBe(404)
+  })
+
+  it('400s for a malformed seriesName instead of throwing on the raw SQL bind', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesName: { not: 'a string' } })
+    expect(res.status).toBe(400)
+  })
+
+  it('400s for a malformed seriesNumber', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ seriesNumber: 'not a number' })
+    expect(res.status).toBe(400)
   })
 
   it('backfill fills a gap and leaves an already-numbered book untouched', async () => {

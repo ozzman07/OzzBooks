@@ -34,6 +34,15 @@ settingsRouter.patch('/', (req, res) => {
   const autoPurgeEnabled = req.body?.autoPurgeEnabled ?? Boolean(existing.auto_purge_enabled)
   const autoPurgeAfterDays = req.body?.autoPurgeAfterDays ?? existing.auto_purge_after_days
 
+  // A stray bad value here (0, negative, non-numeric) would make the very
+  // next nightly rescan's auto-purge (autoPurge.ts) delete every book
+  // that's been missing at all — the frontend's own number input already
+  // enforces min=1, but the API must not trust that alone.
+  if (!Number.isInteger(autoPurgeAfterDays) || autoPurgeAfterDays < 1) {
+    res.status(400).json({ error: 'autoPurgeAfterDays must be an integer of at least 1' })
+    return
+  }
+
   getDb()
     .prepare(
       `UPDATE app_settings

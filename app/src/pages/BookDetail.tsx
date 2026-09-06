@@ -71,7 +71,10 @@ function AddToPlaylist({ bookId }: { bookId: string }) {
         >
           + Add to Up Next
         </button>
-        <button onClick={() => void togglePicker()} className="text-sm text-amber-400 underline">
+        <button
+          onClick={() => void togglePicker()}
+          className="flex-1 rounded-lg border border-border-strong py-2 text-sm text-primary"
+        >
           Add to a playlist…
         </button>
       </div>
@@ -107,12 +110,15 @@ function DownloadBadge({
   const cachedCount = book.chapters.filter((c) => downloads.isCached(c)).length
   if (cachedCount === 0) {
     return (
-      <button
-        onClick={() => void downloads.downloadAll()}
-        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
-      >
-        Download whole book
-      </button>
+      <div>
+        <button
+          onClick={() => void downloads.downloadAll()}
+          className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
+        >
+          Download audiobook
+        </button>
+        {downloads.error && <p className="mt-1 text-xs text-red-400">{downloads.error}</p>}
+      </div>
     )
   }
   if (cachedCount === book.chapters.length) {
@@ -126,12 +132,15 @@ function DownloadBadge({
     )
   }
   return (
-    <button
-      onClick={() => void downloads.downloadAll()}
-      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
-    >
-      {cachedCount}/{book.chapters.length} downloaded — finish
-    </button>
+    <div>
+      <button
+        onClick={() => void downloads.downloadAll()}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
+      >
+        {cachedCount}/{book.chapters.length} downloaded — finish
+      </button>
+      {downloads.error && <p className="mt-1 text-xs text-red-400">{downloads.error}</p>}
+    </div>
   )
 }
 
@@ -149,13 +158,16 @@ function EbookDownloadBadge({ download }: { download: ReturnType<typeof useEbook
     )
   }
   return (
-    <button
-      onClick={() => void download.download()}
-      disabled={download.pending}
-      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
-    >
-      {download.pending ? 'Downloading…' : 'Download ebook'}
-    </button>
+    <div>
+      <button
+        onClick={() => void download.download()}
+        disabled={download.pending}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
+      >
+        {download.pending ? 'Downloading…' : 'Download ebook'}
+      </button>
+      {download.error && <p className="mt-1 text-xs text-red-400">{download.error}</p>}
+    </div>
   )
 }
 
@@ -178,17 +190,20 @@ function ComicDownloadBadge({ book, download }: { book: Book; download: ReturnTy
   }
   const pageCount = book.pageCount ?? 0
   return (
-    <button
-      onClick={() => void download.download()}
-      disabled={download.pending || pageCount === 0}
-      className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
-    >
-      {download.pending
-        ? `${download.cachedCount}/${pageCount} downloaded…`
-        : download.cachedCount > 0
-          ? `${download.cachedCount}/${pageCount} downloaded — finish`
-          : 'Download whole book'}
-    </button>
+    <div>
+      <button
+        onClick={() => void download.download()}
+        disabled={download.pending || pageCount === 0}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-40"
+      >
+        {download.pending
+          ? `${download.cachedCount}/${pageCount} downloaded…`
+          : download.cachedCount > 0
+            ? `${download.cachedCount}/${pageCount} downloaded — finish`
+            : 'Download whole book'}
+      </button>
+      {download.error && <p className="mt-1 text-xs text-red-400">{download.error}</p>}
+    </div>
   )
 }
 
@@ -304,7 +319,7 @@ export function BookDetail() {
   // download doesn't mean anything distinct in that case, since downloading
   // any one chapter already downloads the whole book. Showing a download
   // button on every one of what can be dozens of chapter markers is just
-  // confusing; the "Download whole book" badge above already covers it.
+  // confusing; the "Download audiobook" badge above already covers it.
   const singleFile =
     book.chapters.length > 0 && book.chapters.every((c) => c.sourceFileId === book.chapters[0].sourceFileId)
 
@@ -409,123 +424,136 @@ export function BookDetail() {
   }
 
   return (
-    <div className="mx-auto max-w-md px-4 pb-24 pt-6">
-      <div className="mx-auto w-40">
-        <CoverArt title={book.title} coverUrl={book.coverFullUrl} />
-      </div>
-      <h1 className="mt-4 text-center text-xl font-semibold text-primary">{book.title}</h1>
-      <p className="text-center text-sm text-muted">{book.author}</p>
-      {book.format !== 'epub' &&
-        (editingNarrator ? (
-          <div className="mt-1 flex items-center justify-center gap-2">
-            <input
-              type="text"
-              value={narratorDraft}
-              onChange={(e) => setNarratorDraft(e.target.value)}
-              placeholder="Narrator"
-              className="w-40 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
-            />
-            <button onClick={() => void saveNarrator()} className="text-xs text-amber-400 underline">
-              Save
-            </button>
-            <button onClick={() => setEditingNarrator(false)} className="text-xs text-subtle underline">
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <p className="text-center text-xs text-subtle">
-            {book.narrator && <>Narrated by {book.narrator} </>}
-            {isFullyLoaded && (
-              <button onClick={startEditingNarrator} className="underline">
-                {book.narrator ? 'Edit' : '+ Add narrator'}
-              </button>
-            )}
-          </p>
-        ))}
-      {narratorError && <p className="mt-1 text-center text-xs text-red-400">{narratorError}</p>}
-      {editingSeries ? (
-        <div className="mt-2 flex items-center justify-center gap-2">
-          <input
-            type="text"
-            value={seriesNameDraft}
-            onChange={(e) => setSeriesNameDraft(e.target.value)}
-            placeholder="Series name"
-            className="w-32 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
-          />
-          <input
-            type="number"
-            value={seriesNumberDraft}
-            onChange={(e) => setSeriesNumberDraft(e.target.value)}
-            placeholder="#"
-            className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle"
-          />
-          <button onClick={() => void saveSeries()} className="text-xs text-amber-400 underline">
-            Save
-          </button>
-          <button onClick={() => setEditingSeries(false)} className="text-xs text-subtle underline">
-            Cancel
-          </button>
+    <div className="mx-auto max-w-2xl px-4 pb-24 pt-6">
+      <button onClick={() => navigate(-1)} className="mb-4 inline-block text-sm text-muted underline">
+        ← Back
+      </button>
+      <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:gap-6">
+        <div className="w-40 shrink-0">
+          <CoverArt title={book.title} coverUrl={book.coverFullUrl} />
         </div>
-      ) : (
-        <p className="mt-1 text-center text-xs text-subtle">
-          {book.seriesName && (
-            <>
-              {book.seriesName}
-              {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
-              {book.seriesName && isFullyLoaded && ' · '}
-            </>
+        <div className="min-w-0 text-center sm:flex-1 sm:text-left">
+          <h1 className="text-xl font-semibold text-primary">{book.title}</h1>
+          <p className="text-sm text-muted">{book.author}</p>
+          {book.format !== 'epub' &&
+            book.format !== 'cbz' &&
+            (editingNarrator ? (
+              <div className="mt-1 flex items-center justify-center gap-2 sm:justify-start">
+                <input
+                  type="text"
+                  value={narratorDraft}
+                  onChange={(e) => setNarratorDraft(e.target.value)}
+                  placeholder="Narrator"
+                  className="w-40 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
+                />
+                <button onClick={() => void saveNarrator()} className="text-xs text-amber-400 underline">
+                  Save
+                </button>
+                <button onClick={() => setEditingNarrator(false)} className="text-xs text-subtle underline">
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-subtle">
+                {book.narrator && <>Narrated by {book.narrator} </>}
+                {isFullyLoaded && (
+                  <button onClick={startEditingNarrator} className="underline">
+                    {book.narrator ? 'Edit' : '+ Add narrator'}
+                  </button>
+                )}
+              </p>
+            ))}
+          {narratorError && <p className="mt-1 text-xs text-red-400">{narratorError}</p>}
+          {editingSeries ? (
+            <div className="mt-2 flex items-center justify-center gap-2 sm:justify-start">
+              <input
+                type="text"
+                value={seriesNameDraft}
+                onChange={(e) => setSeriesNameDraft(e.target.value)}
+                placeholder="Series name"
+                className="w-32 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
+              />
+              <input
+                type="number"
+                value={seriesNumberDraft}
+                onChange={(e) => setSeriesNumberDraft(e.target.value)}
+                placeholder="#"
+                className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
+              />
+              <button onClick={() => void saveSeries()} className="text-xs text-amber-400 underline">
+                Save
+              </button>
+              <button onClick={() => setEditingSeries(false)} className="text-xs text-subtle underline">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <p className="mt-1 text-xs text-subtle">
+              {book.seriesName && (
+                <>
+                  {book.seriesName}
+                  {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
+                  {book.seriesName && isFullyLoaded && ' · '}
+                </>
+              )}
+              {/* Editing needs the real fetched `book` object (saveSeries
+                  mutates it in place) — held back until the full fetch lands
+                  so a fast tap can't ever mutate the shared cached list item
+                  AppDataContext owns instead. */}
+              {isFullyLoaded && (
+                <button onClick={startEditingSeries} className="underline">
+                  {book.seriesName ? 'Edit' : '+ Add series info'}
+                </button>
+              )}
+            </p>
           )}
-          {/* Editing needs the real fetched `book` object (saveSeries
-              mutates it in place) — held back until the full fetch lands
-              so a fast tap can't ever mutate the shared cached list item
-              AppDataContext owns instead. */}
-          {isFullyLoaded && (
-            <button onClick={startEditingSeries} className="underline">
-              {book.seriesName ? 'Edit' : '+ Add series info'}
-            </button>
-          )}
-        </p>
-      )}
-      {seriesError && <p className="mt-1 text-center text-xs text-red-400">{seriesError}</p>}
-      <div className="mt-2 flex items-center justify-center gap-2">
-        {editingGenre ? (
-          <>
-            <select
-              value={genreDraft}
-              onChange={(e) => setGenreDraft(e.target.value)}
-              className="rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary"
-            >
-              <option value="">No genre</option>
-              {GENRE_OPTIONS.map((g) => (
-                <option key={g} value={g}>
-                  {g}
-                </option>
-              ))}
-            </select>
-            <button onClick={() => void saveGenre()} className="text-xs text-amber-400 underline">
-              Save
-            </button>
-            <button onClick={() => setEditingGenre(false)} className="text-xs text-subtle underline">
-              Cancel
-            </button>
-          </>
-        ) : book.genre ? (
-          <button
-            onClick={() => isFullyLoaded && startEditingGenre()}
-            className="rounded-full border border-border-strong bg-surface px-2.5 py-0.5 text-xs text-secondary"
-          >
-            {book.genre}
-          </button>
-        ) : (
-          isFullyLoaded && (
-            <button onClick={startEditingGenre} className="text-xs text-subtle underline">
-              + Add genre
-            </button>
-          )
-        )}
+          {seriesError && <p className="mt-1 text-xs text-red-400">{seriesError}</p>}
+          {/* Comics only — the folder-derived arc/collection one level below
+              seriesName (e.g. "No Man's Land" under "Batman"), same value
+              Series Detail groups by. Derived from folder structure at scan
+              time, not user-editable like series name/number above. */}
+          {book.arcName && <p className="mt-1 text-xs text-subtle">{book.arcName}</p>}
+          <div className="mt-2 flex items-center justify-center gap-2 sm:justify-start">
+            {editingGenre ? (
+              <>
+                <select
+                  value={genreDraft}
+                  onChange={(e) => setGenreDraft(e.target.value)}
+                  className="rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary sm:text-left"
+                >
+                  <option value="">No genre</option>
+                  {GENRE_OPTIONS.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => void saveGenre()} className="text-xs text-amber-400 underline">
+                  Save
+                </button>
+                <button onClick={() => setEditingGenre(false)} className="text-xs text-subtle underline">
+                  Cancel
+                </button>
+              </>
+            ) : book.genre ? (
+              <button
+                onClick={() => isFullyLoaded && startEditingGenre()}
+                className="rounded-full border border-border-strong bg-surface px-2.5 py-0.5 text-xs text-secondary"
+              >
+                {book.genre}
+              </button>
+            ) : (
+              isFullyLoaded && (
+                <button onClick={startEditingGenre} className="text-xs text-subtle underline">
+                  + Add genre
+                </button>
+              )
+            )}
+          </div>
+          {genreError && <p className="mt-1 text-xs text-red-400">{genreError}</p>}
+          {book.sourceLabel && <p className="text-xs text-subtle">{book.sourceLabel}</p>}
+        </div>
       </div>
-      {genreError && <p className="mt-1 text-center text-xs text-red-400">{genreError}</p>}
-      {book.sourceLabel && <p className="text-center text-xs text-subtle">{book.sourceLabel}</p>}
       {book.status === 'missing' && (
         <div className="mt-2 rounded bg-danger-soft px-3 py-2 text-center text-xs text-danger-soft-text">
           <p>This book's source file couldn't be found. Progress and bookmarks are kept.</p>
@@ -605,7 +633,7 @@ export function BookDetail() {
         onClick={() => void handleToggleLibrary()}
         className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
       >
-        {isInMyLibrary ? '✓ On My Library' : '+ Add to My Library'}
+        {isInMyLibrary ? '✓ In My Library' : '+ Add to My Library'}
       </button>
 
       {hasProgress && (
@@ -617,13 +645,13 @@ export function BookDetail() {
         </button>
       )}
 
-      {/* Up Next/playlists are an audio queue (NowPlaying's auto-advance
-          loads the next item straight into the audio player) — offering
-          it on a page with no chapters to play doesn't make sense. Hidden
-          here rather than on the epub format check alone so a companion
-          pair's epub-side page also hides it; its own "Listen" button
-          already sends you to the audio side's page, which has this. */}
-      {book.format !== 'epub' && <AddToPlaylist bookId={book.id} />}
+      {/* Named playlists (add/reorder/remove/browse) are purely
+          organizational and format-agnostic — only Up Next's auto-advance
+          is audio-specific (tied to the <audio> element's native `ended`
+          event in PlayerContext.tsx), and that's a separate concern from
+          offering the add-to-playlist action here. See
+          Ozzbooks_Addendum_PlaylistsForReading. */}
+      <AddToPlaylist bookId={book.id} />
 
       <div className="mt-3 flex items-center justify-between">
         {/* A pure ebook has no chapters, so totalDuration is 0 — see the

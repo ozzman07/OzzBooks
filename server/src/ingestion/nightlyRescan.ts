@@ -5,6 +5,16 @@ import { enrichBooks } from './enrichment/enrichBooks.js'
 import { runAutoPurge } from './autoPurge.js'
 
 const CHECK_INTERVAL_MS = 60_000
+// A real scan on this library takes well under 2 hours even for the
+// largest source — this is a generous ceiling, not a normal-case budget.
+// Without it, a genuinely hung scan (e.g. a network mount that stops
+// responding mid-walk rather than erroring) would leave `inFlight` stuck
+// true forever, permanently disabling every future nightly run until the
+// server restarts, silently. Giving up waiting here does NOT cancel the
+// underlying scan — it keeps running (or hanging) in the background,
+// this just stops it from blocking every other source and every future
+// night's run along with it.
+export const MAX_SCAN_WAIT_MS = 4 * 60 * 60 * 1000
 
 function formatLocalDate(now: Date): string {
   const y = now.getFullYear()
@@ -66,7 +76,16 @@ export async function runNightlyRescan(): Promise<void> {
   const sources = db.prepare('SELECT * FROM sources').all() as SourceRow[]
   for (const source of sources) {
     startScan(source)
+    const deadline = Date.now() + MAX_SCAN_WAIT_MS
     while (getScanState(source.id).status === 'running') {
+      if (Date.now() > deadline) {
+        console.error(
+          `Nightly rescan: source ${source.id} (${source.label}) is still running after ` +
+            `${MAX_SCAN_WAIT_MS / 60_000} minutes — giving up waiting so the rest of tonight's run (and future ` +
+            `nights) aren't blocked on it. The scan itself is unaffected and keeps running in the background.`,
+        )
+        break
+      }
       await sleep(5000)
     }
   }

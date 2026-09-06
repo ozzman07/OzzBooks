@@ -18,6 +18,11 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
   const auth = useAuth()
   const [cachedFileIds, setCachedFileIds] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Set<string>>(new Set()) // sourceFileIds currently downloading
+  // Surfaces a download failure (e.g. "this file is bigger than your whole
+  // storage budget" from downloadManager's ensureBudget) instead of it
+  // disappearing as a silently-swallowed rejection — every caller here
+  // already fires these from a bare `void download(...)` click handler.
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     const entries = await getCachedAudioFilesForBook(bookId)
@@ -43,11 +48,14 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
 
   const download = useCallback(
     async (chapter: Chapter) => {
+      setError(null)
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
         const budgetMb = await getBudgetMb()
         await downloadChapter(chapter, budgetMb)
         await refresh()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Download failed')
       } finally {
         setPending((p) => {
           const next = new Set(p)
@@ -60,6 +68,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
   )
 
   const downloadAll = useCallback(async () => {
+    setError(null)
     const budgetMb = await getBudgetMb()
     for (const chapter of chapters) {
       if (cachedFileIds.has(chapter.sourceFileId)) continue
@@ -70,6 +79,9 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
         // checkmark appears as each download completes instead of only
         // after the whole book finishes.
         await refresh()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Download failed')
+        break // stop at the first failure rather than repeating it for every remaining chapter
       } finally {
         setPending((p) => {
           const next = new Set(p)
@@ -93,5 +105,5 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
     await refresh()
   }, [bookId, refresh])
 
-  return { isCached, isPending, download, downloadAll, remove, removeAll }
+  return { isCached, isPending, download, downloadAll, remove, removeAll, error }
 }
