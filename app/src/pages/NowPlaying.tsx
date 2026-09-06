@@ -25,7 +25,7 @@ export function NowPlaying() {
   const auth = useAuth()
   const [showSleepMenu, setShowSleepMenu] = useState(false)
   const [scrubValue, setScrubValue] = useState<number | null>(null)
-  const { book, chapter, isBuffering, streamError, finished } = player
+  const { book, chapter, isBuffering, streamError, finished, stillListeningPrompt } = player
 
   useEffect(() => {
     if (scrubValue === null) return
@@ -92,7 +92,7 @@ export function NowPlaying() {
 
   if (!book || !chapter) {
     return (
-      <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-2 px-4 pb-24 pt-24 text-center text-muted">
+      <div className="mx-auto flex max-w-xl flex-col items-center justify-center gap-2 px-4 pb-24 pt-24 text-center text-muted">
         <p className="text-lg">Nothing playing</p>
         <p className="text-sm">Pick a book from your library to get started.</p>
       </div>
@@ -100,7 +100,24 @@ export function NowPlaying() {
   }
 
   return (
-    <div className="mx-auto max-w-md px-6 pb-28 pt-8">
+    <div className="mx-auto max-w-xl px-6 pb-28 pt-8">
+      {stillListeningPrompt && (
+        <div
+          role="alertdialog"
+          aria-label="Still listening?"
+          className="fixed inset-x-4 top-4 z-30 rounded-lg border border-amber-400 bg-surface px-4 py-3 text-center shadow-lg"
+        >
+          <p className="text-sm font-medium text-primary">Still listening?</p>
+          <p className="mt-1 text-xs text-subtle">Paused. If nobody answers, it'll rewind a bit and stay paused.</p>
+          <button
+            onClick={player.confirmStillListening}
+            className="mt-2 w-full rounded-lg bg-amber-400 py-2 text-sm font-medium text-slate-950"
+          >
+            Yes, keep playing
+          </button>
+        </div>
+      )}
+
       <Link
         to={`/book/${book.id}`}
         className="mb-4 inline-flex items-center gap-1 rounded-lg border border-border-strong px-3 py-1.5 text-sm text-secondary"
