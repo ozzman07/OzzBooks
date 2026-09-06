@@ -107,6 +107,9 @@ export function RelinkBook() {
 
   return (
     <div className="mx-auto max-w-md px-4 pb-24 pt-6">
+      <button onClick={() => navigate(-1)} className="mb-4 inline-block text-sm text-muted underline">
+        ← Back
+      </button>
       <h1 className="text-xl font-semibold text-primary">Relink</h1>
       <p className="mt-1 text-sm text-muted">{book.title}</p>
       {book.author && <p className="text-xs text-subtle">{book.author}</p>}

@@ -127,11 +127,28 @@ export interface SeriesGroup {
 // likely an incidental intermediate folder than a real series, so it folds
 // into the standalone bucket instead of cluttering the view with singleton
 // groups.
-export function groupBySeries(books: Book[]): { series: SeriesGroup[]; standalone: Book[] } {
+//
+// The 2+ threshold is checked against `catalogBooks` (defaulting to `books`
+// itself), not `books` alone — `books` may already be a narrowed-down list
+// (My Library's shelf-only subset, a search match), and a series being real
+// is a property of the catalog, not of how much of it happens to be
+// currently visible. Without this split, shelving just one issue of a
+// 938-book series (or searching down to one match) would wrongly relabel
+// it "Not part of a series" even though the series obviously exists.
+export function groupBySeries(
+  books: Book[],
+  catalogBooks: Book[] = books,
+): { series: SeriesGroup[]; standalone: Book[] } {
+  const catalogCounts = new Map<string, number>()
+  for (const book of catalogBooks) {
+    if (!book.seriesName) continue
+    catalogCounts.set(book.seriesName, (catalogCounts.get(book.seriesName) ?? 0) + 1)
+  }
+
   const bySeriesName = new Map<string, Book[]>()
   const standalone: Book[] = []
   for (const book of books) {
-    if (!book.seriesName) {
+    if (!book.seriesName || (catalogCounts.get(book.seriesName) ?? 0) < 2) {
       standalone.push(book)
       continue
     }
@@ -140,18 +157,94 @@ export function groupBySeries(books: Book[]): { series: SeriesGroup[]; standalon
     bySeriesName.set(book.seriesName, list)
   }
 
-  const series: SeriesGroup[] = []
-  for (const [seriesName, group] of bySeriesName) {
-    if (group.length < 2) {
-      standalone.push(...group)
-      continue
-    }
-    series.push({ seriesName, books: group.slice().sort(compareWithinSeries) })
-  }
+  const series: SeriesGroup[] = [...bySeriesName].map(([seriesName, group]) => ({
+    seriesName,
+    books: group.slice().sort(compareWithinSeries),
+  }))
 
   series.sort((a, b) => collate(titleSortKey(a.seriesName), titleSortKey(b.seriesName)))
   standalone.sort((a, b) => collate(titleSortKey(a.title), titleSortKey(b.title)))
   return { series, standalone }
+}
+
+export interface ArcGroup {
+  arcName: string
+  books: Book[]
+}
+
+// Comics-only sub-grouping one level below series — within e.g. "Batman",
+// clusters items that share an immediate parent folder (a story-arc
+// collection like "Death of the Family", or a block of individually-filed
+// weekly issues like "Batman Eternal") instead of Series Detail flattening
+// every item directly under the series into one list of numbered files.
+// See deriveComicArcFromSegments (comic.ts, server-side) for how arcName
+// is derived from the folder path at ingestion. Same fold-singleton-into-
+// standalone threshold as groupBySeries — a folder holding just one
+// collected edition doesn't need its own heading, only a multi-item arc
+// does. A book with no arcName (every non-comic format, plus a comic
+// filed directly under its series folder) always lands in standalone, so
+// this is a safe no-op when called on an audiobook/ebook series.
+export function groupComicsByArc(books: Book[]): { arcs: ArcGroup[]; standalone: Book[] } {
+  const byArcName = new Map<string, Book[]>()
+  const standalone: Book[] = []
+  for (const book of books) {
+    if (!book.arcName) {
+      standalone.push(book)
+      continue
+    }
+    const list = byArcName.get(book.arcName) ?? []
+    list.push(book)
+    byArcName.set(book.arcName, list)
+  }
+
+  const arcs: ArcGroup[] = []
+  for (const [arcName, group] of byArcName) {
+    if (group.length < 2) {
+      standalone.push(...group)
+      continue
+    }
+    arcs.push({ arcName, books: group.slice().sort(compareWithinSeries) })
+  }
+
+  arcs.sort((a, b) => collate(titleSortKey(a.arcName), titleSortKey(b.arcName)))
+  standalone.sort(compareWithinSeries)
+  return { arcs, standalone }
+}
+
+export interface SeriesAuthorGroup {
+  author: string
+  books: Book[]
+}
+
+// Sub-grouping within one already-matched series for the (uncommon but
+// real) case of a long-running multi-author series — James Bond being the
+// motivating example: multiple continuation authors, each writing their
+// own run, interleaved by seriesNumber/title into one confusing flat list
+// otherwise. Deliberately NOT the same fold-singleton-into-standalone
+// threshold groupBySeries/groupComicsByArc use: those guard against a
+// *detected* grouping (a folder-derived name) that might not be a real
+// series at all, so a lone match is suspicious. `author` is a direct,
+// explicit tag, not a guess — a continuation author who wrote exactly one
+// entry (not unusual for this pattern) is exactly as real a group as one
+// who wrote ten, so every distinct author gets its own group here, no
+// minimum size. Returns null when the whole series shares one author,
+// since sub-grouping by the answer everyone already knows adds nothing.
+export function groupSeriesByAuthor(books: Book[]): SeriesAuthorGroup[] | null {
+  if (new Set(books.map((b) => b.author)).size < 2) return null
+
+  const byAuthor = new Map<string, Book[]>()
+  for (const book of books) {
+    const list = byAuthor.get(book.author) ?? []
+    list.push(book)
+    byAuthor.set(book.author, list)
+  }
+
+  const groups: SeriesAuthorGroup[] = [...byAuthor].map(([author, group]) => ({
+    author,
+    books: group.slice().sort(compareWithinSeries),
+  }))
+  groups.sort((a, b) => collateByAuthor(a.author, b.author))
+  return groups
 }
 
 export interface AuthorGroup {

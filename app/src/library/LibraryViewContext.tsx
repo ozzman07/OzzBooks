@@ -99,9 +99,13 @@ const LibraryViewContext = createContext<LibraryViewContextValue | null>(null)
 // React Router unmounts a route's own component/state on navigation, which
 // otherwise reset every filter, sort, view mode, and the scroll position
 // back to defaults every time you returned from playing something.
-// Each content type's own sane default grouping — comics is series-first
-// (67 franchise-organized folders covering most of the real library), the
-// existing audio/ebook collection stays List (mostly-standalone today).
+// Each content type's own sane default grouping — List for audio/ebooks
+// (a mostly-standalone collection, per Jim's call reverting the earlier
+// bySeries-for-both experiment), By Series for comics (its 67 franchise-
+// organized folders make series grouping the useful default there). The
+// By Series grouping/rendering stays generic either way (see the
+// viewMode==='bySeries' branch below) — this only picks which mode a
+// fresh visit starts on per content type.
 const DEFAULT_VIEW_MODE_FOR_CONTENT_TYPE: Record<ContentType, ViewMode> = {
   books: 'list',
   comics: 'bySeries',
@@ -111,7 +115,7 @@ export function LibraryViewProvider({ children }: { children: ReactNode }) {
   const [contentType, setContentTypeRaw] = useState<ContentType>('books')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState<SortOption>('title')
-  const [viewMode, setViewMode] = useState<ViewMode>('list')
+  const [viewMode, setViewMode] = useState<ViewMode>(DEFAULT_VIEW_MODE_FOR_CONTENT_TYPE.books)
   const [displayMode, setDisplayMode] = useState<DisplayMode>('tile')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [formatFilter, setFormatFilter] = useState<FormatFilter>('all')

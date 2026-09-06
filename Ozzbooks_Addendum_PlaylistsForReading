@@ -5,13 +5,14 @@ This addendum extends `Claude.md` with a planned (not yet built) fix:
 works for audiobooks.** Keep this alongside `Claude.md` and the other
 addenda so future sessions have this context.
 
-**Status: planned, not started.** Surfaced 2026-09-02 while scoping the
-comics Book Detail page (`Ozzbooks_Addendum_Comics`) — Jim's expectation
-was that this already worked for ebooks, which turned out not to be
-true (`BookDetail.tsx` hides `AddToPlaylist` behind `book.format !==
-'epub'` today). This is being tracked separately from the comics work
-because it's a pre-existing ebook gap, not something new comics
-introduced — comics shouldn't ship with the same gap a second time.
+**Status: item 1 shipped 2026-09-05, item 2-4 still planned.** Surfaced
+2026-09-02 while scoping the comics Book Detail page
+(`Ozzbooks_Addendum_Comics`) — Jim's expectation was that this already
+worked for ebooks, which turned out not to be true (`BookDetail.tsx`
+hid `AddToPlaylist` behind `book.format !== 'epub'`). This was tracked
+separately from the comics work because it's a pre-existing ebook gap,
+not something new comics introduced — comics shouldn't ship with the
+same gap a second time.
 
 ## What "Playlists" actually does today (why this isn't just deleting a guard)
 
@@ -39,17 +40,13 @@ So this isn't one gap, it's two different-sized ones layered together.
 
 ## Recommended split
 
-**1. Ship immediately — low risk, fixes the actual reported gap.**
-Remove the `book.format !== 'epub'` guard on `AddToPlaylist` in
-`BookDetail.tsx`, and extend the same check to exclude comics too once
-`ComicReader` exists (or rather, extend it to *include* them — the
-guard becomes "hide only if there's truly nothing to queue," which
-never applies to a real book). Named playlists and adding-to-Up-Next
-both work immediately for ebooks and comics exactly as they do for
-audio today, since neither depends on the `ended`-event machinery —
-only *advancing out of* Up Next automatically does. This alone fixes
-what Jim already expected to work for ebooks, and comics get it from
-day one instead of needing a second follow-up fix later.
+**1. DONE (2026-09-05).** Removed the `book.format !== 'epub'` guard on
+`AddToPlaylist` in `BookDetail.tsx` — it now renders unconditionally,
+covering ebooks and comics (`ComicReader` already existed by the time
+this shipped) the same as audio. Named playlists and adding-to-Up-Next
+work immediately for every format, since neither depends on the
+`ended`-event machinery — only *advancing out of* Up Next automatically
+still doesn't (see item 2 below, still unbuilt).
 
 **2. Real auto-advance needs a "finished" signal invented for each
 reader, since none exists natively.** Define it explicitly:

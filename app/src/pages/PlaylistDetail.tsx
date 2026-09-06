@@ -115,7 +115,7 @@ export function PlaylistDetail() {
   }
 
   return (
-    <div className="mx-auto max-w-md px-4 pb-24 pt-6">
+    <div className="mx-auto max-w-2xl px-4 pb-24 pt-6">
       <Link to="/playlists" className="mb-4 inline-flex items-center gap-1 text-sm text-muted">
         <span aria-hidden="true">‹</span> Playlists
       </Link>
