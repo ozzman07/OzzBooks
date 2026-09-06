@@ -18,6 +18,7 @@ export function useComicDownload(bookId: string | undefined, pageCount: number |
   const [cachedCount, setCachedCount] = useState(0)
   const [complete, setComplete] = useState(false)
   const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!bookId) {
@@ -36,6 +37,7 @@ export function useComicDownload(bookId: string | undefined, pageCount: number |
 
   const download = useCallback(async () => {
     if (!bookId || !pageCount) return
+    setError(null)
     setPending(true)
     try {
       let budgetMb = DEFAULT_STORAGE_BUDGET_MB
@@ -48,6 +50,8 @@ export function useComicDownload(bookId: string | undefined, pageCount: number |
       }
       await downloadComic(bookId, pageCount, budgetMb, () => void refresh())
       await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Download failed')
     } finally {
       setPending(false)
     }
@@ -59,5 +63,5 @@ export function useComicDownload(bookId: string | undefined, pageCount: number |
     await refresh()
   }, [bookId, refresh])
 
-  return { cachedCount, complete, pending, download, remove }
+  return { cachedCount, complete, pending, download, remove, error }
 }

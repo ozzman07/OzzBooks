@@ -17,12 +17,12 @@ export const config = {
   apiToken: requireEnvInProduction('OZZBOOKS_API_TOKEN', 'dev-local-token'),
   // Encrypts remote-source OAuth tokens at rest (see integrations/remote/
   // credentials.ts) — any passphrase-shaped string, hashed down to a real
-  // AES-256 key rather than needing to be exactly 32 bytes itself. Not
-  // yet required in production: no concrete remote provider exists, so
-  // nothing produces real credentials for this to protect. Set
-  // OZZBOOKS_CREDENTIALS_KEY (and switch this to requireEnvInProduction)
-  // before a real provider ships and starts storing real OAuth tokens.
-  credentialsEncryptionKey: process.env.OZZBOOKS_CREDENTIALS_KEY ?? 'dev-local-credentials-key',
+  // AES-256 key rather than needing to be exactly 32 bytes itself. Google
+  // Drive is a real, live provider now (not hypothetical), so the fallback
+  // below being a fixed, source-controlled string is a real exposure the
+  // moment a source has stored credentials — required in production the
+  // same way apiToken already is.
+  credentialsEncryptionKey: requireEnvInProduction('OZZBOOKS_CREDENTIALS_KEY', 'dev-local-credentials-key'),
   // Deliberately NOT required at startup (unlike apiToken above) — these
   // genuinely don't exist yet until the Google Cloud Console setup is
   // done, and gating server boot on them would take the whole app down

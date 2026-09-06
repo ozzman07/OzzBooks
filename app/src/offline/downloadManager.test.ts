@@ -186,6 +186,26 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
     expect(await getCachedAudioFile('audio-newest')).not.toBeUndefined() // new download landed
     expect((await getAllCachedAudioFiles()).length).toBe(2)
   })
+
+  it('rejects a download bigger than the entire budget instead of evicting everything and still failing', async () => {
+    await putCachedAudioFile({
+      sourceFileId: 'survivor',
+      bookId: 'book-1',
+      blob: new Blob([new Uint8Array(30)]),
+      sizeBytes: 30,
+      downloadedAt: '2026-01-01T00:00:00.000Z',
+      lastPlayedAt: '2026-01-01T00:00:00.000Z',
+    })
+
+    const budgetMb = 50 / (1024 * 1024) // 50 bytes total
+    vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(100))) // bigger than the whole budget
+
+    await expect(downloadChapter(makeChapter({ sourceFileId: 'too-big' }), budgetMb)).rejects.toThrow(/larger than your entire storage budget/)
+
+    // Nothing should have been evicted trying (and failing) to make room.
+    expect(await getCachedAudioFile('survivor')).not.toBeUndefined()
+    expect(await getCachedAudioFile('too-big')).toBeUndefined()
+  })
 })
 
 describe('downloadComicPage', () => {

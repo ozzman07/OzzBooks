@@ -72,6 +72,18 @@ booksRouter.patch('/:id', (req, res) => {
   // of leaving it permanently stuck on whatever guess came before.
   const seriesNumberSource = 'seriesNumber' in body ? (seriesNumber === null ? null : 'manual') : existing.series_number_source
 
+  // Malformed types (an object/array instead of a string/number) would
+  // otherwise reach the raw SQL bind below and throw there instead —
+  // caught here so a bad request gets a clean 400, not an opaque 500.
+  if (seriesName !== null && typeof seriesName !== 'string') {
+    res.status(400).json({ error: 'seriesName must be a string or null' })
+    return
+  }
+  if (seriesNumber !== null && typeof seriesNumber !== 'number') {
+    res.status(400).json({ error: 'seriesNumber must be a number or null' })
+    return
+  }
+
   if ('genre' in body && body.genre !== null && !GENRE_OPTIONS.includes(body.genre)) {
     res.status(400).json({ error: 'invalid genre' })
     return

@@ -16,6 +16,7 @@ export function useEbookDownload(bookId: string | undefined) {
   const auth = useAuth()
   const [cached, setCached] = useState(false)
   const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!bookId) {
@@ -31,6 +32,7 @@ export function useEbookDownload(bookId: string | undefined) {
 
   const download = useCallback(async () => {
     if (!bookId) return
+    setError(null)
     setPending(true)
     try {
       let budgetMb = DEFAULT_STORAGE_BUDGET_MB
@@ -44,6 +46,8 @@ export function useEbookDownload(bookId: string | undefined) {
       }
       await downloadEpubFile(bookId, budgetMb)
       await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Download failed')
     } finally {
       setPending(false)
     }
@@ -55,5 +59,5 @@ export function useEbookDownload(bookId: string | undefined) {
     await refresh()
   }, [bookId, refresh])
 
-  return { cached, pending, download, remove }
+  return { cached, pending, download, remove, error }
 }

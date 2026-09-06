@@ -102,4 +102,49 @@ describe('runNightlyRescan', () => {
     const row = db.prepare('SELECT * FROM app_settings WHERE id = 1').get() as AppSettingsRow
     expect(row.nightly_rescan_last_run_date).toBeTruthy()
   })
+
+  // Regression test: a scan that never settles (a hung network mount, not a
+  // clean error) used to leave the per-source wait loop polling forever,
+  // which left `inFlight` stuck true and silently disabled every future
+  // night's run until the server restarted. MAX_SCAN_WAIT_MS bounds that
+  // wait so one hung source can't take the whole scheduler down with it.
+  it('gives up waiting on a source stuck "running" forever instead of blocking indefinitely', async () => {
+    vi.useFakeTimers()
+    try {
+      const { randomUUID } = await import('node:crypto')
+      const { getDb } = await import('../src/db/index.js')
+      const db = getDb()
+      const sourceId = randomUUID()
+      db.prepare("INSERT INTO sources (id, type, label, path_scope) VALUES (?, 'local', 'Stuck Source', '/tmp/stuck')").run(
+        sourceId,
+      )
+
+      const scanStatus = await import('../src/ingestion/scanStatus.js')
+      vi.spyOn(scanStatus, 'startScan').mockReturnValue({ status: 'running', startedAt: new Date().toISOString() })
+      vi.spyOn(scanStatus, 'getScanState').mockReturnValue({ status: 'running', startedAt: new Date().toISOString() })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+      vi.mocked(enrichBooks).mockResolvedValue({
+        attempted: 0,
+        genreUpdated: 0,
+        synopsisUpdated: 0,
+        coverUpdated: 0,
+        skipped: 0,
+        failed: 0,
+        abortedDueToUnavailability: false,
+      })
+
+      const { runNightlyRescan, MAX_SCAN_WAIT_MS } = await import('../src/ingestion/nightlyRescan.js')
+      const done = runNightlyRescan()
+      await vi.advanceTimersByTimeAsync(MAX_SCAN_WAIT_MS + 10_000)
+      await done
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Stuck Source'))
+      db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId)
+    } finally {
+      vi.useRealTimers()
+      vi.restoreAllMocks()
+    }
+  }, 30_000)
 })

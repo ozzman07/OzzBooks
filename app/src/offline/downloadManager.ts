@@ -127,6 +127,18 @@ async function collectEvictionCandidates(): Promise<EvictionCandidate[]> {
  * check at all was a real risk once comics could be tens to over a
  * hundred MB per issue). */
 async function ensureBudget(incomingBytes: number, budgetBytes: number): Promise<void> {
+  // A single item bigger than the whole budget can never fit no matter what
+  // gets evicted — checked before touching anything else already cached, so
+  // a too-large download fails cleanly instead of silently wiping every
+  // other offline download first and still not having room.
+  if (incomingBytes > budgetBytes) {
+    const mb = (n: number) => Math.ceil(n / (1024 * 1024))
+    throw new Error(
+      `This download (${mb(incomingBytes)} MB) is larger than your entire storage budget (${mb(budgetBytes)} MB). ` +
+        `Increase the storage budget in Settings before downloading it.`,
+    )
+  }
+
   let used = await getTotalCachedBytes()
   if (used + incomingBytes <= budgetBytes) return
 

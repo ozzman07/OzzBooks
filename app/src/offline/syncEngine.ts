@@ -8,6 +8,14 @@ const MAX_BACKOFF_MS = 60_000
 let backoffMs = MIN_BACKOFF_MS
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let listenersInstalled = false
+// The 'online' listener below is installed once and never re-added, but it
+// must always sync with whoever is *currently* logged in — not whoever was
+// logged in the moment the listener happened to be installed. Tracked here
+// instead of captured in the listener's closure, so a second account
+// logging in on the same device (e.g. a family member's own login) doesn't
+// leave the passive reconnect-sync silently stuck retrying with a stale,
+// no-longer-valid token forever.
+let currentToken: string | null = null
 
 function scheduleRetry(token: string) {
   if (retryTimer) return
@@ -18,10 +26,10 @@ function scheduleRetry(token: string) {
   backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS)
 }
 
-function installReconnectListener(token: string) {
+function installReconnectListener() {
   if (listenersInstalled) return
   listenersInstalled = true
-  window.addEventListener('online', () => void trySync(token))
+  window.addEventListener('online', () => void trySync(currentToken))
 }
 
 async function syncOne(token: string, entry: LocalProgressEntry): Promise<boolean> {
@@ -54,7 +62,8 @@ async function syncOne(token: string, entry: LocalProgressEntry): Promise<boolea
  * Claude.md — this is the actual queue, not a direct fire-and-forget call. */
 export async function trySync(token: string | null): Promise<void> {
   if (!token) return
-  installReconnectListener(token)
+  currentToken = token
+  installReconnectListener()
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     scheduleRetry(token)
     return
