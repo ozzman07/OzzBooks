@@ -19,6 +19,15 @@ import {
   type ApiActivityLogSummary,
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
+import { usePlayer } from '../player/PlayerContext'
+import {
+  IDLE_MINUTES_MIN,
+  IDLE_MINUTES_MAX,
+  RESPONSE_WINDOW_MIN,
+  RESPONSE_WINDOW_MAX,
+  REWIND_SECONDS_MIN,
+  REWIND_SECONDS_MAX,
+} from '../player/stillListeningPrefs'
 import { getAllCachedAudioFiles } from '../offline/audioFileStore'
 import { getAllCachedEpubFiles } from '../offline/epubFileStore'
 import { getAllCachedComicPages } from '../offline/comicPageStore'
@@ -405,10 +414,16 @@ const APPEARANCE_OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: 'system', label: 'System' },
 ]
 
+// Inner content only, no card wrapper — rendered inside PreferencesCard
+// below, alongside StillListeningCard, so the two per-device player/UI
+// preferences share one card instead of each taking their own grid slot
+// (with only one of them, the grid's dense packing left "Account" stranded
+// alone in its own row instead of filling the gap next to Storage like it
+// used to).
 function AppearanceCard() {
   const { preference, setPreference } = useTheme()
   return (
-    <section className="rounded-lg border border-border p-4">
+    <div>
       <h2 className="mb-2 text-sm font-medium text-primary">Appearance</h2>
       <div className="flex overflow-hidden rounded-lg border border-border-strong text-sm">
         {APPEARANCE_OPTIONS.map((opt) => (
@@ -423,6 +438,102 @@ function AppearanceCard() {
           </button>
         ))}
       </div>
+    </div>
+  )
+}
+
+// Inner content only (see AppearanceCard above) — per-device player
+// preference (localStorage, via PlayerContext), not the server-backed
+// ApiAppSettings cards below, since this is about one listener's own
+// habits, not the shared library. Local draft state + commit-on-blur for
+// the three numeric fields (same pattern as the Storage budget field
+// above) rather than saving on every keystroke — clamping a value the
+// moment its first digit is typed would otherwise make it impossible to
+// type e.g. "45" when the field's minimum is above the single digit "4".
+function StillListeningCard() {
+  const player = usePlayer()
+  const { stillListeningPrefs: prefs, updateStillListeningPrefs } = player
+  const [idleMinutesDraft, setIdleMinutesDraft] = useState(String(prefs.idleMinutes))
+  const [responseWindowDraft, setResponseWindowDraft] = useState(String(prefs.responseWindowSeconds))
+  const [rewindDraft, setRewindDraft] = useState(String(prefs.rewindSeconds))
+
+  useEffect(() => setIdleMinutesDraft(String(prefs.idleMinutes)), [prefs.idleMinutes])
+  useEffect(() => setResponseWindowDraft(String(prefs.responseWindowSeconds)), [prefs.responseWindowSeconds])
+  useEffect(() => setRewindDraft(String(prefs.rewindSeconds)), [prefs.rewindSeconds])
+
+  return (
+    <div className="mt-4 border-t border-border pt-4">
+      <h2 className="mb-1 text-sm font-medium text-primary">Still listening check-in (pause &amp; rewind)</h2>
+      <p className="mb-3 text-xs text-subtle">
+        If playback runs uninterrupted for a while, OzzBooks pauses and plays a chime. If nobody responds, it
+        assumes you've fallen asleep, rewinds a bit, and stays paused.
+      </p>
+
+      <label className="flex items-center justify-between text-sm text-secondary">
+        <span>Pause &amp; rewind if no response</span>
+        <input
+          type="checkbox"
+          checked={prefs.enabled}
+          onChange={(e) => updateStillListeningPrefs({ enabled: e.target.checked })}
+          className="h-4 w-4"
+        />
+      </label>
+
+      <label className="mt-2 flex items-center justify-between text-sm text-secondary">
+        <span>Check in after (minutes)</span>
+        <input
+          type="number"
+          min={IDLE_MINUTES_MIN}
+          max={IDLE_MINUTES_MAX}
+          value={idleMinutesDraft}
+          disabled={!prefs.enabled}
+          onChange={(e) => setIdleMinutesDraft(e.target.value)}
+          onBlur={(e) => updateStillListeningPrefs({ idleMinutes: Number(e.target.value) })}
+          className="w-16 rounded border border-border-strong bg-surface px-2 py-1 text-right text-primary disabled:opacity-50"
+        />
+      </label>
+
+      <label className="mt-2 flex items-center justify-between text-sm text-secondary">
+        <span>Wait for a response (seconds)</span>
+        <input
+          type="number"
+          min={RESPONSE_WINDOW_MIN}
+          max={RESPONSE_WINDOW_MAX}
+          value={responseWindowDraft}
+          disabled={!prefs.enabled}
+          onChange={(e) => setResponseWindowDraft(e.target.value)}
+          onBlur={(e) => updateStillListeningPrefs({ responseWindowSeconds: Number(e.target.value) })}
+          className="w-16 rounded border border-border-strong bg-surface px-2 py-1 text-right text-primary disabled:opacity-50"
+        />
+      </label>
+
+      <label className="mt-2 flex items-center justify-between text-sm text-secondary">
+        <span>Rewind if no response (seconds)</span>
+        <input
+          type="number"
+          min={REWIND_SECONDS_MIN}
+          max={REWIND_SECONDS_MAX}
+          value={rewindDraft}
+          disabled={!prefs.enabled}
+          onChange={(e) => setRewindDraft(e.target.value)}
+          onBlur={(e) => updateStillListeningPrefs({ rewindSeconds: Number(e.target.value) })}
+          className="w-16 rounded border border-border-strong bg-surface px-2 py-1 text-right text-primary disabled:opacity-50"
+        />
+      </label>
+    </div>
+  )
+}
+
+// Shares one card between the two per-device, localStorage-backed player/UI
+// preferences above — keeping the top row's grid item count the same as
+// before Still Listening existed, so the dense-packing grid below still
+// pulls "Account" up next to Storage instead of stranding it in a row by
+// itself.
+function PreferencesCard() {
+  return (
+    <section className="rounded-lg border border-border p-4">
+      <AppearanceCard />
+      <StillListeningCard />
     </section>
   )
 }
@@ -782,7 +893,7 @@ export function Settings() {
           )}
         </section>
 
-        <AppearanceCard />
+        <PreferencesCard />
 
         <section className="rounded-lg border border-border p-4 lg:col-span-3">
           <h2 className="mb-2 text-sm font-medium text-primary">Library index</h2>

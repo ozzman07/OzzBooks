@@ -14,8 +14,47 @@ import { useAuth } from '../auth/AuthContext'
 import { recordProgress } from '../offline/syncEngine'
 import { getCachedAudioFile, touchLastPlayed } from '../offline/audioFileStore'
 import { downloadChapter, isChapterCached } from '../offline/downloadManager'
+import {
+  loadStillListeningPrefs,
+  saveStillListeningPrefs,
+  sanitizeStillListeningPrefs,
+  type StillListeningPrefs,
+} from './stillListeningPrefs'
 
 export type SleepTimer = { kind: 'duration'; remainingSeconds: number } | { kind: 'end-of-chapter' }
+
+// How often the "still listening?" chime repeats while waiting for a
+// response — see triggerStillListeningPrompt in PlayerProvider.
+const STILL_LISTENING_CHIME_INTERVAL_MS = 4000
+
+// A short two-tone chime for the "still listening?" check-in — deliberately
+// no audio asset: this needs to work offline and doesn't warrant shipping a
+// sound file for two beeps. Best-effort; a browser that blocks it just means
+// a silent check-in (the pause + rewind logic still works from timing alone).
+function playStillListeningChime(): void {
+  try {
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ctx = new Ctx()
+    const now = ctx.currentTime
+    ;[440, 660].forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'sine'
+      osc.frequency.value = freq
+      const start = now + i * 0.35
+      gain.gain.setValueAtTime(0, start)
+      gain.gain.linearRampToValueAtTime(0.3, start + 0.05)
+      gain.gain.linearRampToValueAtTime(0, start + 0.3)
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.start(start)
+      osc.stop(start + 0.32)
+    })
+    setTimeout(() => void ctx.close(), 1000)
+  } catch {
+    // no Web Audio support — ignore, the visual/pause behavior still applies
+  }
+}
 
 // Stream-failure fallback per Claude.md: a live network stream failing
 // mid-play (Mac mini asleep/restarting/unreachable) should retry a few
@@ -55,6 +94,10 @@ interface PlayerState {
   /** True once playback reaches the end of the book's last chapter — lets
    * the UI say so instead of just freezing with no explanation. */
   finished: boolean
+  stillListeningPrefs: StillListeningPrefs
+  /** True while waiting for a response to a "still listening?" check-in —
+   * audio is paused and a chime has played. */
+  stillListeningPrompt: boolean
 }
 
 interface PlayerContextValue extends PlayerState {
@@ -72,6 +115,10 @@ interface PlayerContextValue extends PlayerState {
   /** Re-attempts the load that produced `streamError`, from the same
    * chapter/offset it originally failed at. */
   retryLoad: () => void
+  updateStillListeningPrefs: (patch: Partial<StillListeningPrefs>) => void
+  /** Confirms the listener is present during a "still listening?" prompt —
+   * clears it and resumes playback. */
+  confirmStillListening: () => void
 }
 
 const PlayerContext = createContext<PlayerContextValue | null>(null)
@@ -97,6 +144,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [isBuffering, setIsBuffering] = useState(false)
   const [streamError, setStreamError] = useState<string | null>(null)
   const [finished, setFinished] = useState(false)
+  const [stillListeningPrefs, setStillListeningPrefsState] = useState<StillListeningPrefs>(loadStillListeningPrefs)
+  const [stillListeningPrompt, setStillListeningPrompt] = useState(false)
+  // Mirrors stillListeningPrompt for synchronous reads inside the 1s poll
+  // and the transport actions below, which can't wait for a re-render.
+  const stillListeningPromptRef = useRef(false)
+  // Reset on any genuine "listener is present" moment — see resolveStillListeningPrompt
+  // and the play() callback, which is this app's one entry point for a real
+  // pause→resume (as opposed to the internal autoplay after a seek/chapter
+  // load, which doesn't imply anything about whether anyone's still there).
+  const lastCheckInAtRef = useRef(Date.now())
+  const stillListeningTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Repeats the chime through the whole response window (see
+  // triggerStillListeningPrompt) — a single chime is a weak signal for the
+  // "awake but not looking at the phone" case this feature exists for (e.g.
+  // driving with road noise), since there'd be no second chance to notice it.
+  const stillListeningChimeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // What loadIntoAudio was last asked to load — lets retryLoad redo the
   // exact same attempt without the caller having to remember it.
   const pendingLoadRef = useRef<{ book: Book; target: Chapter; offset: number; autoplay: boolean } | null>(null)
@@ -336,6 +399,80 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [streamError, loadIntoAudio, armSeekWatchdog],
   )
 
+  /** Clears an active "still listening?" prompt — called from every
+   * transport action, since any of them (a tap in-app, a lock-screen/car
+   * hardware button via Media Session) is unambiguous proof someone's there.
+   * `resume` is false for an explicit pause during the prompt: that's still
+   * proof of presence, but shouldn't override the user's own pause. */
+  const clearStillListeningChimeInterval = useCallback(() => {
+    if (stillListeningChimeIntervalRef.current) {
+      clearInterval(stillListeningChimeIntervalRef.current)
+      stillListeningChimeIntervalRef.current = null
+    }
+  }, [])
+
+  const resolveStillListeningPrompt = useCallback(
+    (resume: boolean) => {
+      if (!stillListeningPromptRef.current) return
+      if (stillListeningTimeoutRef.current) {
+        clearTimeout(stillListeningTimeoutRef.current)
+        stillListeningTimeoutRef.current = null
+      }
+      clearStillListeningChimeInterval()
+      stillListeningPromptRef.current = false
+      setStillListeningPrompt(false)
+      lastCheckInAtRef.current = Date.now()
+      if (resume) audioRef.current?.play().catch(() => {})
+    },
+    [clearStillListeningChimeInterval],
+  )
+
+  const confirmStillListening = useCallback(() => {
+    resolveStillListeningPrompt(true)
+  }, [resolveStillListeningPrompt])
+
+  /** Pauses playback, plays a chime repeated every few seconds through the
+   * whole `responseWindowSeconds` wait, and treats any transport action as a
+   * response. A single one-shot chime is a weak signal for exactly the case
+   * this feature has to get right — someone awake but not looking at the
+   * phone (driving) — so it needs more than one chance to be noticed. No
+   * response by the end of the window is treated as "fell asleep" — rewinds
+   * `rewindSeconds` and leaves it paused, per the feature's whole premise
+   * (see stillListeningPrefs.ts). Reads position via latestRef rather than
+   * closed-over state, since the timeout fires well after this callback was
+   * created. */
+  const triggerStillListeningPrompt = useCallback(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    stillListeningPromptRef.current = true
+    setStillListeningPrompt(true)
+    audio.pause()
+    playStillListeningChime()
+    clearStillListeningChimeInterval()
+    stillListeningChimeIntervalRef.current = setInterval(playStillListeningChime, STILL_LISTENING_CHIME_INTERVAL_MS)
+    stillListeningTimeoutRef.current = setTimeout(() => {
+      stillListeningTimeoutRef.current = null
+      clearStillListeningChimeInterval()
+      stillListeningPromptRef.current = false
+      setStillListeningPrompt(false)
+      lastCheckInAtRef.current = Date.now()
+      const { book: b, chapter: c, fileTime: ft } = latestRef.current
+      if (b && c) {
+        const chapterRelative = Math.max(0, ft - c.startTime)
+        const target = Math.max(0, chapterRelative - stillListeningPrefs.rewindSeconds)
+        seekWithinLoadedStream(b, c, target, false)
+      }
+    }, stillListeningPrefs.responseWindowSeconds * 1000)
+  }, [stillListeningPrefs, seekWithinLoadedStream, clearStillListeningChimeInterval])
+
+  const updateStillListeningPrefs = useCallback((patch: Partial<StillListeningPrefs>) => {
+    setStillListeningPrefsState((prev) => {
+      const next = sanitizeStillListeningPrefs({ ...prev, ...patch })
+      saveStillListeningPrefs(next)
+      return next
+    })
+  }, [])
+
   const loadBook = useCallback(
     (nextBook: Book, chapterId?: string, resumeAt = 0) => {
       const target = nextBook.chapters.find((c) => c.id === chapterId) ?? nextBook.chapters[0]
@@ -350,6 +487,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   )
 
   const play = useCallback(() => {
+    // Any explicit play() — a tap, a lock-screen/car button — is this app's
+    // one unambiguous "someone's still here" moment (unlike the internal
+    // autoplay after a seek/chapter load, which says nothing about that).
+    lastCheckInAtRef.current = Date.now()
+    resolveStillListeningPrompt(false) // this call IS the resume; avoid a redundant second audio.play()
     setFinished(false)
     const audio = audioRef.current
     if (!audio || !book || !chapter) {
@@ -374,7 +516,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       autoplay: true,
     }
     audio.play()
-  }, [book, chapter, streamError, loadIntoAudio])
+  }, [book, chapter, streamError, loadIntoAudio, resolveStillListeningPrompt])
 
   const pause = useCallback(() => {
     audioRef.current?.pause()
@@ -389,11 +531,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (chapterRelativeTime: number) => {
       const audio = audioRef.current
       if (!audio || !chapter || !book) return
+      // A manual scrub/skip during a "still listening?" prompt is just as
+      // clear a response as tapping the prompt's own button.
+      const wasPrompting = stillListeningPromptRef.current
+      resolveStillListeningPrompt(true)
       setFinished(false)
       const clamped = Math.max(0, Math.min(chapterRelativeTime, chapter.duration))
-      seekWithinLoadedStream(book, chapter, clamped, isPlaying)
+      seekWithinLoadedStream(book, chapter, clamped, wasPrompting || isPlaying)
     },
-    [book, chapter, isPlaying, seekWithinLoadedStream],
+    [book, chapter, isPlaying, seekWithinLoadedStream, resolveStillListeningPrompt],
   )
 
   /** Moves to a chapter at `index`, starting `chapterRelativeOffset` seconds
@@ -406,17 +552,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const audio = audioRef.current
       if (!target || !audio) return
 
+      // Same reasoning as seek() above — only relevant for the ⏮/⏭ buttons;
+      // the automatic end-of-chapter advance can't reach here because a
+      // paused (prompting) audio element never fires `ended`.
+      const wasPrompting = stillListeningPromptRef.current
+      resolveStillListeningPrompt(true)
       setFinished(false)
       const wasPlaying = isPlaying
       setChapter(target)
 
       if (loadedSourceFileIdRef.current === target.sourceFileId) {
-        seekWithinLoadedStream(book, target, chapterRelativeOffset, wasPlaying || autoplayIfPaused)
+        seekWithinLoadedStream(book, target, chapterRelativeOffset, wasPrompting || wasPlaying || autoplayIfPaused)
       } else {
-        loadIntoAudio(book, target, chapterRelativeOffset, wasPlaying || autoplayIfPaused)
+        loadIntoAudio(book, target, chapterRelativeOffset, wasPrompting || wasPlaying || autoplayIfPaused)
       }
     },
-    [book, isPlaying, loadIntoAudio, seekWithinLoadedStream],
+    [book, isPlaying, loadIntoAudio, seekWithinLoadedStream, resolveStillListeningPrompt],
   )
 
   const nextChapter = useCallback(() => {
@@ -498,6 +649,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }, 1000)
     return () => clearTimeout(id)
   }, [sleepTimer, pause])
+
+  // "Still listening?" check-in: polls elapsed time since the last genuine
+  // presence signal (see resolveStillListeningPrompt/play() above) while
+  // audio is actually playing. Deliberately not gated on any activity/motion
+  // detection — a car ride looks identical to inactivity by any such signal,
+  // so the check-in itself (chime + wait for a response) is what tells the
+  // two apart, not a sensor.
+  useEffect(() => {
+    if (!isPlaying || !stillListeningPrefs.enabled || streamError) return
+    const id = setInterval(() => {
+      if (stillListeningPromptRef.current) return
+      const idleMs = Date.now() - lastCheckInAtRef.current
+      if (idleMs >= stillListeningPrefs.idleMinutes * 60_000) {
+        triggerStillListeningPrompt()
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [isPlaying, stillListeningPrefs, streamError, triggerStillListeningPrompt])
 
   // Audio element event wiring
   useEffect(() => {
@@ -587,6 +756,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     const onTimeUpdate = () => {
       setFileTime(audio.currentTime)
+      // Backstop for the still-listening poll below: `timeupdate` is fired
+      // natively by the browser's audio pipeline as long as sound is
+      // genuinely still playing, not scheduled independently like
+      // setInterval — so it can't be suspended on a different background
+      // schedule than playback itself. A many-hours-long book needs this;
+      // the setInterval poll alone would depend on iOS keeping a plain JS
+      // timer alive for that whole span, not just the minutes-long stretch
+      // the (already-shipped) sleep timer ever has to survive.
+      if (
+        stillListeningPrefs.enabled &&
+        !streamError &&
+        !stillListeningPromptRef.current &&
+        Date.now() - lastCheckInAtRef.current >= stillListeningPrefs.idleMinutes * 60_000
+      ) {
+        triggerStillListeningPrompt()
+      }
       if (!book || !chapter) return
       const next = book.chapters[chapterIndex + 1]
       if (next && next.sourceFileId === chapter.sourceFileId && audio.currentTime >= next.startTime) {
@@ -622,7 +807,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     audio.addEventListener('timeupdate', onTimeUpdate)
     return () => audio.removeEventListener('timeupdate', onTimeUpdate)
-  }, [book, chapter, chapterIndex, clearSeekWatchdog])
+  }, [book, chapter, chapterIndex, clearSeekWatchdog, stillListeningPrefs, streamError, triggerStillListeningPrompt])
 
   // Media Session API integration
   useEffect(() => {
@@ -696,6 +881,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     isBuffering,
     streamError,
     finished,
+    stillListeningPrefs,
+    stillListeningPrompt,
     loadBook,
     play,
     pause,
@@ -708,6 +895,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     toggleSkipSilence,
     startSleepTimer,
     retryLoad,
+    updateStillListeningPrefs,
+    confirmStillListening,
   }
 
   return (
