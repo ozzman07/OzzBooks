@@ -215,3 +215,29 @@ describe('unlinkCompanions', () => {
     expect(logs).toHaveLength(2)
   })
 })
+
+describe('deleteBookAndArtwork', () => {
+  it('deletes a book that is still someone else\'s companion_book_id without throwing a FOREIGN KEY error', async () => {
+    // Regression test for a real production crash: companion_book_id has
+    // no ON DELETE clause, so deleting a book still referenced that way
+    // (e.g. during the trash-cleanup pass of a full rescan) used to throw
+    // `SqliteError: FOREIGN KEY constraint failed` and abort the whole
+    // operation — see ozzbooks-scan-fk-constraint-crash memory.
+    const { getDb } = await import('../src/db/index.js')
+    const { linkCompanions } = await import('../src/ingestion/companionLink.js')
+    const { deleteBookAndArtwork } = await import('../src/ingestion/scan.js')
+
+    const audioSourceId = await insertSource('/nas/Audiobooks7')
+    const epubSourceId = await insertSource('/nas/Ebooks7')
+    const audioId = await insertBook(audioSourceId, '/nas/Audiobooks7/a.m4b', 'm4b', 'Book Y', 'Author Y')
+    const epubId = await insertBook(epubSourceId, '/nas/Ebooks7/a.epub', 'epub', 'Book Y', 'Author Y')
+    linkCompanions(audioId, epubId, 'Linked for this test')
+
+    const audioBook = getDb().prepare('SELECT * FROM books WHERE id = ?').get(audioId) as any
+    await expect(deleteBookAndArtwork(audioBook)).resolves.toBeUndefined()
+
+    expect(getDb().prepare('SELECT * FROM books WHERE id = ?').get(audioId)).toBeUndefined()
+    const epubBook = getDb().prepare('SELECT * FROM books WHERE id = ?').get(epubId) as any
+    expect(epubBook.companion_book_id).toBeNull() // dangling reference cleared, not left pointing at a deleted row
+  })
+})

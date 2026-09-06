@@ -4,6 +4,7 @@ import path from 'node:path'
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
+  deriveComicArcFromSegments,
   deriveComicSeriesFromSegments,
   detectArchiveKind,
   isCbrFile,
@@ -65,6 +66,38 @@ describe('deriveComicSeriesFromSegments', () => {
 
   it('returns null for a file sitting directly at the source root', () => {
     expect(deriveComicSeriesFromSegments(['loose.cbz'])).toBeNull()
+  })
+})
+
+describe('deriveComicArcFromSegments', () => {
+  it('returns null when the file sits directly under its series folder', () => {
+    expect(deriveComicArcFromSegments(['Batman', 'some-gn.cbz'])).toBeNull()
+  })
+
+  it('returns the immediate parent folder for a comic nested one level below the series', () => {
+    // The real "Batman - Death of the Family" and "Batman Eternal" cases
+    // found on the NAS — a single collected edition and a block of
+    // individually-filed weekly issues, both grouped by their own folder.
+    expect(deriveComicArcFromSegments(['Batman', 'Batman - Death of the Family', 'Death of the Family.cbz'])).toBe(
+      'Batman - Death of the Family',
+    )
+    expect(deriveComicArcFromSegments(['Batman', 'Batman Eternal', 'Batman Eternal 001 (2014).cbr'])).toBe(
+      'Batman Eternal',
+    )
+  })
+
+  it('uses the innermost folder, not the second segment, under deeper nesting', () => {
+    // The real "Batman Beyond" case: an era folder containing multiple
+    // distinct volume folders — the volume, not the era, is the meaningful
+    // grouping.
+    expect(
+      deriveComicArcFromSegments([
+        'Batman Beyond',
+        'Batman Beyond (1999-2012)',
+        'Batman Beyond v1 01-06 (1999, Digital, AnHeroGold)',
+        'Batman Beyond 01 (of 6) (1999) (Digital) (AnHeroGold).cbz',
+      ]),
+    ).toBe('Batman Beyond v1 01-06 (1999, Digital, AnHeroGold)')
   })
 })
 

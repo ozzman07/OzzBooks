@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS books (
   writer TEXT, -- comics only; from ComicInfo.xml's <Writer>, refreshed on every scan like author (no manual-edit precedence column — not user-editable yet)
   penciller TEXT, -- comics only; from ComicInfo.xml's <Penciller>, shown as "Artist" on Book Detail
   publisher TEXT, -- comics only; from ComicInfo.xml's <Publisher>
+  arc_name TEXT, -- comics only; folder-derived (see deriveComicArcFromSegments in ingestion/comic.ts) — the immediate parent folder when a comic is nested 2+ levels below its series folder, e.g. "Death of the Family" or "Batman Eternal". Groups Series Detail's items below the series level; null for a file sitting directly under its series folder
   -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
   -- doesn't repeatedly re-query the same already-attempted book — a
   -- future "retry failed lookups" action resets this to NULL.

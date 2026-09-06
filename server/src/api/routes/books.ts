@@ -5,6 +5,7 @@ import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
 import { deleteBookAndArtwork } from '../../ingestion/scan.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
+import { backfillComicArcNames } from '../../ingestion/comicArcBackfill.js'
 import { companionMatchScore, linkCompanions, unlinkCompanions } from '../../ingestion/companionLink.js'
 import { isOrphanedConversion } from '../../ingestion/mobiConvert.js'
 import { GENRE_OPTIONS } from '../../ingestion/enrichment/genreOptions.js'
@@ -48,6 +49,13 @@ booksRouter.get('/', (req, res) => {
 // job's async pattern.
 booksRouter.post('/backfill-series-numbers', (_req, res) => {
   res.json(backfillSeriesNumbers())
+})
+
+// Same synchronous, pure-local-string-matching shape as the series-number
+// backfill above — one-time catch-up for cbz books ingested before
+// arc_name existed. See comicArcBackfill.ts.
+booksRouter.post('/backfill-comic-arcs', (_req, res) => {
+  res.json(backfillComicArcNames())
 })
 
 booksRouter.patch('/:id', (req, res) => {

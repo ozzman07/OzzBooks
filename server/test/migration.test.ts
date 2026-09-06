@@ -129,10 +129,16 @@ describe('migrate() rebuilding the books table for epub + cbz support', () => {
     // must still see page_count as absent after the epub rebuild already ran).
     expect(book.page_count).toBeNull()
     db.prepare(
-      `INSERT INTO books (id, source_id, file_path, format, title, page_count, created_at, updated_at)
-       VALUES ('book-3', 'src-1', '/old/c.cbz', 'cbz', 'New Comic', 32, datetime('now'), datetime('now'))`,
+      `INSERT INTO books (id, source_id, file_path, format, title, page_count, arc_name, created_at, updated_at)
+       VALUES ('book-3', 'src-1', '/old/c.cbz', 'cbz', 'New Comic', 32, 'Hush', datetime('now'), datetime('now'))`,
     ).run()
-    expect((db.prepare('SELECT * FROM books WHERE id = ?').get('book-3') as any).page_count).toBe(32)
+    const comic = db.prepare('SELECT * FROM books WHERE id = ?').get('book-3') as any
+    expect(comic.page_count).toBe(32)
+    // arc_name is a plain-ADD-COLUMN addition that postdates both rebuild
+    // functions — this is the real dual-rebuild path that already caught
+    // it missing from both functions' explicit column lists once (see
+    // their doc comments), so this assertion is the regression guard.
+    expect(comic.arc_name).toBe('Hush')
   })
 
   it('cascade-deletes chapters through the rebuilt books table, same as before the rebuild', async () => {
