@@ -20,6 +20,7 @@ import {
   compareBySeriesThenTitle,
   groupBySeries,
   groupByAuthor,
+  groupSeriesByAuthor,
 } from '../library/bookOrganize'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
@@ -205,6 +206,15 @@ export function Library() {
 
   async function handleToggleLibrary(book: Book, currentlyIn: boolean) {
     await data.toggleLibraryMembership(book, !currentlyIn)
+  }
+
+  // Bulk variant for "+ Add series to My Library" / "+ Add arc to My
+  // Library" — skips anything already shelved rather than re-adding it, so
+  // it's safe to tap again after shelving part of a series by hand.
+  async function handleAddAllToLibrary(books: Book[]) {
+    await Promise.all(
+      books.filter((b) => !bookInLibrary(b, data.myLibraryIds)).map((b) => data.toggleLibraryMembership(b, true)),
+    )
   }
 
   // Captures the scroll position exactly once, at the moment this page is
@@ -439,7 +449,18 @@ export function Library() {
   // map cleanly onto "what order do groups/books appear in" the way they do
   // for the flat list.
   const authorGroups = useMemo(() => groupByAuthor(filteredBooks), [filteredBooks])
-  const seriesGroups = useMemo(() => groupBySeries(filteredBooks), [filteredBooks])
+  // Series membership is checked against every active book of this content
+  // type — not just what My Library mode/search have narrowed filteredBooks
+  // down to — so shelving a single issue of a real series doesn't wrongly
+  // fold it into "Not part of a series" (see groupBySeries).
+  const contentTypeBooks = useMemo(
+    () => activeBooks.filter((b) => isComicFormat(b) === (contentType === 'comics')),
+    [activeBooks, contentType],
+  )
+  const seriesGroups = useMemo(
+    () => groupBySeries(filteredBooks, contentTypeBooks),
+    [filteredBooks, contentTypeBooks],
+  )
 
   // Spread onto every BookGrid call below — only in Store mode does the
   // Add/Remove My Library affordance make sense (in My Library mode,
@@ -721,38 +742,128 @@ export function Library() {
             // verbatim — inline-expanding all 67 series' full grids on one
             // page doesn't hold up at this scale (up to ~3,440 tiles in one
             // unbroken scroll). Level 1 here is just series cards; tapping
-            // one opens the real grid on its own Series Detail page.
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(8rem,1fr))] gap-4">
-              {seriesGroups.series.map((group) => {
-                const readCount = group.books.filter((b) => isBookRead(b, progressByBookId.get(b.id))).length
-                return (
-                  <Link
-                    key={group.seriesName}
-                    to={`${libraryViewMode === 'store' ? '/store' : '/library'}/series/${encodeURIComponent(group.seriesName)}`}
-                    className="block"
-                  >
-                    <CoverArt title={group.seriesName} coverUrl={group.books[0]?.coverThumbUrl} />
-                    <p className="mt-1 truncate text-sm text-primary">{group.seriesName}</p>
-                    <p className="truncate text-xs text-muted">
-                      {group.books.length} item{group.books.length === 1 ? '' : 's'}
-                    </p>
-                    <p className="truncate text-xs text-subtle">
-                      {readCount} of {group.books.length} read
-                    </p>
-                  </Link>
-                )
-              })}
-            </div>
+            // one opens the real grid on its own Series Detail page. Still
+            // respects the Tiles/Rows toggle like every other view mode here
+            // (same row layout BookGrid's own BookRow uses), even though
+            // these cards represent whole series rather than individual books.
+            displayMode === 'row' ? (
+              <ul className="divide-y divide-border">
+                {seriesGroups.series.map((group) => {
+                  const readCount = group.books.filter((b) => isBookRead(b, progressByBookId.get(b.id))).length
+                  return (
+                    <li key={group.seriesName} className="flex items-center gap-3 py-2">
+                      <Link
+                        to={`${libraryViewMode === 'store' ? '/store' : '/library'}/series/${encodeURIComponent(group.seriesName)}`}
+                        className="flex min-w-0 flex-1 items-center gap-3"
+                      >
+                        <div className="w-12 shrink-0">
+                          <CoverArt title={group.seriesName} coverUrl={group.books[0]?.coverThumbUrl} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm text-primary">{group.seriesName}</p>
+                          <p className="truncate text-xs text-muted">
+                            {group.books.length} item{group.books.length === 1 ? '' : 's'}
+                          </p>
+                          <p className="text-xs text-subtle">
+                            {readCount} of {group.books.length} read
+                          </p>
+                        </div>
+                      </Link>
+                      {libraryViewMode === 'store' && (
+                        <button
+                          onClick={() => void handleAddAllToLibrary(group.books)}
+                          className="shrink-0 text-xs text-amber-400 underline"
+                        >
+                          + Add all
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-5">
+                {seriesGroups.series.map((group) => {
+                  const readCount = group.books.filter((b) => isBookRead(b, progressByBookId.get(b.id))).length
+                  return (
+                    <div key={group.seriesName}>
+                      <Link
+                        to={`${libraryViewMode === 'store' ? '/store' : '/library'}/series/${encodeURIComponent(group.seriesName)}`}
+                        className="block"
+                      >
+                        <CoverArt title={group.seriesName} coverUrl={group.books[0]?.coverThumbUrl} />
+                        <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm text-primary">{group.seriesName}</p>
+                        <p className="truncate text-xs text-muted">
+                          {group.books.length} item{group.books.length === 1 ? '' : 's'}
+                        </p>
+                        <p className="truncate text-xs text-subtle">
+                          {readCount} of {group.books.length} read
+                        </p>
+                      </Link>
+                      {libraryViewMode === 'store' && (
+                        <button
+                          onClick={() => void handleAddAllToLibrary(group.books)}
+                          className="mt-1 text-xs text-amber-400 underline"
+                        >
+                          + Add all to My Library
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
           ) : (
             <div className="space-y-6">
-              {seriesGroups.series.map((group) => (
-                <div key={group.seriesName}>
-                  <h3 className="mb-2 text-sm font-medium text-secondary">
-                    {group.seriesName} · {group.books.length}
-                  </h3>
-                  <BookGrid books={group.books} displayMode={displayMode} {...storeToggleProps} />
-                </div>
-              ))}
+              {seriesGroups.series.map((group) => {
+                // A long-running multi-author series (continuation novels —
+                // James Bond being the motivating case) interleaves confusingly
+                // by seriesNumber/title alone once more than one author is
+                // involved; sub-group by author when that's actually true for
+                // this series, otherwise render it exactly as before.
+                const authorGroups = groupSeriesByAuthor(group.books)
+                return (
+                  <div key={group.seriesName}>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h3 className="text-sm font-medium text-secondary">
+                        {group.seriesName} · {group.books.length}
+                      </h3>
+                      {libraryViewMode === 'store' && (
+                        <button
+                          onClick={() => void handleAddAllToLibrary(group.books)}
+                          className="shrink-0 text-xs text-amber-400 underline"
+                        >
+                          + Add series to My Library
+                        </button>
+                      )}
+                    </div>
+                    {authorGroups ? (
+                      <div className="space-y-4">
+                        {authorGroups.map((authorGroup) => (
+                          <div key={authorGroup.author}>
+                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                              <h4 className="text-xs font-medium uppercase tracking-wide text-subtle">
+                                {authorGroup.author} · {authorGroup.books.length}
+                              </h4>
+                              {libraryViewMode === 'store' && (
+                                <button
+                                  onClick={() => void handleAddAllToLibrary(authorGroup.books)}
+                                  className="shrink-0 text-xs text-amber-400 underline"
+                                >
+                                  + Add to My Library
+                                </button>
+                              )}
+                            </div>
+                            <BookGrid books={authorGroup.books} displayMode={displayMode} {...storeToggleProps} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <BookGrid books={group.books} displayMode={displayMode} {...storeToggleProps} />
+                    )}
+                  </div>
+                )
+              })}
               {seriesGroups.standalone.length > 0 && (
                 <div>
                   <h3 className="mb-2 text-sm font-medium text-secondary">

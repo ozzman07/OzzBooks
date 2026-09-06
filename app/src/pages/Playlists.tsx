@@ -50,7 +50,7 @@ export function Playlists() {
   const named = result.data.filter((p) => !p.is_reserved)
 
   return (
-    <div className="mx-auto max-w-md px-4 pb-24 pt-6">
+    <div className="mx-auto max-w-2xl px-4 pb-24 pt-6">
       <h1 className="mb-4 text-2xl font-semibold text-primary">Playlists</h1>
 
       {upNext && (

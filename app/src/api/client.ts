@@ -75,6 +75,9 @@ export interface ApiBook {
   writer: string | null
   penciller: string | null
   publisher: string | null
+  /** Comics only ('cbz'); null for every other format, and for a comic
+   * sitting directly under its series folder with no arc subfolder. */
+  arc_name: string | null
   status: 'active' | 'missing'
   artwork_thumb_path: string | null
   artwork_full_path: string | null

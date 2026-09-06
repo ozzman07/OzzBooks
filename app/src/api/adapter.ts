@@ -32,6 +32,7 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     writer: book.writer ?? undefined,
     penciller: book.penciller ?? undefined,
     publisher: book.publisher ?? undefined,
+    arcName: book.arc_name ?? undefined,
     sourceLabel: book.source_label,
     status: book.status,
     isOrphanedConversion: book.is_orphaned_conversion,

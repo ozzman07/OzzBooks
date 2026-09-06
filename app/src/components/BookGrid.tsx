@@ -103,7 +103,7 @@ function BookTile({
           />
         )}
       </div>
-      <p className="mt-1 truncate text-sm text-primary">{book.title}</p>
+      <p className="mt-1 line-clamp-2 min-h-[2.5rem] text-sm text-primary">{book.title}</p>
       <p className="truncate text-xs text-muted">
         <BookSubtitle book={book} />
       </p>
@@ -202,7 +202,7 @@ export function BookGrid({
     )
   }
   return (
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-4">
+    <ul className="grid grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] gap-5">
       {books.map((book) => (
         <li key={book.id}>
           <BookTile

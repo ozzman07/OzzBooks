@@ -41,6 +41,12 @@ export interface Book {
   writer?: string
   penciller?: string
   publisher?: string
+  /** Comics only ('cbz') — the folder-derived grouping one level below
+   * seriesName (see deriveComicArcFromSegments server-side), used by
+   * Series Detail to cluster items that share an arc/collection/weekly-run
+   * subfolder. Undefined for every other format, and for a comic with no
+   * such subfolder (it sits directly under its series folder). */
+  arcName?: string
   status: 'active' | 'missing'
   /** True only for a 'missing' book that can never be relinked by a scan
    * (a pre-dedup-rule mobi conversion whose original folder isn't
