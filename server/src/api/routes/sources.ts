@@ -5,8 +5,11 @@ import type { SourceRow } from '../../types.js'
 import { browseSourceDirectory } from '../../ingestion/relink.js'
 import { startScan, getScanState } from '../../ingestion/scanStatus.js'
 import { getProvider } from '../../integrations/remote/registry.js'
-import { decryptCredentials } from '../../integrations/remote/credentials.js'
+import { decryptCredentials, getValidAccessToken } from '../../integrations/remote/credentials.js'
 import { markSourceBooksMissing } from '../../integrations/remote/googleDrive/remoteScan.js'
+import { getFileMetadata } from '../../integrations/remote/googleDrive/driveClient.js'
+
+const DRIVE_FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder'
 
 export const sourcesRouter = Router()
 
@@ -115,6 +118,84 @@ sourcesRouter.post('/:id/disconnect', async (req, res) => {
     .run(source.id)
   markSourceBooksMissing(source.id)
 
+  const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(source.id)
+  res.json(row)
+})
+
+// Short-lived token for Google's Picker widget, which runs client-side and
+// needs a live access token of its own to authenticate its own calls to
+// Drive — the one deliberate, narrow exception to "the Drive token never
+// leaves the server" (see the Picker addendum). Only the access token is
+// ever returned, never the refresh token, and only for a Google Drive
+// source with working credentials.
+sourcesRouter.get('/:id/drive-picker-token', async (req, res) => {
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
+    | SourceRow
+    | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
+  }
+  if (source.type !== 'google_drive') {
+    res.status(400).json({ error: 'the folder picker is only available for Google Drive sources' })
+    return
+  }
+
+  try {
+    const credentials = await getValidAccessToken(source, getProvider(source.type)!)
+    res.json({ accessToken: credentials.accessToken })
+  } catch (err) {
+    res.status(503).json({ error: 'source unavailable', sourceStatus: 'needs_reconnect', detail: String(err) })
+  }
+})
+
+// Repoints an existing Google Drive source at a folder picked through
+// Picker, instead of the auto-created managed folder — see the Picker
+// addendum. Validates the folder is actually accessible and actually a
+// folder before accepting it (Picker should already guarantee both, but a
+// real API call is worth it to fail clearly rather than silently). Books
+// under the old path_scope naturally get marked missing on the next scan,
+// same as any other folder-moved-away scenario scan.ts already handles —
+// no special-case cleanup needed here.
+sourcesRouter.post('/:id/folder', async (req, res) => {
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
+    | SourceRow
+    | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
+  }
+  if (source.type !== 'google_drive') {
+    res.status(400).json({ error: 'picking a folder is only available for Google Drive sources' })
+    return
+  }
+  const folderId = typeof req.body?.folderId === 'string' ? req.body.folderId.trim() : ''
+  if (!folderId) {
+    res.status(400).json({ error: 'folderId is required' })
+    return
+  }
+
+  let credentials
+  try {
+    credentials = await getValidAccessToken(source, getProvider(source.type)!)
+  } catch (err) {
+    res.status(503).json({ error: 'source unavailable', sourceStatus: 'needs_reconnect', detail: String(err) })
+    return
+  }
+
+  let file
+  try {
+    file = await getFileMetadata(credentials.accessToken, folderId)
+  } catch (err) {
+    res.status(400).json({ error: "couldn't access that folder", detail: String(err) })
+    return
+  }
+  if (file.mimeType !== DRIVE_FOLDER_MIME_TYPE) {
+    res.status(400).json({ error: 'the selected item is not a folder' })
+    return
+  }
+
+  getDb().prepare('UPDATE sources SET path_scope = ? WHERE id = ?').run(folderId, source.id)
   const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(source.id)
   res.json(row)
 })
