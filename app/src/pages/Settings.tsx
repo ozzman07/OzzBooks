@@ -918,12 +918,18 @@ export function Settings() {
               "Reconnect" button instead, which does pass the existing
               sourceId. */}
           {sourcesLoaded && !sources.some((s) => s.type === 'google_drive') && (
-            <button
-              onClick={() => connectGoogleDrive()}
-              className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
-            >
-              Connect Google Drive
-            </button>
+            <>
+              <button
+                onClick={() => connectGoogleDrive()}
+                className="mt-2 w-full rounded-lg border border-border-strong py-2 text-sm text-secondary"
+              >
+                Connect Google Drive
+              </button>
+              <p className="mt-1 text-xs text-subtle">
+                Whichever Google account you use here becomes the one shared Drive source for everyone — audiobooks
+                need to live in that account's "OzzBooks Audiobooks" folder.
+              </p>
+            </>
           )}
 
           <AddLocalSourceForm onAdded={refreshSources} />

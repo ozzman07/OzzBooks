@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import { getDb } from '../../db/index.js'
-import { getAuthorizationUrl, exchangeCodeForTokens } from '../../integrations/remote/googleDrive/auth.js'
+import { getAuthorizationUrl, exchangeCodeForTokens, fetchAccountEmail } from '../../integrations/remote/googleDrive/auth.js'
 import { googleDriveProvider } from '../../integrations/remote/googleDrive/provider.js'
+import { getFileMetadata } from '../../integrations/remote/googleDrive/driveClient.js'
 import { encryptCredentials } from '../../integrations/remote/credentials.js'
 
 // Mounted before the requireApiToken gate in app.ts, deliberately — these
@@ -74,25 +75,49 @@ googleAuthRouter.get('/google/callback', async (req, res) => {
 
   try {
     const credentials = await exchangeCodeForTokens(code)
+    // A real API call using the freshly-issued token — confirms the
+    // token actually works and tells us which account it belongs to,
+    // rather than trusting the token endpoint's 200 alone.
+    const accountEmail = await fetchAccountEmail(credentials.accessToken)
     const db = getDb()
     const expiresAt = new Date(Date.now() + (credentials.expiresInSeconds ?? 3600) * 1000).toISOString()
 
     if (pending.sourceId) {
-      const existing = db.prepare('SELECT id FROM sources WHERE id = ?').get(pending.sourceId)
+      const existing = db.prepare('SELECT id, path_scope FROM sources WHERE id = ?').get(pending.sourceId) as
+        | { id: string; path_scope: string }
+        | undefined
       if (!existing) {
         res.status(404).send('That source no longer exists — try connecting fresh instead.')
         return
       }
+
+      // drive.file scope only grants access to files/folders the
+      // authenticating account itself created (or picked). Reconnecting
+      // with a DIFFERENT Google account than the one that originally set
+      // this source up can never see the existing managed folder — check
+      // that here instead of silently marking the source "ok" with a
+      // token that can't actually read anything.
+      try {
+        await getFileMetadata(credentials.accessToken, existing.path_scope)
+      } catch {
+        res.status(400).send(
+          `Connected as ${accountEmail}, but that account can't see this source's existing Drive folder ` +
+            `(it was set up under a different Google account). Disconnect this source and use "Connect Google ` +
+            `Drive" fresh instead, so a new folder gets created under ${accountEmail}.`,
+        )
+        return
+      }
+
       db.prepare(
-        "UPDATE sources SET credentials = ?, credentials_expires_at = ?, credentials_status = 'ok' WHERE id = ?",
-      ).run(encryptCredentials(credentials), expiresAt, pending.sourceId)
+        "UPDATE sources SET credentials = ?, credentials_expires_at = ?, credentials_status = 'ok', credentials_account_label = ? WHERE id = ?",
+      ).run(encryptCredentials(credentials), expiresAt, accountEmail, pending.sourceId)
     } else {
       const folder = await googleDriveProvider.ensureManagedFolder(credentials)
       const sourceId = randomUUID()
       db.prepare(
-        `INSERT INTO sources (id, type, label, path_scope, credentials, credentials_expires_at, credentials_status)
-         VALUES (?, 'google_drive', ?, ?, ?, ?, 'ok')`,
-      ).run(sourceId, pending.label, folder.folderId, encryptCredentials(credentials), expiresAt)
+        `INSERT INTO sources (id, type, label, path_scope, credentials, credentials_expires_at, credentials_status, credentials_account_label)
+         VALUES (?, 'google_drive', ?, ?, ?, ?, 'ok', ?)`,
+      ).run(sourceId, pending.label, folder.folderId, encryptCredentials(credentials), expiresAt, accountEmail)
     }
 
     res.redirect('/settings?connected=google_drive')
