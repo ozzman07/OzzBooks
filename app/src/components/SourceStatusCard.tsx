@@ -85,7 +85,14 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
   }
 
   async function disconnect() {
-    if (!window.confirm(`Disconnect ${source.label}? Its books will be marked missing until reconnected.`)) return
+    const accountNote =
+      source.type === 'google_drive'
+        ? ` Reconnecting afterward will require the same Google account${
+            source.credentials_account_label ? ` (${source.credentials_account_label})` : ''
+          } — a different account can't see the existing folder.`
+        : ''
+    if (!window.confirm(`Disconnect ${source.label}? Its books will be marked missing until reconnected.${accountNote}`))
+      return
     setTriggerError(null)
     try {
       await disconnectSource(source.id)
@@ -115,6 +122,11 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
         <div className="mt-2 rounded bg-warning-soft px-3 py-2">
           <p className="text-xs text-warning-soft-text">
             This source needs to be reconnected — access was lost or revoked.
+          </p>
+          <p className="mt-1 text-xs text-warning-soft-text">
+            {source.credentials_account_label
+              ? `Must use the same Google account as before (${source.credentials_account_label}) — a different account can't see the existing folder and will be rejected.`
+              : "Must use the same Google account that originally connected this source — a different account can't see the existing folder and will be rejected."}
           </p>
           <button
             onClick={() => connectGoogleDrive(source.label, source.id)}

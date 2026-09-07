@@ -1,12 +1,16 @@
 import { config } from '../../../config.js'
 import type { DecryptedCredentials } from '../types.js'
 
-// Non-sensitive scope — avoids Google's paid third-party verification
-// review requirement (see the plan's Google Cloud Console setup notes).
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
+// Both non-sensitive scopes — avoids Google's paid third-party
+// verification review requirement (see the plan's Google Cloud Console
+// setup notes). userinfo.email lets the callback confirm *which* Google
+// account just authorized (and double as a live check that the token
+// actually works), not just that some token was issued.
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email'
 const AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke'
+const USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo'
 
 /**
  * Checked lazily, only when the OAuth flow is actually used — NOT at
@@ -92,6 +96,24 @@ export async function exchangeCodeForTokens(code: string): Promise<DecryptedCred
     scope: json.scope,
     expiresInSeconds: json.expires_in,
   }
+}
+
+/** Confirms which Google account a token belongs to, and doubles as a
+ * live check that the access token actually works — the callback treats
+ * a failure here as a failed connection rather than storing a token
+ * that "succeeded" but can't be verified. */
+export async function fetchAccountEmail(accessToken: string): Promise<string> {
+  const res = await fetch(USERINFO_ENDPOINT, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok) {
+    throw new Error(`Couldn't look up the connected Google account: ${res.status}`)
+  }
+  const json = (await res.json()) as { email?: string }
+  if (!json.email) {
+    throw new Error('Google did not return an account email for this token')
+  }
+  return json.email
 }
 
 /** Matches RemoteProvider's refreshToken(credentials) signature exactly —

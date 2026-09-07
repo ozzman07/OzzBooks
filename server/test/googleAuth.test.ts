@@ -72,6 +72,9 @@ describe('GET /api/sources/oauth/google/callback', () => {
             }),
           }
         }
+        if (url.includes('oauth2/v3/userinfo')) {
+          return { ok: true, json: async () => ({ email: 'son@gmail.com' }) }
+        }
         if (url.includes('googleapis.com/drive/v3/files')) {
           folderCreateSeen = true
           const body = JSON.parse(init!.body as string)
@@ -96,6 +99,7 @@ describe('GET /api/sources/oauth/google/callback', () => {
     expect(source.label).toBe("Son's Audiobooks")
     expect(source.path_scope).toBe('managed-folder-id')
     expect(source.credentials_status).toBe('ok')
+    expect(source.credentials_account_label).toBe('son@gmail.com')
     expect(decryptCredentials(source.credentials).accessToken).toBe('issued-access-token')
   })
 
@@ -109,6 +113,9 @@ describe('GET /api/sources/oauth/google/callback', () => {
             ok: true,
             json: async () => ({ access_token: 'a', refresh_token: 'r', expires_in: 3600, scope: 's', token_type: 'Bearer' }),
           }
+        }
+        if (url.includes('oauth2/v3/userinfo')) {
+          return { ok: true, json: async () => ({ email: 'someone@gmail.com' }) }
         }
         return { ok: true, json: async () => ({ id: 'x', name: 'x', mimeType: 'application/vnd.google-apps.folder' }) }
       }),
@@ -147,6 +154,12 @@ describe('GET /api/sources/oauth/google/callback', () => {
             json: async () => ({ access_token: 'reconnected-token', refresh_token: 'reconnected-refresh', expires_in: 3600, scope: 's', token_type: 'Bearer' }),
           }
         }
+        if (url.includes('oauth2/v3/userinfo')) {
+          return { ok: true, json: async () => ({ email: 'jim@gmail.com' }) }
+        }
+        if (url.includes(`drive/v3/files/existing-folder-id`)) {
+          return { ok: true, json: async () => ({ id: 'existing-folder-id', name: 'OzzBooks Audiobooks', mimeType: 'application/vnd.google-apps.folder' }) }
+        }
         if (url.includes('googleapis.com/drive/v3/files')) {
           folderCreateCalled = true
           return { ok: true, json: async () => ({ id: 'should-not-happen', name: 'x', mimeType: 'application/vnd.google-apps.folder' }) }
@@ -165,6 +178,51 @@ describe('GET /api/sources/oauth/google/callback', () => {
     expect(thisSource.path_scope).toBe('existing-folder-id') // unchanged
     expect(thisSource.label).toBe('Existing Source') // unchanged
     expect(thisSource.credentials_status).toBe('ok')
+    expect(thisSource.credentials_account_label).toBe('jim@gmail.com')
     expect(decryptCredentials(thisSource.credentials).accessToken).toBe('reconnected-token')
+  })
+
+  it('rejects a reconnect from a Google account that cannot see the existing managed folder', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { encryptCredentials } = await import('../src/integrations/remote/credentials.js')
+    const { randomUUID } = await import('node:crypto')
+
+    const sourceId = randomUUID()
+    getDb()
+      .prepare(
+        `INSERT INTO sources (id, type, label, path_scope, credentials, credentials_status)
+         VALUES (?, 'google_drive', 'Existing Source', 'existing-folder-id', ?, 'needs_reconnect')`,
+      )
+      .run(sourceId, encryptCredentials({ accessToken: 'stale', refreshToken: 'dead' }))
+
+    const startRes = await request(app).get(`/api/sources/oauth/google/start?sourceId=${sourceId}`)
+    const state = new URL(startRes.headers.location).searchParams.get('state')!
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('oauth2.googleapis.com/token')) {
+          return {
+            ok: true,
+            json: async () => ({ access_token: 'wrong-account-token', refresh_token: 'r', expires_in: 3600, scope: 's', token_type: 'Bearer' }),
+          }
+        }
+        if (url.includes('oauth2/v3/userinfo')) {
+          return { ok: true, json: async () => ({ email: 'someone-else@gmail.com' }) }
+        }
+        if (url.includes(`drive/v3/files/existing-folder-id`)) {
+          return { ok: false, status: 404, text: async () => 'File not found' }
+        }
+        throw new Error(`unexpected fetch to ${url}`)
+      }),
+    )
+
+    const res = await request(app).get(`/api/sources/oauth/google/callback?state=${state}&code=abc`)
+    expect(res.status).toBe(400)
+    expect(res.text).toContain('someone-else@gmail.com')
+
+    const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+    expect(source.credentials_status).toBe('needs_reconnect') // untouched — bad reconnect never gets stored
+    expect(source.credentials_account_label).toBeNull()
   })
 })

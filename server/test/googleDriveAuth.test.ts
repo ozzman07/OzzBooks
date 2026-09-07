@@ -19,7 +19,9 @@ describe('getAuthorizationUrl', () => {
     expect(url.searchParams.get('client_id')).toBe('test-client-id')
     expect(url.searchParams.get('redirect_uri')).toBe('https://example.ts.net/api/sources/oauth/google/callback')
     expect(url.searchParams.get('response_type')).toBe('code')
-    expect(url.searchParams.get('scope')).toBe('https://www.googleapis.com/auth/drive.file')
+    expect(url.searchParams.get('scope')).toBe(
+      'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+    )
     expect(url.searchParams.get('access_type')).toBe('offline')
     expect(url.searchParams.get('prompt')).toBe('consent')
     expect(url.searchParams.get('state')).toBe('some-state-token')
@@ -82,6 +84,34 @@ describe('exchangeCodeForTokens', () => {
 
     const { exchangeCodeForTokens } = await import('../src/integrations/remote/googleDrive/auth.js')
     await expect(exchangeCodeForTokens('some-code')).rejects.toThrow('did not return a refresh token')
+  })
+})
+
+describe('fetchAccountEmail', () => {
+  it('returns the email for a working token', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('https://www.googleapis.com/oauth2/v3/userinfo')
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer some-token')
+      return { ok: true, json: async () => ({ email: 'son@gmail.com' }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { fetchAccountEmail } = await import('../src/integrations/remote/googleDrive/auth.js')
+    await expect(fetchAccountEmail('some-token')).resolves.toBe('son@gmail.com')
+  })
+
+  it('throws if the lookup fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })))
+
+    const { fetchAccountEmail } = await import('../src/integrations/remote/googleDrive/auth.js')
+    await expect(fetchAccountEmail('bad-token')).rejects.toThrow("Couldn't look up the connected Google account")
+  })
+
+  it('throws if Google omits an email', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({}) })))
+
+    const { fetchAccountEmail } = await import('../src/integrations/remote/googleDrive/auth.js')
+    await expect(fetchAccountEmail('token-without-email')).rejects.toThrow('did not return an account email')
   })
 })
 
