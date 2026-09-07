@@ -117,6 +117,31 @@ describe('POST /api/sources/:id/folder', () => {
     expect(row.path_scope).toBe('picked-folder-id')
   })
 
+  it('forwards a resourceKey as the X-Goog-Drive-Resource-Keys header and persists it', async () => {
+    const sourceId = await insertDriveSource()
+    let seenHeader: string | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        seenHeader = (init?.headers as Record<string, string> | undefined)?.['X-Goog-Drive-Resource-Keys']
+        return { ok: true, json: async () => ({ id: 'shared-folder-id', name: 'Shared', mimeType: 'application/vnd.google-apps.folder' }) }
+      }),
+    )
+
+    const res = await request(app)
+      .post(`/api/sources/${sourceId}/folder`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ folderId: 'shared-folder-id', resourceKey: 'the-resource-key' })
+
+    expect(res.status).toBe(200)
+    expect(seenHeader).toBe('shared-folder-id/the-resource-key')
+
+    const { getDb } = await import('../src/db/index.js')
+    const row = getDb().prepare('SELECT path_scope, path_resource_key FROM sources WHERE id = ?').get(sourceId) as any
+    expect(row.path_scope).toBe('shared-folder-id')
+    expect(row.path_resource_key).toBe('the-resource-key')
+  })
+
   it('rejects a folderId that resolves to a file, not a folder', async () => {
     const sourceId = await insertDriveSource()
     vi.stubGlobal(

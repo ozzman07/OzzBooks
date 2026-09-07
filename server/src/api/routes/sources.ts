@@ -174,6 +174,10 @@ sourcesRouter.post('/:id/folder', async (req, res) => {
     res.status(400).json({ error: 'folderId is required' })
     return
   }
+  // Picker returns this alongside the id for anything that's ever been
+  // shared via a link — Drive's API 404s on the id alone in that case,
+  // even for the owner. Optional: most picked folders don't need one.
+  const resourceKey = typeof req.body?.resourceKey === 'string' && req.body.resourceKey.trim() ? req.body.resourceKey.trim() : null
 
   let credentials
   try {
@@ -185,7 +189,7 @@ sourcesRouter.post('/:id/folder', async (req, res) => {
 
   let file
   try {
-    file = await getFileMetadata(credentials.accessToken, folderId)
+    file = await getFileMetadata(credentials.accessToken, folderId, resourceKey)
   } catch (err) {
     console.error(`[sources] folder validation failed for source ${source.id}, folderId ${folderId}:`, err)
     res.status(400).json({ error: "couldn't access that folder", detail: String(err) })
@@ -196,7 +200,7 @@ sourcesRouter.post('/:id/folder', async (req, res) => {
     return
   }
 
-  getDb().prepare('UPDATE sources SET path_scope = ? WHERE id = ?').run(folderId, source.id)
+  getDb().prepare('UPDATE sources SET path_scope = ?, path_resource_key = ? WHERE id = ?').run(folderId, resourceKey, source.id)
   const row = getDb().prepare(`SELECT ${PUBLIC_SOURCE_COLUMNS} FROM sources WHERE id = ?`).get(source.id)
   res.json(row)
 })

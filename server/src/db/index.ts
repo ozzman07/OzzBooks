@@ -44,6 +44,12 @@ function migrate(db: Database.Database): void {
       "TEXT NOT NULL DEFAULT 'ok' CHECK (credentials_status IN ('ok', 'needs_reconnect'))",
     ],
     ['credentials_account_label', 'TEXT'],
+    // Google's Drive API 404s on a file/folder id that has ever been
+    // shared via a link unless this accompanies it — Picker returns it
+    // in its selection callback but it's easy to drop (see
+    // driveClient.ts's resourceKeys param). Only ever set for a Google
+    // Drive source's path_scope; null for everything else.
+    ['path_resource_key', 'TEXT'],
   ]
   for (const [name, type] of scanSummaryColumns) {
     if (!sourcesColumns.has(name)) {

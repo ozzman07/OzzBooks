@@ -12,6 +12,7 @@ export interface SourceRow {
   credentials_expires_at: string | null
   credentials_status: CredentialsStatus
   credentials_account_label: string | null
+  path_resource_key: string | null
   created_at: string
   last_scanned_at: string | null
   last_scan_found: number | null
