@@ -23,6 +23,65 @@ import {
 
 export const DEFAULT_STORAGE_BUDGET_MB = 2000
 
+// A single fetch().blob() over a whole multi-hundred-MB audiobook file
+// reliably fails on iPad/iPhone Safari with a generic "Load failed" —
+// observed in practice on a 660 MB m4b — independent of network quality.
+// Fetching it as a sequence of small Range requests instead keeps both
+// the peak memory footprint and the blast radius of any one dropped
+// connection small (a failed chunk gets retried, not the whole file).
+const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+const CHUNK_RETRY_ATTEMPTS = 3
+
+async function fetchRangeWithRetry(url: string, start: number, end: number): Promise<Response> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt < CHUNK_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
+      if (res.ok) return res
+      lastErr = new Error(`Failed to download: ${res.status}`)
+    } catch (err) {
+      lastErr = err
+    }
+  }
+  throw lastErr
+}
+
+/**
+ * Fetches a URL's full content as a Blob, in small Range-requested chunks
+ * rather than one fetch().blob() call — see DOWNLOAD_CHUNK_BYTES above.
+ * Falls back to treating the response as the whole file if the server
+ * doesn't honor Range (status 200 instead of 206) — every route this
+ * calls today does support Range, but this keeps a plain full-response
+ * server from breaking instead of relying on that.
+ */
+async function fetchInChunks(url: string): Promise<Blob> {
+  const first = await fetchRangeWithRetry(url, 0, DOWNLOAD_CHUNK_BYTES - 1)
+  if (first.status === 200) {
+    return first.blob()
+  }
+  if (first.status !== 206) {
+    throw new Error(`Failed to download: unexpected status ${first.status}`)
+  }
+
+  const contentRange = first.headers.get('content-range') // "bytes 0-8388607/660488308"
+  const total = contentRange ? Number(contentRange.split('/')[1]) : NaN
+  if (!Number.isFinite(total)) {
+    throw new Error('Failed to download: server returned a partial response with no usable Content-Range')
+  }
+
+  const parts: Blob[] = [await first.blob()]
+  let loaded = parts[0].size
+  while (loaded < total) {
+    const end = Math.min(loaded + DOWNLOAD_CHUNK_BYTES - 1, total - 1)
+    const res = await fetchRangeWithRetry(url, loaded, end)
+    const blob = await res.blob()
+    parts.push(blob)
+    loaded += blob.size
+  }
+
+  return new Blob(parts)
+}
+
 export async function isChapterCached(chapter: Chapter): Promise<boolean> {
   return (await getCachedAudioFile(chapter.sourceFileId)) !== undefined
 }
@@ -162,9 +221,7 @@ async function ensureBudget(incomingBytes: number, budgetBytes: number): Promise
 export async function downloadChapter(chapter: Chapter, budgetMb: number = DEFAULT_STORAGE_BUDGET_MB): Promise<void> {
   if (await isChapterCached(chapter)) return
 
-  const res = await fetch(chapter.audioUrl)
-  if (!res.ok) throw new Error(`Failed to download chapter: ${res.status}`)
-  const blob = await res.blob()
+  const blob = await fetchInChunks(chapter.audioUrl)
 
   await ensureBudget(blob.size, budgetMb * 1024 * 1024)
 
