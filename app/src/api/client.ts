@@ -207,6 +207,22 @@ export function disconnectSource(sourceId: string): Promise<ApiSource> {
   return apiFetch<ApiSource>(`/api/sources/${sourceId}/disconnect`, { method: 'POST' })
 }
 
+// A short-lived access token for Google's Picker widget only — never the
+// refresh token. Fetched fresh each time the picker is opened, not cached,
+// since Picker needs a live token in the browser for the moment it's used.
+export function fetchDrivePickerToken(sourceId: string): Promise<{ accessToken: string }> {
+  return apiFetch<{ accessToken: string }>(`/api/sources/${sourceId}/drive-picker-token`)
+}
+
+// Repoints an existing Google Drive source at a folder picked through
+// Picker — no new folder gets created, unlike the initial auto-connect.
+export function setSourceFolder(sourceId: string, folderId: string): Promise<ApiSource> {
+  return apiFetch<ApiSource>(`/api/sources/${sourceId}/folder`, {
+    method: 'POST',
+    body: JSON.stringify({ folderId }),
+  })
+}
+
 // App-wide server settings (this server's own SQLite DB) — distinct from
 // cloudClient.ts's fetchSettings/putSettings, which are per-user
 // preferences (storage budget, etc.) stored in the separate cloud/Postgres

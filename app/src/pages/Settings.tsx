@@ -901,7 +901,8 @@ export function Settings() {
           {justConnected === 'google_drive' && (
             <p className="mb-3 rounded bg-success-soft px-3 py-2 text-xs text-success-soft-text">
               Google Drive connected. Upload audiobooks into the "OzzBooks Audiobooks" folder in your Drive, then
-              rescan below to add them.
+              rescan below to add them — or use "Choose an existing folder instead" on the source below to point at
+              a folder you already have.
             </p>
           )}
 

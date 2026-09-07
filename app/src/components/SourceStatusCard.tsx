@@ -9,6 +9,7 @@ import {
   type ApiScanState,
   type ApiSource,
 } from '../api/client'
+import { DriveFolderPicker } from './DriveFolderPicker'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -139,6 +140,12 @@ export function SourceStatusCard({ source, onRescanned }: { source: ApiSource; o
 
       {source.credentials_account_label && (
         <p className="mt-1 text-xs text-subtle">{source.credentials_account_label}</p>
+      )}
+
+      {source.type === 'google_drive' && !needsReconnect && (
+        <div className="mt-1">
+          <DriveFolderPicker source={source} onPicked={() => onRescanned()} />
+        </div>
       )}
 
       {scanState.status === 'running' && (
