@@ -250,6 +250,38 @@ describe('downloadChapter chunked fetch', () => {
     expect(matches).toBe(true)
   })
 
+  it('retries when the connection drops mid-body-read, not just when the initial fetch fails', async () => {
+    // Regression test for a real production failure: headers arrive fine
+    // (res.ok is true), but the connection drops while streaming the
+    // body, so res.blob() itself rejects — this must be retried exactly
+    // like a failed fetch(), not left to propagate past the retry logic.
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        attempts++
+        const shouldFailBody = attempts < 3
+        return new Response(
+          new ReadableStream({
+            async pull(controller) {
+              if (shouldFailBody) {
+                controller.error(new TypeError('Load failed'))
+                return
+              }
+              controller.enqueue(new Uint8Array(5))
+              controller.close()
+            },
+          }),
+          { status: 206, headers: { 'Content-Range': 'bytes 0-4/5' } },
+        )
+      }),
+    )
+
+    await downloadChapter(makeChapter({ sourceFileId: 'body-drop-audio' }))
+    expect(attempts).toBe(3)
+    expect(await getCachedAudioFile('body-drop-audio')).not.toBeUndefined()
+  })
+
   it('retries a failed chunk before giving up', async () => {
     let attempts = 0
     vi.stubGlobal(

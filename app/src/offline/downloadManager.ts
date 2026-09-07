@@ -32,13 +32,32 @@ export const DEFAULT_STORAGE_BUDGET_MB = 2000
 const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 const CHUNK_RETRY_ATTEMPTS = 3
 
-async function fetchRangeWithRetry(url: string, start: number, end: number): Promise<Response> {
+interface RangeChunk {
+  blob: Blob
+  status: number
+  contentRange: string | null
+}
+
+// Fetches AND fully reads one chunk's body — a dropped connection can
+// fail either half (getting a response at all, or streaming its body to
+// completion once headers already arrived), and both need to be inside
+// the same retried unit. An earlier version only wrapped the initial
+// fetch() call, so a mid-body disconnect (observed in production: the
+// first four 8 MB chunks of a 660 MB file succeeded, then the fifth's
+// connection dropped partway through res.blob()) sailed straight past
+// the retry logic and failed the whole download.
+async function fetchRangeChunk(url: string, start: number, end: number): Promise<RangeChunk> {
+  const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
+  if (!res.ok) throw new Error(`Failed to download: ${res.status}`)
+  const blob = await res.blob()
+  return { blob, status: res.status, contentRange: res.headers.get('content-range') }
+}
+
+async function fetchRangeWithRetry(url: string, start: number, end: number): Promise<RangeChunk> {
   let lastErr: unknown
   for (let attempt = 0; attempt < CHUNK_RETRY_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
-      if (res.ok) return res
-      lastErr = new Error(`Failed to download: ${res.status}`)
+      return await fetchRangeChunk(url, start, end)
     } catch (err) {
       lastErr = err
     }
@@ -54,29 +73,30 @@ async function fetchRangeWithRetry(url: string, start: number, end: number): Pro
  * calls today does support Range, but this keeps a plain full-response
  * server from breaking instead of relying on that.
  */
-async function fetchInChunks(url: string): Promise<Blob> {
+async function fetchInChunks(url: string, onProgress?: (loaded: number, total: number) => void): Promise<Blob> {
   const first = await fetchRangeWithRetry(url, 0, DOWNLOAD_CHUNK_BYTES - 1)
   if (first.status === 200) {
-    return first.blob()
+    onProgress?.(first.blob.size, first.blob.size)
+    return first.blob
   }
   if (first.status !== 206) {
     throw new Error(`Failed to download: unexpected status ${first.status}`)
   }
 
-  const contentRange = first.headers.get('content-range') // "bytes 0-8388607/660488308"
-  const total = contentRange ? Number(contentRange.split('/')[1]) : NaN
+  const total = first.contentRange ? Number(first.contentRange.split('/')[1]) : NaN
   if (!Number.isFinite(total)) {
     throw new Error('Failed to download: server returned a partial response with no usable Content-Range')
   }
 
-  const parts: Blob[] = [await first.blob()]
-  let loaded = parts[0].size
+  const parts: Blob[] = [first.blob]
+  let loaded = first.blob.size
+  onProgress?.(loaded, total)
   while (loaded < total) {
     const end = Math.min(loaded + DOWNLOAD_CHUNK_BYTES - 1, total - 1)
-    const res = await fetchRangeWithRetry(url, loaded, end)
-    const blob = await res.blob()
-    parts.push(blob)
-    loaded += blob.size
+    const chunk = await fetchRangeWithRetry(url, loaded, end)
+    parts.push(chunk.blob)
+    loaded += chunk.blob.size
+    onProgress?.(loaded, total)
   }
 
   return new Blob(parts)
@@ -218,10 +238,14 @@ async function ensureBudget(incomingBytes: number, budgetBytes: number): Promise
  * chapter of the same M4B already cached the same underlying file.
  * Evicts older cached items first (any format) if needed to stay within
  * the storage budget. */
-export async function downloadChapter(chapter: Chapter, budgetMb: number = DEFAULT_STORAGE_BUDGET_MB): Promise<void> {
+export async function downloadChapter(
+  chapter: Chapter,
+  budgetMb: number = DEFAULT_STORAGE_BUDGET_MB,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<void> {
   if (await isChapterCached(chapter)) return
 
-  const blob = await fetchInChunks(chapter.audioUrl)
+  const blob = await fetchInChunks(chapter.audioUrl, onProgress)
 
   await ensureBudget(blob.size, budgetMb * 1024 * 1024)
 

@@ -35,8 +35,19 @@ streamRouter.get('/:id/stream', async (req, res) => {
     return
   }
 
+  // Temporary — diagnosing an iPad "Load failed" during chunked offline
+  // downloads that doesn't reproduce from curl. Logs enough to tell
+  // whether/where a client-side connection actually drops mid-transfer.
+  const rangeHeader = req.headers.range ?? '(none)'
+  console.log(`[stream] ${chapter.id} range=${rangeHeader} start`)
+  req.on('close', () => {
+    if (!res.writableEnded) console.log(`[stream] ${chapter.id} range=${rangeHeader} CLIENT DISCONNECTED before response finished`)
+  })
+  res.on('finish', () => console.log(`[stream] ${chapter.id} range=${rangeHeader} status=${res.statusCode} done`))
+
   res.sendFile(chapter.file_path, (err) => {
     if (err && !res.headersSent) {
+      console.log(`[stream] ${chapter.id} range=${rangeHeader} sendFile error: ${String(err)}`)
       res.status(404).json({ error: 'audio file not found on disk', detail: String(err) })
     }
   })

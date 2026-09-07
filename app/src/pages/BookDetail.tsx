@@ -100,6 +100,11 @@ function AddToPlaylist({ bookId }: { bookId: string }) {
   )
 }
 
+function downloadingLabel(progress: { loaded: number; total: number } | null): string {
+  if (!progress || progress.total <= 0) return 'Downloading…'
+  return `Downloading… ${Math.round((progress.loaded / progress.total) * 100)}%`
+}
+
 function DownloadBadge({
   book,
   downloads,
@@ -108,14 +113,16 @@ function DownloadBadge({
   downloads: ReturnType<typeof useDownloads>
 }) {
   const cachedCount = book.chapters.filter((c) => downloads.isCached(c)).length
+  const downloading = book.chapters.some((c) => downloads.isPending(c))
   if (cachedCount === 0) {
     return (
       <div>
         <button
           onClick={() => void downloads.downloadAll()}
-          className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
+          disabled={downloading}
+          className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-60"
         >
-          Download audiobook
+          {downloading ? downloadingLabel(downloads.progress) : 'Download audiobook'}
         </button>
         {downloads.error && <p className="mt-1 text-xs text-red-400">{downloads.error}</p>}
       </div>
@@ -135,9 +142,10 @@ function DownloadBadge({
     <div>
       <button
         onClick={() => void downloads.downloadAll()}
-        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary"
+        disabled={downloading}
+        className="rounded border border-border-strong px-3 py-1.5 text-xs text-secondary disabled:opacity-60"
       >
-        {cachedCount}/{book.chapters.length} downloaded — finish
+        {downloading ? downloadingLabel(downloads.progress) : `${cachedCount}/${book.chapters.length} downloaded — finish`}
       </button>
       {downloads.error && <p className="mt-1 text-xs text-red-400">{downloads.error}</p>}
     </div>
