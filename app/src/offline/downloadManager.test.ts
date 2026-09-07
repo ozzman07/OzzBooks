@@ -208,6 +208,83 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
   })
 })
 
+describe('downloadChapter chunked fetch', () => {
+  it('reassembles a file served across multiple Range-requested chunks (spanning the real 8 MB chunk size)', async () => {
+    // 20 MB forces three real requests against the production 8 MB chunk
+    // size (8 + 8 + 4), exercising actual boundary math rather than a
+    // single request that happens to cover the whole (small) file.
+    const total = 20 * 1024 * 1024 + 37 // not a clean multiple, to also prove the tail chunk is sized correctly
+    const fullBytes = new Uint8Array(total)
+    for (let i = 0; i < total; i++) fullBytes[i] = i % 256
+    const requestedRanges: string[] = []
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        const range = (init?.headers as Record<string, string>).Range
+        requestedRanges.push(range)
+        const match = /bytes=(\d+)-(\d+)/.exec(range)!
+        const start = Number(match[1])
+        const end = Math.min(Number(match[2]), total - 1)
+        return new Response(new Blob([fullBytes.slice(start, end + 1)]), {
+          status: 206,
+          headers: { 'Content-Range': `bytes ${start}-${end}/${total}` },
+        })
+      }),
+    )
+
+    await downloadChapter(makeChapter({ sourceFileId: 'chunked-audio' }), 30)
+
+    const stored = await getCachedAudioFile('chunked-audio')
+    expect(stored?.sizeBytes).toBe(total)
+    expect(requestedRanges.length).toBe(3)
+
+    const storedBytes = new Uint8Array(await stored!.blob.arrayBuffer())
+    let matches = true
+    for (let i = 0; i < total; i++) {
+      if (storedBytes[i] !== fullBytes[i]) {
+        matches = false
+        break
+      }
+    }
+    expect(matches).toBe(true)
+  })
+
+  it('retries a failed chunk before giving up', async () => {
+    let attempts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        attempts++
+        if (attempts < 3) return new Response(null, { status: 503 })
+        return new Response(new Blob([new Uint8Array(5)]), {
+          status: 206,
+          headers: { 'Content-Range': 'bytes 0-4/5' },
+        })
+      }),
+    )
+
+    await downloadChapter(makeChapter({ sourceFileId: 'retried-audio' }))
+    expect(attempts).toBe(3)
+    expect(await getCachedAudioFile('retried-audio')).not.toBeUndefined()
+  })
+
+  it('gives up after repeated chunk failures', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 503 })))
+
+    await expect(downloadChapter(makeChapter({ sourceFileId: 'failed-audio' }))).rejects.toThrow()
+    expect(await getCachedAudioFile('failed-audio')).toBeUndefined()
+  })
+
+  it('falls back to using the response directly if the server ignores Range (200 instead of 206)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(30)))
+
+    await downloadChapter(makeChapter({ sourceFileId: 'no-range-audio' }))
+    const stored = await getCachedAudioFile('no-range-audio')
+    expect(stored?.sizeBytes).toBe(30)
+  })
+})
+
 describe('downloadComicPage', () => {
   it('creates a comicDownloads metadata record on first page, marked incomplete', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(50)))
