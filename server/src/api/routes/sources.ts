@@ -187,11 +187,12 @@ sourcesRouter.post('/:id/folder', async (req, res) => {
   try {
     file = await getFileMetadata(credentials.accessToken, folderId)
   } catch (err) {
+    console.error(`[sources] folder validation failed for source ${source.id}, folderId ${folderId}:`, err)
     res.status(400).json({ error: "couldn't access that folder", detail: String(err) })
     return
   }
   if (file.mimeType !== DRIVE_FOLDER_MIME_TYPE) {
-    res.status(400).json({ error: 'the selected item is not a folder' })
+    res.status(400).json({ error: 'the selected item is not a folder', detail: `mimeType was ${file.mimeType}` })
     return
   }
 

@@ -30,7 +30,21 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    throw new ApiError(`API request failed: ${res.status} ${res.statusText}`, res.status)
+    // Routes that reject a request deliberately (bad input, a Google API
+    // call that failed) return a JSON body with `error` (and often
+    // `detail`) explaining why — surface that instead of the generic
+    // status text whenever it's present, so error UI shows something
+    // actionable rather than just "API request failed: 400".
+    let message = `API request failed: ${res.status} ${res.statusText}`
+    try {
+      const body = await res.clone().json()
+      if (typeof body?.error === 'string') {
+        message = typeof body?.detail === 'string' ? `${body.error}: ${body.detail}` : body.error
+      }
+    } catch {
+      // Body wasn't JSON (or was empty) — fall back to the generic message above.
+    }
+    throw new ApiError(message, res.status)
   }
   if (res.status === 204) return undefined as T
   return (await res.json()) as T
