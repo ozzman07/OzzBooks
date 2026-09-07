@@ -47,12 +47,31 @@ export async function createFolder(accessToken: string, name: string, parentId?:
   })
 }
 
+// Google's Drive API 404s ("File not found") on a file/folder id that has
+// ever been shared via a link unless this header accompanies the
+// request — even for the owner in some cases. Picker returns a
+// resourceKey for exactly this reason on its selection callback; a
+// picked folder's id alone isn't always enough. Format is a
+// comma-separated list of "fileId/resourceKey" pairs — only ids that
+// actually have one need an entry, everything else is looked up
+// normally. See sources.ts's POST /:id/folder for where this gets
+// captured and stored.
+function resourceKeyHeader(ids: string[], resourceKeys?: Record<string, string>): Record<string, string> | undefined {
+  if (!resourceKeys) return undefined
+  const pairs = ids.filter((id) => resourceKeys[id]).map((id) => `${id}/${resourceKeys[id]}`)
+  return pairs.length > 0 ? { 'X-Goog-Drive-Resource-Keys': pairs.join(',') } : undefined
+}
+
 /** Lists every direct child (file or folder) of the given folder ids,
  * batching multiple folders into one query (OR'd `'id' in parents`
  * clauses) and paginating within each batch. Folder ids are always
  * Drive-generated safe strings, never user-controlled text, so no query
  * escaping is needed for them. */
-export async function listChildren(accessToken: string, folderIds: string[]): Promise<DriveFile[]> {
+export async function listChildren(
+  accessToken: string,
+  folderIds: string[],
+  resourceKeys?: Record<string, string>,
+): Promise<DriveFile[]> {
   if (folderIds.length === 0) return []
   const results: DriveFile[] = []
 
@@ -60,6 +79,7 @@ export async function listChildren(accessToken: string, folderIds: string[]): Pr
     const batch = folderIds.slice(i, i + MAX_PARENTS_PER_QUERY)
     const parentClauses = batch.map((id) => `'${id}' in parents`).join(' or ')
     const q = `(${parentClauses}) and trashed = false`
+    const headers = resourceKeyHeader(batch, resourceKeys)
 
     let pageToken: string | undefined
     do {
@@ -72,6 +92,7 @@ export async function listChildren(accessToken: string, folderIds: string[]): Pr
       const page = await driveFetch<{ files: DriveFile[]; nextPageToken?: string }>(
         accessToken,
         `/files?${params.toString()}`,
+        headers ? { headers } : undefined,
       )
       results.push(...page.files)
       pageToken = page.nextPageToken
@@ -81,8 +102,9 @@ export async function listChildren(accessToken: string, folderIds: string[]): Pr
   return results
 }
 
-export async function getFileMetadata(accessToken: string, fileId: string): Promise<DriveFile> {
-  return driveFetch<DriveFile>(accessToken, `/files/${fileId}?fields=${FIELDS}`)
+export async function getFileMetadata(accessToken: string, fileId: string, resourceKey?: string | null): Promise<DriveFile> {
+  const headers = resourceKey ? { 'X-Goog-Drive-Resource-Keys': `${fileId}/${resourceKey}` } : undefined
+  return driveFetch<DriveFile>(accessToken, `/files/${fileId}?fields=${FIELDS}`, headers ? { headers } : undefined)
 }
 
 /** Not fetched here — the caller (streaming proxy / metadata extraction)

@@ -86,6 +86,28 @@ describe('listChildren', () => {
     // 85 folders at 40 per batch -> 3 queries (40, 40, 5)
     expect(queries).toHaveLength(3)
   })
+
+  it('sends the resource-key header only for ids that have one', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>)['X-Goog-Drive-Resource-Keys']).toBe('folder-a/key-a')
+      return { ok: true, json: async () => ({ files: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listChildren('test-token', ['folder-a', 'folder-b'], { 'folder-a': 'key-a' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('omits the resource-key header entirely when no requested id has one', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>)['X-Goog-Drive-Resource-Keys']).toBeUndefined()
+      return { ok: true, json: async () => ({ files: [] }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listChildren('test-token', ['folder-a'], { 'some-other-folder': 'key-x' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('getFileMetadata', () => {
@@ -99,6 +121,17 @@ describe('getFileMetadata', () => {
     )
     const file = await getFileMetadata('test-token', 'some-file-id')
     expect(file.size).toBe('12345')
+  })
+
+  it('includes the resource-key header when a resourceKey is given', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        expect((init?.headers as Record<string, string>)['X-Goog-Drive-Resource-Keys']).toBe('shared-id/the-key')
+        return { ok: true, json: async () => ({ id: 'shared-id', name: 'Shared', mimeType: 'application/vnd.google-apps.folder' }) }
+      }),
+    )
+    await getFileMetadata('test-token', 'shared-id', 'the-key')
   })
 })
 

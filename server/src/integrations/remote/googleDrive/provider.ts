@@ -16,9 +16,13 @@ const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder'
 async function listTree(source: SourceRow, credentials: DecryptedCredentials): Promise<RemoteEntry[]> {
   const results: RemoteEntry[] = []
   let currentLevelFolderIds = [source.path_scope]
+  // Only ever set for the root (a Picker-selected, possibly link-shared
+  // folder) — children discovered while walking the tree are looked up
+  // normally, no resourceKey of their own needed.
+  const resourceKeys = source.path_resource_key ? { [source.path_scope]: source.path_resource_key } : undefined
 
   while (currentLevelFolderIds.length > 0) {
-    const children = await listChildren(credentials.accessToken, currentLevelFolderIds)
+    const children = await listChildren(credentials.accessToken, currentLevelFolderIds, resourceKeys)
     const nextLevelFolderIds: string[] = []
 
     for (const child of children) {

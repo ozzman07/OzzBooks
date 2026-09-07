@@ -9,6 +9,10 @@ const PICKER_API_KEY = import.meta.env.VITE_GOOGLE_PICKER_API_KEY ?? ''
 // isn't worth it.
 interface PickerDoc {
   id: string
+  // Present for anything that's ever been shared via a link — Drive's
+  // API 404s on the id alone in that case, even for the owner, so this
+  // has to be forwarded to the backend rather than dropped.
+  resourceKey?: string
 }
 interface PickerResponse {
   action: string
@@ -90,9 +94,9 @@ export function DriveFolderPicker({ source, onPicked }: { source: ApiSource; onP
         .setDeveloperKey(PICKER_API_KEY)
         .setCallback((data: PickerResponse) => {
           if (data.action !== picker.Action.PICKED) return
-          const folderId = data.docs?.[0]?.id
-          if (!folderId) return
-          void setSourceFolder(source.id, folderId)
+          const doc = data.docs?.[0]
+          if (!doc?.id) return
+          void setSourceFolder(source.id, doc.id, doc.resourceKey)
             .then(onPicked)
             .catch((err) => setError(err instanceof Error ? err.message : String(err)))
         })

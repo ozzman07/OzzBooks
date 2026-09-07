@@ -230,10 +230,14 @@ export function fetchDrivePickerToken(sourceId: string): Promise<{ accessToken: 
 
 // Repoints an existing Google Drive source at a folder picked through
 // Picker — no new folder gets created, unlike the initial auto-connect.
-export function setSourceFolder(sourceId: string, folderId: string): Promise<ApiSource> {
+// resourceKey (from Picker's own callback) is required for a folder
+// that's ever been shared via a link — Drive's API 404s on the id alone
+// in that case, even for the owner — so it's forwarded whenever Picker
+// provides one, not just guessed at.
+export function setSourceFolder(sourceId: string, folderId: string, resourceKey?: string): Promise<ApiSource> {
   return apiFetch<ApiSource>(`/api/sources/${sourceId}/folder`, {
     method: 'POST',
-    body: JSON.stringify({ folderId }),
+    body: JSON.stringify({ folderId, resourceKey }),
   })
 }
 

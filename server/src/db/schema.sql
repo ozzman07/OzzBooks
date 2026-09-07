@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS sources (
   credentials_expires_at TEXT, -- plaintext, not sensitive; access-token expiry for proactive refresh
   credentials_status TEXT NOT NULL DEFAULT 'ok' CHECK (credentials_status IN ('ok', 'needs_reconnect')),
   credentials_account_label TEXT, -- display only, e.g. "connected as name@gmail.com"
+  path_resource_key TEXT, -- Google Drive only: required alongside path_scope for a link-shared folder id
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- Summary of the most recent scan, surfaced in the UI as index status.
   -- Null until the first scan runs.
