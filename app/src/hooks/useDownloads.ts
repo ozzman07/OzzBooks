@@ -23,6 +23,11 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
   // disappearing as a silently-swallowed rejection — every caller here
   // already fires these from a bare `void download(...)` click handler.
   const [error, setError] = useState<string | null>(null)
+  // Bytes for whichever chapter is actively downloading right now — a
+  // 660 MB audiobook fetched in 8 MB chunks can take several minutes, and
+  // a button that shows no feedback at all for that long is
+  // indistinguishable from broken.
+  const [progress, setProgress] = useState<{ loaded: number; total: number } | null>(null)
 
   const refresh = useCallback(async () => {
     const entries = await getCachedAudioFilesForBook(bookId)
@@ -49,10 +54,11 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
   const download = useCallback(
     async (chapter: Chapter) => {
       setError(null)
+      setProgress(null)
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
         const budgetMb = await getBudgetMb()
-        await downloadChapter(chapter, budgetMb)
+        await downloadChapter(chapter, budgetMb, (loaded, total) => setProgress({ loaded, total }))
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Download failed')
@@ -62,6 +68,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
           next.delete(chapter.sourceFileId)
           return next
         })
+        setProgress(null)
       }
     },
     [getBudgetMb, refresh],
@@ -69,12 +76,13 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
 
   const downloadAll = useCallback(async () => {
     setError(null)
+    setProgress(null)
     const budgetMb = await getBudgetMb()
     for (const chapter of chapters) {
       if (cachedFileIds.has(chapter.sourceFileId)) continue
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
-        await downloadChapter(chapter, budgetMb)
+        await downloadChapter(chapter, budgetMb, (loaded, total) => setProgress({ loaded, total }))
         // Refresh after each file, not just once at the end, so the
         // checkmark appears as each download completes instead of only
         // after the whole book finishes.
@@ -88,6 +96,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
           next.delete(chapter.sourceFileId)
           return next
         })
+        setProgress(null)
       }
     }
   }, [chapters, cachedFileIds, getBudgetMb, refresh])
@@ -105,5 +114,5 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
     await refresh()
   }, [bookId, refresh])
 
-  return { isCached, isPending, download, downloadAll, remove, removeAll, error }
+  return { isCached, isPending, download, downloadAll, remove, removeAll, error, progress }
 }
