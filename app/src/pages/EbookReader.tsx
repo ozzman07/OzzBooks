@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Epub from 'epubjs'
 import type Rendition from 'epubjs/types/rendition'
@@ -167,6 +167,31 @@ export function EbookReader() {
   // how a stale tab's delayed flush can stamp an old page with a fresh
   // "now" and clobber real, more recent progress from another device.
   const currentCfiCapturedAtRef = useRef<string | undefined>(undefined)
+  // True immediately before a programmatic display()/resize() call this
+  // component makes on the reader's own behalf (restoring saved progress,
+  // the reflow-correction re-display, a live prefs change re-paginating) —
+  // consumed (reset to false) by the very next 'relocated' event, which
+  // skips scheduling a save. Restoring a CFI can resolve to a very
+  // slightly different paginated position than where it was originally
+  // saved (epub.js snapping to the nearest page boundary is not perfectly
+  // stable across re-renders) — without this guard, simply *reopening*
+  // the book fires a real relocate for that resolved position and
+  // schedules a save for it, quietly regressing progress by a page or two
+  // even though the user never touched anything. Genuine page turns
+  // (next()/prev()/tap navigation) never set this, so they save normally.
+  const suppressNextSaveRef = useRef(false)
+  // Sets the guard above with a short auto-expiry rather than leaving it
+  // set indefinitely — resize() (unlike display()) doesn't reliably
+  // trigger a re-display every time it's called (only when it detects an
+  // actual size change), so a bare `.current = true` before it could leak
+  // forward and silently swallow a real, later save if no relocate ever
+  // came along to consume it.
+  const suppressNextSave = useCallback(() => {
+    suppressNextSaveRef.current = true
+    setTimeout(() => {
+      suppressNextSaveRef.current = false
+    }, 500)
+  }, [])
   // Guards the live-prefs effect below against firing a redundant, racing
   // display() call the moment status first flips to 'ready' — that effect
   // is keyed on [prefs, status], and the initial ready transition would
@@ -261,6 +286,10 @@ export function EbookReader() {
             if (locationsReadyRef.current) {
               setPercent(Math.round(epub.locations.percentageFromCfi(cfi) * 100))
             }
+            if (suppressNextSaveRef.current) {
+              suppressNextSaveRef.current = false
+              return
+            }
             if (!auth.token) return
             // Debounced — relocated fires on every page turn, syncing
             // every single one would spam the cloud API for no benefit
@@ -307,6 +336,7 @@ export function EbookReader() {
         }
 
         const startCfi = progress?.position.type === 'cfi' ? progress.position.value : undefined
+        if (startCfi) suppressNextSave()
         try {
           await rendition.display(startCfi)
         } catch {
@@ -336,6 +366,7 @@ export function EbookReader() {
           setTimeout(() => {
             if (cancelled || !renditionRef.current) return
             if (currentCfiRef.current !== startCfi) return
+            suppressNextSave()
             void renditionRef.current.display(startCfi)
           }, 800)
         }
@@ -438,7 +469,10 @@ export function EbookReader() {
     // current page ends up clipping content that no longer fits. Forcing
     // a fresh display() at the same CFI makes it re-paginate from here
     // with the new styles already applied, rather than reusing stale ones.
-    if (currentCfiRef.current) void rendition.display(currentCfiRef.current)
+    if (currentCfiRef.current) {
+      suppressNextSave()
+      void rendition.display(currentCfiRef.current)
+    }
   }, [prefs, status])
 
   // The settings panel taking/giving back vertical space is a pure
@@ -471,6 +505,12 @@ export function EbookReader() {
     // epubjs's own type declarations wrongly mark width/height as
     // required — the real implementation treats no-args as "measure the
     // container's current size", which is exactly what's needed here.
+    // resize() re-displays internally at the current cfi when it detects a
+    // size change (see the comment above) — that re-display fires
+    // 'relocated' just like a real page turn, so it needs the same
+    // not-a-real-navigation guard as the other programmatic display()
+    // calls in this component.
+    suppressNextSave()
     ;(rendition.resize as unknown as () => void)()
   }, [showSettings, status])
 
