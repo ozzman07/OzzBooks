@@ -91,10 +91,9 @@ googleAuthRouter.get('/google/callback', async (req, res) => {
         return
       }
 
-      // drive.file scope only grants access to files/folders the
-      // authenticating account itself created (or picked). Reconnecting
-      // with a DIFFERENT Google account than the one that originally set
-      // this source up can never see the existing managed folder — check
+      // Reconnecting with a DIFFERENT Google account than the one that
+      // originally set this source up won't have access to the existing
+      // managed folder unless it was separately shared with them — check
       // that here instead of silently marking the source "ok" with a
       // token that can't actually read anything.
       try {

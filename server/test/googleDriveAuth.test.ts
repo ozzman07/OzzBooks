@@ -20,7 +20,7 @@ describe('getAuthorizationUrl', () => {
     expect(url.searchParams.get('redirect_uri')).toBe('https://example.ts.net/api/sources/oauth/google/callback')
     expect(url.searchParams.get('response_type')).toBe('code')
     expect(url.searchParams.get('scope')).toBe(
-      'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email',
     )
     expect(url.searchParams.get('access_type')).toBe('offline')
     expect(url.searchParams.get('prompt')).toBe('consent')

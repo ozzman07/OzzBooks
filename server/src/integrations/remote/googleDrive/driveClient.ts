@@ -32,10 +32,11 @@ async function driveFetch<T>(accessToken: string, path: string, init?: RequestIn
   return res.json() as Promise<T>
 }
 
-/** Creates a folder — the app-owned root a connected source's files live
- * under (drive.file scope only grants access to what the app itself
- * creates, or what the user explicitly opens via Picker — this project
- * doesn't use Picker, see the plan). */
+/** Creates a folder — the app-owned default root a freshly-connected
+ * source's files live under, offered as the zero-friction option
+ * alongside Picker's "choose an existing folder instead" (see
+ * sources.ts's POST /:id/folder). Works regardless of OAuth scope since
+ * the app itself owns whatever it creates. */
 export async function createFolder(accessToken: string, name: string, parentId?: string): Promise<DriveFile> {
   return driveFetch<DriveFile>(accessToken, '/files?fields=id,name,mimeType', {
     method: 'POST',
