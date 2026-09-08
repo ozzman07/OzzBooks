@@ -159,6 +159,14 @@ export function EbookReader() {
   const containerRef = useRef<HTMLDivElement>(null)
   const renditionRef = useRef<Rendition | null>(null)
   const currentCfiRef = useRef<string | undefined>(undefined)
+  // Captured the moment relocate fires, not when the debounced save (or a
+  // much-later flush of a stale backgrounded tab) actually dispatches —
+  // last-write-wins on the server compares this timestamp, so it must
+  // reflect when the reader was genuinely at this position, not whenever
+  // the network request happened to go out. Getting this wrong is exactly
+  // how a stale tab's delayed flush can stamp an old page with a fresh
+  // "now" and clobber real, more recent progress from another device.
+  const currentCfiCapturedAtRef = useRef<string | undefined>(undefined)
   // Guards the live-prefs effect below against firing a redundant, racing
   // display() call the moment status first flips to 'ready' — that effect
   // is keyed on [prefs, status], and the initial ready transition would
@@ -245,6 +253,7 @@ export function EbookReader() {
             const cfi = location?.start?.cfi
             if (!cfi) return
             currentCfiRef.current = cfi
+            currentCfiCapturedAtRef.current = new Date().toISOString()
             const displayed = location.start?.displayed
             if (displayed?.page && displayed.total) {
               setPageInfo({ page: displayed.page, total: displayed.total })
@@ -261,26 +270,27 @@ export function EbookReader() {
             // that flush, turning a page and immediately switching apps
             // within the debounce window loses that page turn entirely,
             // and reopening the book restores the previous page instead.
+            const capturedAt = currentCfiCapturedAtRef.current
             if (saveTimer) clearTimeout(saveTimer)
             saveTimer = setTimeout(() => {
               saveTimer = null
               void putProgress(auth.token!, bookId!, {
                 position: { type: 'cfi', value: cfi },
                 chapterId: null,
-                updatedAt: new Date().toISOString(),
+                updatedAt: capturedAt!,
               })
             }, 2000)
           },
         )
 
         const flushPendingSave = () => {
-          if (!saveTimer || !auth.token || !currentCfiRef.current) return
+          if (!saveTimer || !auth.token || !currentCfiRef.current || !currentCfiCapturedAtRef.current) return
           clearTimeout(saveTimer)
           saveTimer = null
           void putProgress(auth.token, bookId!, {
             position: { type: 'cfi', value: currentCfiRef.current },
             chapterId: null,
-            updatedAt: new Date().toISOString(),
+            updatedAt: currentCfiCapturedAtRef.current,
           })
         }
         const onVisibilityChange = () => {
@@ -378,11 +388,11 @@ export function EbookReader() {
       // flush (see the 'relocated' handler above).
       if (saveTimer) {
         clearTimeout(saveTimer)
-        if (auth.token && currentCfiRef.current) {
+        if (auth.token && currentCfiRef.current && currentCfiCapturedAtRef.current) {
           void putProgress(auth.token, bookId!, {
             position: { type: 'cfi', value: currentCfiRef.current },
             chapterId: null,
-            updatedAt: new Date().toISOString(),
+            updatedAt: currentCfiCapturedAtRef.current,
           })
         }
       }
