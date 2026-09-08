@@ -1,12 +1,26 @@
 import { config } from '../../../config.js'
 import type { DecryptedCredentials } from '../types.js'
 
-// Both non-sensitive scopes — avoids Google's paid third-party
-// verification review requirement (see the plan's Google Cloud Console
-// setup notes). userinfo.email lets the callback confirm *which* Google
-// account just authorized (and double as a live check that the token
-// actually works), not just that some token was issued.
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email'
+// drive.readonly, not drive.file: drive.file only ever grants access to
+// files/folders the app itself creates or that get individually selected
+// through Picker — a file simply uploaded into an already-granted folder
+// (the normal, expected way to add books) is invisible to it, confirmed
+// in practice (a book dropped into a freshly Picker-granted folder never
+// showed up on scan). drive.readonly can actually see anything the
+// connected account has access to, which is what this integration
+// genuinely needs.
+//
+// This is a sensitive scope — unlike drive.file, it requires the OAuth
+// consent screen to be in "Testing" status with the connecting account
+// added as a test user (see Google Cloud Console's Audience page), and
+// Google expires an unverified testing-mode grant using a sensitive
+// scope after 7 days, requiring a reconnect. Accepted tradeoff for a
+// family app with no plans to pursue full verification right now.
+//
+// userinfo.email lets the callback confirm *which* Google account just
+// authorized (and double as a live check that the token actually
+// works), not just that some token was issued.
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/userinfo.email'
 const AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke'
