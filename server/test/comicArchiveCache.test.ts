@@ -6,18 +6,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getComicPage, MAX_CACHED_ARCHIVES } from '../src/ingestion/comicArchiveCache.js'
 import { makeTestComic } from './fixtures.js'
 
-// node:fs/promises' ESM namespace can't be spied on directly (Vitest/Node
-// both reject redefining a builtin module's exports) — mocking the module
-// with a counting wrapper around the real readFile is the supported way
-// to observe how many times comicArchiveCache actually reads a file.
-let readFileCallCount = 0
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>()
+// yauzl's ESM namespace can't be spied on directly (Vitest/Node both
+// reject redefining a builtin-style module's exports) — mocking the
+// module with a counting wrapper around the real openPromise is the
+// supported way to observe how many times comicArchiveCache actually
+// opens the underlying archive.
+let openPromiseCallCount = 0
+vi.mock('yauzl', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('yauzl')>()
   return {
     ...actual,
-    readFile: (...args: Parameters<typeof actual.readFile>) => {
-      readFileCallCount++
-      return actual.readFile(...args)
+    openPromise: (...args: Parameters<typeof actual.openPromise>) => {
+      openPromiseCallCount++
+      return actual.openPromise(...args)
     },
   }
 })
@@ -53,7 +54,7 @@ describe('getComicPage', () => {
     expect(await getComicPage(bookId, cbzPath, -1)).toBeNull()
   })
 
-  it('caches the entry list — a second request for the same book+path does not see bytes rewritten at the same path', async () => {
+  it('caches the entry index but reads page bytes live from disk on each request', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-cache-'))
     const cbzPath = path.join(dir, 'comic.cbz')
     await makeTestComic(cbzPath, { pages: ['a.jpg'], comicInfo: null })
@@ -62,13 +63,17 @@ describe('getComicPage', () => {
     const first = await getComicPage(bookId, cbzPath, 0)
     expect(first?.buffer.toString()).toBe('page-content-a.jpg')
 
-    // Overwrite the same path with different content — a real .cbz on this
-    // app's NAS is never rewritten in place in practice, so the cache
-    // deliberately doesn't watch for this; confirms that documented
-    // behavior rather than assuming it.
+    // Only the entry index (names/offsets) is cached — page bytes are read
+    // on demand via a kept-open random-access handle, not buffered upfront
+    // in memory (that upfront full-file read was the actual bug: it made a
+    // large archive slow enough to blow past the reader's load timeout).
+    // A real .cbz on this app's NAS is never rewritten in place in
+    // practice (only relinked, which changes file_path and correctly
+    // triggers a reload — see the relink test below), so this reflects an
+    // accepted tradeoff rather than a guarded-against scenario.
     await makeTestComic(cbzPath, { pages: ['b.jpg'], comicInfo: null })
     const second = await getComicPage(bookId, cbzPath, 0)
-    expect(second?.buffer.toString()).toBe('page-content-a.jpg') // still the cached original
+    expect(second?.buffer.toString()).toBe('page-content-b.jpg')
   })
 
   it('self-heals when the same book id gets a new file_path (a relink)', async () => {
@@ -94,7 +99,7 @@ describe('getComicPage', () => {
     await makeTestComic(cbzPath, { pages: ['page1.jpg', 'page2.jpg', 'page3.jpg'], comicInfo: null })
 
     const bookId = randomUUID()
-    const countBefore = readFileCallCount
+    const countBefore = openPromiseCallCount
 
     // Simulates the reader's own prefetch: pages 0/1/2 requested together
     // before any of them has had a chance to populate the cache.
@@ -107,9 +112,9 @@ describe('getComicPage', () => {
     expect(p0?.buffer.toString()).toBe('page-content-page1.jpg')
     expect(p1?.buffer.toString()).toBe('page-content-page2.jpg')
     expect(p2?.buffer.toString()).toBe('page-content-page3.jpg')
-    // The whole point: one archive read serving all three, not three
-    // independent (and independently slow, for a large archive) reads.
-    expect(readFileCallCount - countBefore).toBe(1)
+    // The whole point: one archive open serving all three, not three
+    // independent (and independently slow, for a large archive) opens.
+    expect(openPromiseCallCount - countBefore).toBe(1)
   })
 
   it('evicts the least-recently-used archive once the cache is full', async () => {
