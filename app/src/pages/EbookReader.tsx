@@ -194,6 +194,7 @@ export function EbookReader() {
     let cancelled = false
     let rendition: Rendition | null = null
     let saveTimer: ReturnType<typeof setTimeout> | null = null
+    let removeVisibilityListeners: (() => void) | null = null
 
     async function load() {
       try {
@@ -254,9 +255,15 @@ export function EbookReader() {
             if (!auth.token) return
             // Debounced — relocated fires on every page turn, syncing
             // every single one would spam the cloud API for no benefit
-            // over just capturing where the reader settles.
+            // over just capturing where the reader settles. Flushed
+            // immediately on visibilitychange below, since iOS suspends
+            // pending timers the moment the app backgrounds — without
+            // that flush, turning a page and immediately switching apps
+            // within the debounce window loses that page turn entirely,
+            // and reopening the book restores the previous page instead.
             if (saveTimer) clearTimeout(saveTimer)
             saveTimer = setTimeout(() => {
+              saveTimer = null
               void putProgress(auth.token!, bookId!, {
                 position: { type: 'cfi', value: cfi },
                 chapterId: null,
@@ -265,6 +272,29 @@ export function EbookReader() {
             }, 2000)
           },
         )
+
+        const flushPendingSave = () => {
+          if (!saveTimer || !auth.token || !currentCfiRef.current) return
+          clearTimeout(saveTimer)
+          saveTimer = null
+          void putProgress(auth.token, bookId!, {
+            position: { type: 'cfi', value: currentCfiRef.current },
+            chapterId: null,
+            updatedAt: new Date().toISOString(),
+          })
+        }
+        const onVisibilityChange = () => {
+          if (document.visibilityState === 'hidden') flushPendingSave()
+        }
+        document.addEventListener('visibilitychange', onVisibilityChange)
+        // pagehide covers iOS discarding the page outright while
+        // backgrounded (no visibilitychange guaranteed in that case) —
+        // belt and suspenders for the same flush.
+        window.addEventListener('pagehide', flushPendingSave)
+        removeVisibilityListeners = () => {
+          document.removeEventListener('visibilitychange', onVisibilityChange)
+          window.removeEventListener('pagehide', flushPendingSave)
+        }
 
         const startCfi = progress?.position.type === 'cfi' ? progress.position.value : undefined
         try {
@@ -341,7 +371,22 @@ export function EbookReader() {
     void load()
     return () => {
       cancelled = true
-      if (saveTimer) clearTimeout(saveTimer)
+      // Flush rather than just clear — navigating away from the reader
+      // within the debounce window (e.g. tapping back right after a page
+      // turn) previously discarded that pending save entirely, same class
+      // of lost-position bug as backgrounding without a visibilitychange
+      // flush (see the 'relocated' handler above).
+      if (saveTimer) {
+        clearTimeout(saveTimer)
+        if (auth.token && currentCfiRef.current) {
+          void putProgress(auth.token, bookId!, {
+            position: { type: 'cfi', value: currentCfiRef.current },
+            chapterId: null,
+            updatedAt: new Date().toISOString(),
+          })
+        }
+      }
+      removeVisibilityListeners?.()
       rendition?.destroy()
       renditionRef.current = null
     }
