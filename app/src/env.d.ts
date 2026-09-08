@@ -11,3 +11,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+// Injected by vite.config.ts's `define` at build time — see Settings.tsx's
+// footer, the one place a running instance's actual build is identifiable.
+declare const __BUILD_SHA__: string
+declare const __BUILD_TIME__: string

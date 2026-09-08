@@ -958,6 +958,9 @@ export function Settings() {
       </div>
 
       <p className="mt-6 text-center text-xs text-subtle">OzzBooks — Phase 1</p>
+      <p className="mt-1 text-center text-xs text-subtle">
+        Build {__BUILD_SHA__} · {new Date(__BUILD_TIME__).toLocaleString()}
+      </p>
     </div>
   )
 }

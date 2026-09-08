@@ -1,10 +1,28 @@
+import { execSync } from 'node:child_process'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// Baked in at build time so a running instance can be identified with
+// certainty instead of guessing whether an update actually landed — see
+// Settings.tsx's footer. Falls back to 'unknown' rather than failing the
+// build if git isn't available for some reason (e.g. a source tarball
+// with no .git directory).
+function getBuildSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD').toString().trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __BUILD_SHA__: JSON.stringify(getBuildSha()),
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   plugins: [
     react(),
     tailwindcss(),
