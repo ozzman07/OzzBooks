@@ -19,6 +19,12 @@ async function cloudFetch<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(`${CLOUD_BASE_URL}${path}`, {
       ...init,
+      // Every response here is live per-user state — a browser serving a
+      // stale cached GET (e.g. progress right after backgrounding/
+      // reopening the app) would look exactly like lost/reverted state.
+      // Belt and suspenders alongside the cloud service's own
+      // Cache-Control: no-store response header.
+      cache: 'no-store',
       headers: {
         ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
         ...init?.headers,
