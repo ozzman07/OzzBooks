@@ -191,7 +191,10 @@ sourcesRouter.post('/:id/folder', async (req, res) => {
   try {
     file = await getFileMetadata(credentials.accessToken, folderId, resourceKey)
   } catch (err) {
-    console.error(`[sources] folder validation failed for source ${source.id}, folderId ${folderId}:`, err)
+    console.error(
+      `[sources] folder validation failed for source ${source.id}, folderId ${folderId}, resourceKey ${resourceKey ? 'PROVIDED' : 'none'}:`,
+      err,
+    )
     res.status(400).json({ error: "couldn't access that folder", detail: String(err) })
     return
   }
