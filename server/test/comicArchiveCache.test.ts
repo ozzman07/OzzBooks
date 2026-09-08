@@ -2,9 +2,29 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getComicPage, MAX_CACHED_ARCHIVES } from '../src/ingestion/comicArchiveCache.js'
 import { makeTestComic } from './fixtures.js'
+
+// node:fs/promises' ESM namespace can't be spied on directly (Vitest/Node
+// both reject redefining a builtin module's exports) — mocking the module
+// with a counting wrapper around the real readFile is the supported way
+// to observe how many times comicArchiveCache actually reads a file.
+let readFileCallCount = 0
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    readFile: (...args: Parameters<typeof actual.readFile>) => {
+      readFileCallCount++
+      return actual.readFile(...args)
+    },
+  }
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('getComicPage', () => {
   it('returns the right page bytes and content-type, natural-sorted', async () => {
@@ -66,6 +86,30 @@ describe('getComicPage', () => {
     // serving pages from the old archive.
     const after = await getComicPage(bookId, relinkedPath, 0)
     expect(after?.buffer.toString()).toBe('page-content-relinked-page.jpg')
+  })
+
+  it('de-dupes concurrent loads of the same uncached book (prefetch fires several page requests at once)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-comic-cache-'))
+    const cbzPath = path.join(dir, 'comic.cbz')
+    await makeTestComic(cbzPath, { pages: ['page1.jpg', 'page2.jpg', 'page3.jpg'], comicInfo: null })
+
+    const bookId = randomUUID()
+    const countBefore = readFileCallCount
+
+    // Simulates the reader's own prefetch: pages 0/1/2 requested together
+    // before any of them has had a chance to populate the cache.
+    const [p0, p1, p2] = await Promise.all([
+      getComicPage(bookId, cbzPath, 0),
+      getComicPage(bookId, cbzPath, 1),
+      getComicPage(bookId, cbzPath, 2),
+    ])
+
+    expect(p0?.buffer.toString()).toBe('page-content-page1.jpg')
+    expect(p1?.buffer.toString()).toBe('page-content-page2.jpg')
+    expect(p2?.buffer.toString()).toBe('page-content-page3.jpg')
+    // The whole point: one archive read serving all three, not three
+    // independent (and independently slow, for a large archive) reads.
+    expect(readFileCallCount - countBefore).toBe(1)
   })
 
   it('evicts the least-recently-used archive once the cache is full', async () => {

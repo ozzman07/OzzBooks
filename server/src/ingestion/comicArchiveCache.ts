@@ -18,6 +18,16 @@ interface CachedArchive {
 export const MAX_CACHED_ARCHIVES = 8
 const cache = new Map<string, CachedArchive>()
 
+// De-dupes concurrent loads of the same not-yet-cached book — opening a
+// comic fires off requests for the first few pages together (prefetch),
+// and without this every one of them would independently read the whole
+// archive into memory and re-parse it before any single load finishes
+// populating the cache. For a large archive (900MB+, common in this
+// library, sometimes several GB) over network-mounted storage, that
+// multiplied cost was enough to blow past the reader's load timeout and
+// show "couldn't load this page" on an otherwise perfectly fine file.
+const inFlightLoads = new Map<string, Promise<CachedArchive>>()
+
 async function loadArchive(filePath: string): Promise<CachedArchive> {
   const buffer = await readFile(filePath)
   const zip = await JSZip.loadAsync(buffer)
@@ -46,13 +56,24 @@ async function getArchive(bookId: string, filePath: string): Promise<CachedArchi
     return cached
   }
 
-  const fresh = await loadArchive(filePath)
-  cache.set(bookId, fresh)
-  if (cache.size > MAX_CACHED_ARCHIVES) {
-    const oldestKey = cache.keys().next().value
-    if (oldestKey !== undefined) cache.delete(oldestKey)
-  }
-  return fresh
+  const existingLoad = inFlightLoads.get(bookId)
+  if (existingLoad) return existingLoad
+
+  const loadPromise = (async () => {
+    try {
+      const fresh = await loadArchive(filePath)
+      cache.set(bookId, fresh)
+      if (cache.size > MAX_CACHED_ARCHIVES) {
+        const oldestKey = cache.keys().next().value
+        if (oldestKey !== undefined) cache.delete(oldestKey)
+      }
+      return fresh
+    } finally {
+      inFlightLoads.delete(bookId)
+    }
+  })()
+  inFlightLoads.set(bookId, loadPromise)
+  return loadPromise
 }
 
 const CONTENT_TYPES: Record<string, string> = {
