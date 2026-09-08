@@ -53,12 +53,19 @@ class AuthenticatedRangeClient implements IRangeRequestClient {
     if (typeof size !== 'number') {
       throw new Error('Could not determine file size from HTTP response')
     }
-    const acceptRanges = res.headers.get('Accept-Ranges')
     return {
       url: res.url,
       size,
       mimeType: res.headers.get('Content-Type') ?? undefined,
-      acceptPartialRequests: acceptRanges?.trim().toLowerCase() === 'bytes',
+      // Hardcoded rather than detected from the Accept-Ranges header: this
+      // client is only ever used against Drive's alt=media endpoint, which
+      // reliably honors a Range header on an actual GET (streamProxy.ts's
+      // playback path already depends on exactly this) — but its response
+      // to a bare HEAD probe doesn't consistently include Accept-Ranges,
+      // which made @tokenizer/range conclude the server rejects partial
+      // requests and refuse to parse at all, confirmed in practice on a
+      // real file ("Server does not accept partial requests" on ingest).
+      acceptPartialRequests: true,
     }
   }
 
