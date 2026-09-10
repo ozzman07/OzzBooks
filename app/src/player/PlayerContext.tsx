@@ -178,6 +178,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // drag just like the in-app <input type="range"> does — see the
   // seekto handler below for why that matters.
   const seekToDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Always points at the latest loadIntoAudio — lets armSeekWatchdog call it
+  // without depending on it directly, since loadIntoAudio itself depends
+  // (transitively, via attemptLoadWithRetries) on armSeekWatchdog. Assigned
+  // during render right after loadIntoAudio is defined below, same pattern
+  // as latestRef.
+  const loadIntoAudioRef = useRef<(book: Book, target: Chapter, chapterRelativeOffset: number, autoplay: boolean) => void>(
+    () => {},
+  )
 
   useSkipSilence(audioRef, skipSilenceEnabled)
 
@@ -266,6 +274,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const clearSeekWatchdog = useCallback(() => {
+    if (seekWatchdogRef.current) {
+      clearTimeout(seekWatchdogRef.current)
+      seekWatchdogRef.current = null
+    }
+  }, [])
+
+  /** (Re)starts the stall watchdog, falling back to a full reload-with-retry
+   * of the last known target (pendingLoadRef) if nothing proves recovery
+   * within LOAD_TIMEOUT_MS. Called up front by seekWithinLoadedStream, play(),
+   * and a successful autoplay resolution in attemptLoadWithRetries below, and
+   * reactively by the `waiting` handler further down — so a stall that
+   * develops *after* a seek/play/reload nominally succeeds (audio.currentTime
+   * updated or a load completed, but not yet enough data buffered to actually
+   * resume producing sound) still gets caught — `seeked`/`loadedmetadata`
+   * alone isn't proof of recovery, only `playing` is. Calls through
+   * loadIntoAudioRef rather than loadIntoAudio directly to avoid a circular
+   * dependency (loadIntoAudio depends on attemptLoadWithRetries, which now
+   * depends on this). */
+  const armSeekWatchdog = useCallback(() => {
+    const pending = pendingLoadRef.current
+    if (!pending) return
+    clearSeekWatchdog()
+    seekWatchdogRef.current = setTimeout(() => {
+      loadIntoAudioRef.current(pending.book, pending.target, pending.offset, pending.autoplay)
+    }, LOAD_TIMEOUT_MS)
+  }, [clearSeekWatchdog])
+
   /** Resolves the src (cache or network) and attempts to load it, retrying
    * with backoff on failure. A cached chapter can't hit this retry path at
    * all — resolveAudioSrc only returns a network URL when there's no local
@@ -286,6 +322,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             if (loadedSourceFileIdRef.current !== target.sourceFileId) return
             setIsBuffering(false)
             setStreamError(null)
+            // attemptLoadOnce only proves loadedmetadata fired and a play()
+            // call was issued, not that audio is actually producing sound
+            // afterward — a fire-and-forget play() into a large cached blob
+            // can still stall right here with nothing left watching it
+            // (this was the "loading for a bit, then nothing, no error"
+            // report: a deep seek's forced reload "succeeded" by this
+            // function's own definition, then silently died anyway). Arm
+            // the same watchdog play()/seekWithinLoadedStream get so this
+            // path can't declare victory prematurely.
+            if (autoplay) armSeekWatchdog()
             return
           } catch {
             if (loadedSourceFileIdRef.current !== target.sourceFileId) return
@@ -311,15 +357,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         loadInProgressRef.current = false
       }
     },
-    [resolveAudioSrc, attemptLoadOnce],
+    [resolveAudioSrc, attemptLoadOnce, armSeekWatchdog],
   )
-
-  const clearSeekWatchdog = useCallback(() => {
-    if (seekWatchdogRef.current) {
-      clearTimeout(seekWatchdogRef.current)
-      seekWatchdogRef.current = null
-    }
-  }, [])
 
   /** Loads a chapter's audio into the audio element and seeks to a
    * chapter-relative offset, retrying on failure (see attemptLoadWithRetries). */
@@ -337,6 +376,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [clearSeekWatchdog, triggerPrefetch, attemptLoadWithRetries],
   )
+  loadIntoAudioRef.current = loadIntoAudio
 
   const retryLoad = useCallback(() => {
     const audio = audioRef.current
@@ -344,22 +384,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!audio || !pending) return
     void attemptLoadWithRetries(audio, pending.target, pending.offset, pending.autoplay)
   }, [attemptLoadWithRetries])
-
-  /** (Re)starts the stall watchdog, falling back to a full reload-with-retry
-   * of the last known target (pendingLoadRef) if nothing proves recovery
-   * within LOAD_TIMEOUT_MS. Called both up front by seekWithinLoadedStream
-   * and reactively by the `waiting` handler below, so a stall that develops
-   * *after* a seek nominally succeeds (audio.currentTime updated, but not
-   * yet enough data buffered to actually resume producing sound) still gets
-   * caught — `seeked` alone isn't proof of recovery, only `playing` is. */
-  const armSeekWatchdog = useCallback(() => {
-    const pending = pendingLoadRef.current
-    if (!pending) return
-    clearSeekWatchdog()
-    seekWatchdogRef.current = setTimeout(() => {
-      loadIntoAudio(pending.book, pending.target, pending.offset, pending.autoplay)
-    }, LOAD_TIMEOUT_MS)
-  }, [clearSeekWatchdog, loadIntoAudio])
 
   /** Sets audio.currentTime directly to a file-absolute position — the fast
    * path for scrubbing within the already-loaded stream, or moving to a
