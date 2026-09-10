@@ -21,6 +21,14 @@ export interface CachedAudioFileEntry {
   sizeBytes: number
   downloadedAt: string
   lastPlayedAt: string
+  /** Captured from the download response's Content-Type (downloadManager.ts)
+   * — the /offline-audio/<sourceFileId> URL the service worker serves this
+   * through (see sw.ts) has no file extension for the browser to infer a
+   * type from. Optional: a row downloaded before this field existed has
+   * none at all — see offlineAudioRange.ts's resolveMimeType for the
+   * fallback, same "old rows keep their old shape" precedent as
+   * CachedEpubFileEntry.lastReadAt above. */
+  mimeType?: string
 }
 
 // One row per epub book id — unlike audio, an epub is a single file with

@@ -22,5 +22,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // sw.ts runs in a ServiceWorkerGlobalScope, not a Window — its `self` type
+  // conflicts with DOM's Window-typed `self` under this project's lib set.
+  // Type-checked separately under tsconfig.worker.json instead.
+  "exclude": ["src/sw.ts"]
 }

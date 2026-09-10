@@ -14,6 +14,7 @@ import { useAuth } from '../auth/AuthContext'
 import { recordProgress } from '../offline/syncEngine'
 import { getCachedAudioFile, touchLastPlayed } from '../offline/audioFileStore'
 import { downloadChapter, isChapterCached } from '../offline/downloadManager'
+import { offlineAudioUrl } from '../offline/offlineAudioRange'
 import {
   loadStillListeningPrefs,
   saveStillListeningPrefs,
@@ -130,9 +131,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // now* and can move to a same-file sibling without a reload (see the
   // timeupdate handler below).
   const loadedSourceFileIdRef = useRef<string | null>(null)
-  // The object URL currently assigned to audio.src, when playing from a
-  // cached blob — tracked so it can be revoked once no longer needed.
-  const objectUrlRef = useRef<string | null>(null)
 
   const [book, setBook] = useState<Book | null>(null)
   const [chapter, setChapter] = useState<Chapter | null>(null)
@@ -217,22 +215,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  /** Resolves the actual audio.src to use: a local object URL if this
-   * chapter's underlying file is already cached (offline-capable, and the
-   * stream-failure fallback from Claude.md — a cached chapter just can't
-   * fail to load from the network in the first place), the network stream
-   * otherwise. */
+  /** Resolves the actual audio.src to use: the service-worker-backed
+   * /offline-audio/<sourceFileId> URL (see sw.ts, offlineAudioRange.ts) if
+   * this chapter's underlying file is already cached (offline-capable, and
+   * the stream-failure fallback from Claude.md — a cached chapter just
+   * can't fail to load from the network in the first place), the network
+   * stream otherwise. Deliberately not a Blob URL: for large (800MB+)
+   * cached books, URL.createObjectURL on the whole file caused silent,
+   * unrecoverable playback stalls under memory pressure on iOS — nothing
+   * JS-side could catch it, since the browser can kill/reload the page
+   * out from under the script. Serving through the service worker's Range
+   * handler means the browser only ever buffers one small range at a
+   * time, same as it already does for the live network stream. */
   const resolveAudioSrc = useCallback(async (target: Chapter): Promise<string> => {
     const cached = await getCachedAudioFile(target.sourceFileId)
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current)
-      objectUrlRef.current = null
-    }
     if (!cached) return target.audioUrl
     void touchLastPlayed(target.sourceFileId, new Date().toISOString())
-    const url = URL.createObjectURL(cached.blob)
-    objectUrlRef.current = url
-    return url
+    return offlineAudioUrl(target.sourceFileId)
   }, [])
 
   /** One attempt at loading `src` and seeking to `startAt` — resolves once
