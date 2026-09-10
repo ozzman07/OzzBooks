@@ -317,57 +317,6 @@ describe('downloadChapter chunked fetch', () => {
   })
 })
 
-describe('downloadChapter Content-Type capture', () => {
-  it('stores mimeType from a single-response (200) download', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        const blob = new Blob([new Uint8Array(10)])
-        return new Response(blob, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } })
-      }),
-    )
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-single' }))
-    expect((await getCachedAudioFile('mime-single'))?.mimeType).toBe('audio/mpeg')
-  })
-
-  it('is undefined when the server never sends a Content-Type', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(10)))
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-missing' }))
-    expect((await getCachedAudioFile('mime-missing'))?.mimeType).toBeUndefined()
-  })
-
-  it('preserves Content-Type across a multi-chunk (206) download', async () => {
-    // new Blob(parts) doesn't inherit .type from its parts on its own —
-    // this is the regression case: without explicitly threading contentType
-    // through to the final Blob() constructor call, a real (>8MB,
-    // multi-chunk) download would silently lose it despite every chunk's
-    // own response carrying the header.
-    const total = 8 * 1024 * 1024 + 10
-    const fullBytes = new Uint8Array(total)
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const range = (init?.headers as Record<string, string>).Range
-        const match = /bytes=(\d+)-(\d+)/.exec(range)!
-        const start = Number(match[1])
-        const end = Math.min(Number(match[2]), total - 1)
-        return new Response(new Blob([fullBytes.slice(start, end + 1)]), {
-          status: 206,
-          headers: { 'Content-Range': `bytes ${start}-${end}/${total}`, 'Content-Type': 'audio/mp4' },
-        })
-      }),
-    )
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-chunked' }))
-    const stored = await getCachedAudioFile('mime-chunked')
-    expect(stored?.mimeType).toBe('audio/mp4')
-    expect(stored?.blob.type).toBe('audio/mp4')
-  })
-})
-
 describe('downloadComicPage', () => {
   it('creates a comicDownloads metadata record on first page, marked incomplete', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(50)))

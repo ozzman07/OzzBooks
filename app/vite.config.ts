@@ -33,15 +33,6 @@ export default defineConfig({
       // without this, the default auto-injected script would register the
       // service worker a second time.
       injectRegister: null,
-      // Custom service worker (src/sw.ts) instead of the auto-generated
-      // one — needed for the /offline-audio/<sourceFileId> Range-request
-      // handler (see sw.ts), which generateSW mode has no way to express.
-      // `filename` still resolves to dist/sw.js at scope '/', the same URL
-      // an already-installed PWA already polls for, so this doesn't break
-      // update discovery for existing installs.
-      strategies: 'injectManifest',
-      srcDir: 'src',
-      filename: 'sw.ts',
       includeAssets: ['apple-touch-icon.png'],
       manifest: {
         name: 'OzzBooks',
@@ -70,14 +61,18 @@ export default defineConfig({
           },
         ],
       },
-      // injectManifest mode: sw.ts calls precacheAndRoute(self.__WB_MANIFEST)
-      // itself, this just controls what goes into that manifest. The old
-      // navigateFallbackDenylist (a generateSW-only option, protecting the
-      // Google OAuth redirect to /api/sources/oauth/google/start from being
-      // swallowed by the SPA fallback) is now hand-rolled as a
-      // NavigationRoute denylist inside sw.ts instead.
-      injectManifest: {
+      workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // Without this, the service worker's default offline/SPA fallback
+        // intercepts EVERY full-page navigation — including ones meant to
+        // reach the server directly, like the Google Drive OAuth flow's
+        // window.location.href to /api/sources/oauth/google/start — and
+        // serves the cached index.html instead. React Router then boots up
+        // at that URL, finds no matching route, and renders blank; the
+        // request never reaches the server at all, so the OAuth redirect to
+        // Google never happens. /api/* is never a client-side route, so it
+        // should always hit the network.
+        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],
