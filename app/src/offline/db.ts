@@ -14,30 +14,13 @@ export interface LocalProgressEntry {
 // would silently re-download the same bytes under every chapter of the
 // same book. Downloading any one chapter of an M4B book makes the whole
 // book playable offline, which is also the behaviorally correct outcome.
-//
-// Metadata only — the actual audio bytes live in the Cache Storage bucket
-// audioFileStore.ts manages (see AUDIO_CACHE_NAME there), not in IndexedDB.
-// Serving downloaded audio requires reading it back from inside a service
-// worker (see sw.ts/offlineAudioRange.ts), and Safari has a long-documented
-// history of unreliable IndexedDB access specifically from service workers
-// (including failing to read data the page itself wrote) — Cache Storage
-// is the same mechanism this app's own precaching already relies on
-// successfully, so the bytes live there instead.
 export interface CachedAudioFileEntry {
   sourceFileId: string
   bookId: string
+  blob: Blob
   sizeBytes: number
   downloadedAt: string
   lastPlayedAt: string
-}
-
-/** Only ever seen on a row written before the Cache Storage migration above
- * — a real IndexedDB row from that era still has `blob` on it at runtime
- * even though CachedAudioFileEntry no longer declares it (IndexedDB has no
- * schema; old rows keep their old shape until rewritten). See
- * audioFileStore.ts's migrateLegacyAudioBlobIfNeeded. */
-export interface LegacyCachedAudioFileEntry extends CachedAudioFileEntry {
-  blob?: Blob
 }
 
 // One row per epub book id — unlike audio, an epub is a single file with

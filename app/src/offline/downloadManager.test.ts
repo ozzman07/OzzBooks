@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { resetDbForTests } from './db'
-import { putCachedAudioFile, getCachedAudioFile, getAllCachedAudioFiles, offlineAudioUrl } from './audioFileStore'
+import { putCachedAudioFile, getCachedAudioFile, getAllCachedAudioFiles } from './audioFileStore'
 import { putCachedEpubFile, getCachedEpubFile } from './epubFileStore'
 import { putCachedComicPage, putComicDownload, getCachedComicPagesForBook, getComicDownload } from './comicPageStore'
 import { downloadChapter, downloadComicPage, getTotalCachedBytes, getCachedBytesByContentType } from './downloadManager'
@@ -25,27 +25,6 @@ function fakeBlobResponse(sizeBytes: number): Response {
   return new Response(blob, { status: 200 })
 }
 
-// putCachedAudioFile now splits metadata (IndexedDB) from bytes (Cache
-// Storage) — this helper keeps the many pre-existing eviction/budget tests
-// below (which only care that *some* audio file of a given size/age
-// exists, not about its actual bytes) from repeating the 3-arg call shape.
-async function seedAudioFile(opts: {
-  sourceFileId: string
-  bookId: string
-  sizeBytes: number
-  downloadedAt: string
-  lastPlayedAt: string
-}) {
-  await putCachedAudioFile(opts, new Blob([new Uint8Array(opts.sizeBytes)]), 'audio/mp4')
-}
-
-async function cachedAudioBytes(sourceFileId: string): Promise<Uint8Array | undefined> {
-  const cache = await caches.open('offline-audio-v1')
-  const res = await cache.match(offlineAudioUrl(sourceFileId))
-  if (!res) return undefined
-  return new Uint8Array(await res.arrayBuffer())
-}
-
 beforeEach(async () => {
   await resetDbForTests()
 })
@@ -56,9 +35,10 @@ afterEach(() => {
 
 describe('getTotalCachedBytes / getCachedBytesByContentType', () => {
   it('sums bytes across audio, epub, and comic pages together', async () => {
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'a1',
       bookId: 'book-a',
+      blob: new Blob([new Uint8Array(100)]),
       sizeBytes: 100,
       downloadedAt: '2026-01-01T00:00:00.000Z',
       lastPlayedAt: '2026-01-01T00:00:00.000Z',
@@ -89,9 +69,10 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
     // Oldest: an audio file. Middle: an epub. Newest: a comic page. A tiny
     // budget forces exactly one eviction — it must be the audio file, not
     // whichever format happens to be checked first.
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'old-audio',
       bookId: 'book-audio-old',
+      blob: new Blob([new Uint8Array(40)]),
       sizeBytes: 40,
       downloadedAt: '2026-01-01T00:00:00.000Z',
       lastPlayedAt: '2026-01-01T00:00:00.000Z', // oldest
@@ -154,9 +135,10 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
       startedAt: '2026-01-01T00:00:00.000Z',
       lastReadAt: '2026-01-01T00:00:00.000Z', // oldest
     })
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'newer-audio',
       bookId: 'book-audio',
+      blob: new Blob([new Uint8Array(20)]),
       sizeBytes: 20,
       downloadedAt: '2026-01-02T00:00:00.000Z',
       lastPlayedAt: '2026-01-02T00:00:00.000Z', // newer, must survive
@@ -177,16 +159,18 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
   })
 
   it('leaves existing audio-only eviction behavior unchanged when nothing else is cached', async () => {
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'audio-old',
       bookId: 'book-1',
+      blob: new Blob([new Uint8Array(30)]),
       sizeBytes: 30,
       downloadedAt: '2026-01-01T00:00:00.000Z',
       lastPlayedAt: '2026-01-01T00:00:00.000Z',
     })
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'audio-new',
       bookId: 'book-2',
+      blob: new Blob([new Uint8Array(30)]),
       sizeBytes: 30,
       downloadedAt: '2026-01-02T00:00:00.000Z',
       lastPlayedAt: '2026-01-02T00:00:00.000Z',
@@ -204,9 +188,10 @@ describe('ensureBudget (via downloadChapter/downloadComicPage)', () => {
   })
 
   it('rejects a download bigger than the entire budget instead of evicting everything and still failing', async () => {
-    await seedAudioFile({
+    await putCachedAudioFile({
       sourceFileId: 'survivor',
       bookId: 'book-1',
+      blob: new Blob([new Uint8Array(30)]),
       sizeBytes: 30,
       downloadedAt: '2026-01-01T00:00:00.000Z',
       lastPlayedAt: '2026-01-01T00:00:00.000Z',
@@ -254,7 +239,7 @@ describe('downloadChapter chunked fetch', () => {
     expect(stored?.sizeBytes).toBe(total)
     expect(requestedRanges.length).toBe(3)
 
-    const storedBytes = (await cachedAudioBytes('chunked-audio'))!
+    const storedBytes = new Uint8Array(await stored!.blob.arrayBuffer())
     let matches = true
     for (let i = 0; i < total; i++) {
       if (storedBytes[i] !== fullBytes[i]) {
@@ -329,61 +314,6 @@ describe('downloadChapter chunked fetch', () => {
     await downloadChapter(makeChapter({ sourceFileId: 'no-range-audio' }))
     const stored = await getCachedAudioFile('no-range-audio')
     expect(stored?.sizeBytes).toBe(30)
-  })
-})
-
-describe('downloadChapter Content-Type capture', () => {
-  async function contentTypeOf(sourceFileId: string): Promise<string | null> {
-    const cache = await caches.open('offline-audio-v1')
-    const res = await cache.match(offlineAudioUrl(sourceFileId))
-    return res?.headers.get('Content-Type') ?? null
-  }
-
-  it('stores the Content-Type from a single-response (200) download on the Cache Storage entry', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        const blob = new Blob([new Uint8Array(10)])
-        return new Response(blob, { status: 200, headers: { 'Content-Type': 'audio/mpeg' } })
-      }),
-    )
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-single' }))
-    expect(await contentTypeOf('mime-single')).toBe('audio/mpeg')
-  })
-
-  it('falls back to a default Content-Type when the server never sends one', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => fakeBlobResponse(10)))
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-missing' }))
-    expect(await contentTypeOf('mime-missing')).toBe('audio/mp4')
-  })
-
-  it('preserves Content-Type across a multi-chunk (206) download', async () => {
-    // new Blob(parts) doesn't inherit .type from its parts on its own —
-    // this is the regression case: without explicitly threading contentType
-    // through to the final Blob() constructor call, a real (>8MB,
-    // multi-chunk) download would silently lose it despite every chunk's
-    // own response carrying the header.
-    const total = 8 * 1024 * 1024 + 10
-    const fullBytes = new Uint8Array(total)
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: string, init?: RequestInit) => {
-        const range = (init?.headers as Record<string, string>).Range
-        const match = /bytes=(\d+)-(\d+)/.exec(range)!
-        const start = Number(match[1])
-        const end = Math.min(Number(match[2]), total - 1)
-        return new Response(new Blob([fullBytes.slice(start, end + 1)]), {
-          status: 206,
-          headers: { 'Content-Range': `bytes ${start}-${end}/${total}`, 'Content-Type': 'audio/mp4' },
-        })
-      }),
-    )
-
-    await downloadChapter(makeChapter({ sourceFileId: 'mime-chunked' }))
-    expect(await contentTypeOf('mime-chunked')).toBe('audio/mp4')
   })
 })
 
