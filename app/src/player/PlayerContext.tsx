@@ -525,9 +525,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // If a previous attempt exhausted its retries, the element may be
     // stuck in a half-loaded state — a bare play() on it isn't reliable
     // (same reasoning as seekWithinLoadedStream above). Give it a clean
-    // reload from the current position instead.
+    // reload instead. Deliberately NOT audio.currentTime here — every
+    // failed attemptLoadOnce call already reassigned audio.src (which
+    // resets currentTime to 0) without ever reaching the loadedmetadata
+    // handler that would restore the real position, so by the time
+    // retries are exhausted audio.currentTime reads as 0 regardless of
+    // where playback actually was (this was the "hit Play after a Retry
+    // error and it jumps back to the start of the book" bug — pendingLoadRef
+    // isn't touched by the failed attempts, so it still holds the correct
+    // last-intended position).
     if (streamError) {
-      loadIntoAudio(book, chapter, Math.max(0, audio.currentTime - chapter.startTime), true)
+      const fallback = pendingLoadRef.current
+      const offset =
+        fallback && fallback.target.id === chapter.id ? fallback.offset : Math.max(0, audio.currentTime - chapter.startTime)
+      loadIntoAudio(book, chapter, offset, true)
       return
     }
     // Keeps pendingLoadRef current so a stall while resuming from pause
