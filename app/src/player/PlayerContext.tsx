@@ -508,7 +508,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     // Keeps pendingLoadRef current so a stall while resuming from pause
     // (audio.play() can hang exactly like a seek can) has a valid fallback
-    // target for the waiting-event watchdog to recover into.
+    // target for the watchdog to recover into.
     pendingLoadRef.current = {
       book,
       target: chapter,
@@ -516,7 +516,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       autoplay: true,
     }
     audio.play()
-  }, [book, chapter, streamError, loadIntoAudio, resolveStillListeningPrompt])
+    // Arm proactively rather than relying solely on the reactive `waiting`
+    // listener below — under iOS PWA memory pressure (large cached-blob
+    // books especially), a stalled play() doesn't reliably fire `waiting`
+    // at all, which was leaving some stalls with no recovery path and no
+    // user-visible feedback whatsoever (as opposed to seekWithinLoadedStream,
+    // which already armed proactively and so surfaced a retry option, even
+    // if slowly). `onPlaying` clears this the moment real playback starts,
+    // so a healthy play() is unaffected.
+    armSeekWatchdog()
+  }, [book, chapter, streamError, loadIntoAudio, resolveStillListeningPrompt, armSeekWatchdog])
 
   const pause = useCallback(() => {
     audioRef.current?.pause()
