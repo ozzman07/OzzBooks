@@ -588,8 +588,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setFinished(false)
       const clamped = Math.max(0, Math.min(chapterRelativeTime, chapter.duration))
       seekWithinLoadedStream(book, chapter, clamped, wasPrompting || isPlaying)
+      // Persists the scrub target immediately rather than waiting for the
+      // periodic while-playing sync (up to 20s away) or a fileTime state
+      // update that hasn't landed yet (audio.currentTime just changed, but
+      // the timeupdate event that would refresh fileTime/latestRef hasn't
+      // fired). A large scrub on a big cached book can cause iOS to kill
+      // and silently reload the page under memory pressure before either
+      // of those would otherwise catch up — without this, that crash loses
+      // the scrub entirely instead of resuming from it.
+      void recordProgress(auth.token, book.id, chapter.id, { type: 'timestamp', value: clamped }, new Date().toISOString())
     },
-    [book, chapter, isPlaying, seekWithinLoadedStream, resolveStillListeningPrompt],
+    [book, chapter, isPlaying, seekWithinLoadedStream, resolveStillListeningPrompt, auth.token],
   )
 
   /** Moves to a chapter at `index`, starting `chapterRelativeOffset` seconds
