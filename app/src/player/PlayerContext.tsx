@@ -564,7 +564,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const pause = useCallback(() => {
     audioRef.current?.pause()
-  }, [])
+    // A watchdog armed by a seek/play just before this pause would otherwise
+    // still fire later and force an unwanted reload — this was showing up
+    // as "pause it, leave it alone for a while, and it ends up on the Retry
+    // error" with no play/seek action from the user in between. Pausing is
+    // an unambiguous "I don't need that recovery anymore" signal.
+    clearSeekWatchdog()
+  }, [clearSeekWatchdog])
 
   const togglePlay = useCallback(() => {
     if (isPlaying) pause()
@@ -746,9 +752,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // (re)arms the watchdog so a stall discovered *after* a seek/resume
     // nominally succeeded still gets caught. Stands down while
     // attemptLoadWithRetries already owns recovery for a fresh chapter load,
-    // so the two mechanisms can't both react to the same stall.
+    // so the two mechanisms can't both react to the same stall. Also stands
+    // down while genuinely paused — nothing is trying to play, so there's
+    // nothing to recover, and arming here anyway was causing an unattended
+    // paused book to reload itself (and, if that reload failed, land on the
+    // Retry error) with no play/seek action from the user at all.
     const onWaiting = () => {
-      if (loadInProgressRef.current) return
+      if (loadInProgressRef.current || audio.paused) return
       setIsBuffering(true)
       armSeekWatchdog()
     }
