@@ -36,6 +36,7 @@ interface RangeChunk {
   blob: Blob
   status: number
   contentRange: string | null
+  contentType: string | null
 }
 
 // Fetches AND fully reads one chunk's body — a dropped connection can
@@ -50,7 +51,12 @@ async function fetchRangeChunk(url: string, start: number, end: number): Promise
   const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
   if (!res.ok) throw new Error(`Failed to download: ${res.status}`)
   const blob = await res.blob()
-  return { blob, status: res.status, contentRange: res.headers.get('content-range') }
+  return {
+    blob,
+    status: res.status,
+    contentRange: res.headers.get('content-range'),
+    contentType: res.headers.get('content-type'),
+  }
 }
 
 async function fetchRangeWithRetry(url: string, start: number, end: number): Promise<RangeChunk> {
@@ -71,13 +77,20 @@ async function fetchRangeWithRetry(url: string, start: number, end: number): Pro
  * Falls back to treating the response as the whole file if the server
  * doesn't honor Range (status 200 instead of 206) — every route this
  * calls today does support Range, but this keeps a plain full-response
- * server from breaking instead of relying on that.
+ * server from breaking instead of relying on that. Also threads through
+ * the response's Content-Type — the offline-audio service worker route
+ * (offlineAudioRange.ts) needs it to set a correct Content-Type on a
+ * synthetic URL with no file extension of its own to sniff one from.
  */
-async function fetchInChunks(url: string, onProgress?: (loaded: number, total: number) => void): Promise<Blob> {
+async function fetchInChunks(
+  url: string,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ blob: Blob; contentType: string | null }> {
   const first = await fetchRangeWithRetry(url, 0, DOWNLOAD_CHUNK_BYTES - 1)
+  const contentType = first.contentType
   if (first.status === 200) {
     onProgress?.(first.blob.size, first.blob.size)
-    return first.blob
+    return { blob: first.blob, contentType }
   }
   if (first.status !== 206) {
     throw new Error(`Failed to download: unexpected status ${first.status}`)
@@ -99,7 +112,10 @@ async function fetchInChunks(url: string, onProgress?: (loaded: number, total: n
     onProgress?.(loaded, total)
   }
 
-  return new Blob(parts)
+  // new Blob(parts) does NOT inherit .type from its constituent Blobs —
+  // without passing it explicitly here, every real (multi-chunk) download
+  // would silently lose the Content-Type its own chunk responses carried.
+  return { blob: new Blob(parts, contentType ? { type: contentType } : undefined), contentType }
 }
 
 export async function isChapterCached(chapter: Chapter): Promise<boolean> {
@@ -245,19 +261,22 @@ export async function downloadChapter(
 ): Promise<void> {
   if (await isChapterCached(chapter)) return
 
-  const blob = await fetchInChunks(chapter.audioUrl, onProgress)
+  const { blob, contentType } = await fetchInChunks(chapter.audioUrl, onProgress)
 
   await ensureBudget(blob.size, budgetMb * 1024 * 1024)
 
   const now = new Date().toISOString()
-  await putCachedAudioFile({
-    sourceFileId: chapter.sourceFileId,
-    bookId: chapter.bookId,
+  await putCachedAudioFile(
+    {
+      sourceFileId: chapter.sourceFileId,
+      bookId: chapter.bookId,
+      sizeBytes: blob.size,
+      downloadedAt: now,
+      lastPlayedAt: now,
+    },
     blob,
-    sizeBytes: blob.size,
-    downloadedAt: now,
-    lastPlayedAt: now,
-  })
+    contentType ?? 'audio/mp4',
+  )
 }
 
 export async function downloadBook(
