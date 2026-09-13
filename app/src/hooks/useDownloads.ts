@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Chapter } from '../types'
+import type { Book, Chapter } from '../types'
 import { getCachedAudioFilesForBook } from '../offline/audioFileStore'
 import {
   DEFAULT_STORAGE_BUDGET_MB,
@@ -14,7 +14,7 @@ import { useAuth } from '../auth/AuthContext'
  * download/delete actions. Cached-ness is per underlying file
  * (sourceFileId), so downloading one M4B chapter marks all its siblings
  * cached too — see db.ts. */
-export function useDownloads(bookId: string, chapters: Chapter[]) {
+export function useDownloads(bookId: string, chapters: Chapter[], format: Book['format'] | undefined) {
   const auth = useAuth()
   const [cachedFileIds, setCachedFileIds] = useState<Set<string>>(new Set())
   const [pending, setPending] = useState<Set<string>>(new Set()) // sourceFileIds currently downloading
@@ -58,7 +58,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
         const budgetMb = await getBudgetMb()
-        await downloadChapter(chapter, budgetMb, (loaded, total) => setProgress({ loaded, total }))
+        await downloadChapter(chapter, format, budgetMb, (loaded, total) => setProgress({ loaded, total }))
         await refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Download failed')
@@ -71,7 +71,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
         setProgress(null)
       }
     },
-    [getBudgetMb, refresh],
+    [getBudgetMb, refresh, format],
   )
 
   const downloadAll = useCallback(async () => {
@@ -82,7 +82,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
       if (cachedFileIds.has(chapter.sourceFileId)) continue
       setPending((p) => new Set(p).add(chapter.sourceFileId))
       try {
-        await downloadChapter(chapter, budgetMb, (loaded, total) => setProgress({ loaded, total }))
+        await downloadChapter(chapter, format, budgetMb, (loaded, total) => setProgress({ loaded, total }))
         // Refresh after each file, not just once at the end, so the
         // checkmark appears as each download completes instead of only
         // after the whole book finishes.
@@ -99,7 +99,7 @@ export function useDownloads(bookId: string, chapters: Chapter[]) {
         setProgress(null)
       }
     }
-  }, [chapters, cachedFileIds, getBudgetMb, refresh])
+  }, [chapters, cachedFileIds, getBudgetMb, refresh, format])
 
   const remove = useCallback(
     async (chapter: Chapter) => {

@@ -19,7 +19,6 @@ import { NeedsAttention } from './pages/NeedsAttention'
 import { Playlists } from './pages/Playlists'
 import { PlaylistDetail } from './pages/PlaylistDetail'
 import { BookReaderRoute } from './pages/BookReaderRoute'
-import { SpikeTest } from './pages/SpikeTest' // TEMPORARY — remove after the offline-audio spike test
 
 // The PWA's start_url is '/' (see vite.config.ts's manifest) — this is
 // what actually opens on a cold launch. Landing on an empty My Library
@@ -78,8 +77,6 @@ function AppShell() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/activity-log" element={<ActivityLog />} />
         <Route path="/needs-attention" element={<NeedsAttention />} />
-        {/* TEMPORARY — remove after the offline-audio spike test */}
-        <Route path="/dev/spike-test" element={<SpikeTest />} />
       </Routes>
       {!isReading && <BottomNav />}
     </div>

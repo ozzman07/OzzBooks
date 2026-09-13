@@ -14,6 +14,8 @@ import { useAuth } from '../auth/AuthContext'
 import { recordProgress } from '../offline/syncEngine'
 import { getCachedAudioFile, touchLastPlayed } from '../offline/audioFileStore'
 import { downloadChapter, isChapterCached } from '../offline/downloadManager'
+import { migrateLegacyAudioIfNeeded } from '../offline/migrateLegacyAudio'
+import { offlineAudioUrl } from '../offline/offlineAudioRange'
 import {
   loadStillListeningPrefs,
   saveStillListeningPrefs,
@@ -130,9 +132,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // now* and can move to a same-file sibling without a reload (see the
   // timeupdate handler below).
   const loadedSourceFileIdRef = useRef<string | null>(null)
-  // The object URL currently assigned to audio.src, when playing from a
-  // cached blob — tracked so it can be revoked once no longer needed.
-  const objectUrlRef = useRef<string | null>(null)
 
   const [book, setBook] = useState<Book | null>(null)
   const [chapter, setChapter] = useState<Chapter | null>(null)
@@ -213,26 +212,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const idx = book.chapters.findIndex((c) => c.id === current.id)
     const toPreload = [current, book.chapters[idx + 1]].filter((c): c is Chapter => Boolean(c))
     for (const ch of toPreload) {
-      downloadChapter(ch).catch(() => {})
+      downloadChapter(ch, book.format).catch(() => {})
     }
   }, [])
 
-  /** Resolves the actual audio.src to use: a local object URL if this
-   * chapter's underlying file is already cached (offline-capable, and the
-   * stream-failure fallback from Claude.md — a cached chapter just can't
-   * fail to load from the network in the first place), the network stream
-   * otherwise. */
+  /** Resolves the actual audio.src to use: the service-worker-backed
+   * /offline-audio/<sourceFileId> URL (see sw.ts, offlineAudioRange.ts) if
+   * this chapter's underlying file is already cached (offline-capable, and
+   * the stream-failure fallback from Claude.md — a cached chapter just
+   * can't fail to load from the network in the first place), the network
+   * stream otherwise. Deliberately not a Blob URL: for large (800MB+)
+   * cached books, URL.createObjectURL on the whole file caused silent,
+   * unrecoverable playback stalls under memory pressure on iOS — nothing
+   * JS-side could catch it, since the browser can kill/reload the page
+   * out from under the script. Serving through the service worker's
+   * chunked Range handler means no operation ever touches more than a
+   * handful of small chunks (validated end-to-end on real iOS hardware
+   * via a throwaway spike test before this was built).
+   *
+   * migrateLegacyAudioIfNeeded is a no-op for anything downloaded after
+   * this redesign; for a book downloaded before it (whose blob is still
+   * sitting directly in the IndexedDB row), it moves the blob into
+   * chunked Cache Storage on this first play — see migrateLegacyAudio.ts. */
   const resolveAudioSrc = useCallback(async (target: Chapter): Promise<string> => {
     const cached = await getCachedAudioFile(target.sourceFileId)
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current)
-      objectUrlRef.current = null
-    }
     if (!cached) return target.audioUrl
+    await migrateLegacyAudioIfNeeded(cached)
     void touchLastPlayed(target.sourceFileId, new Date().toISOString())
-    const url = URL.createObjectURL(cached.blob)
-    objectUrlRef.current = url
-    return url
+    return offlineAudioUrl(target.sourceFileId)
   }, [])
 
   /** One attempt at loading `src` and seeking to `startAt` — resolves once

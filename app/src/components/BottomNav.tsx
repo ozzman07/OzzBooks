@@ -6,8 +6,6 @@ const items = [
   { to: '/playlists', label: 'Playlists', icon: '🎵' },
   { to: '/now-playing', label: 'Now Playing', icon: '▶️' },
   { to: '/settings', label: 'Settings', icon: '⚙️' },
-  // TEMPORARY — remove after the offline-audio spike test
-  { to: '/dev/spike-test', label: 'Test', icon: '🧪' },
 ]
 
 export function BottomNav() {

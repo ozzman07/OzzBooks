@@ -1,4 +1,4 @@
-import type { Chapter } from '../types'
+import type { Book, Chapter } from '../types'
 import { fetchEpubBytes, comicPageUrl } from '../api/client'
 import {
   deleteCachedAudioFile,
@@ -6,8 +6,12 @@ import {
   getAllCachedAudioFiles,
   getAudioTotalCachedBytes,
   getCachedAudioFile,
+  getTransferProgress,
   putCachedAudioFile,
+  putTransferProgress,
+  deleteTransferProgress,
 } from './audioFileStore'
+import { hasAudioChunk, putAudioChunk, putAudioManifest } from './audioChunkStore'
 import { deleteCachedEpubFile, getAllCachedEpubFiles, getCachedEpubFile, putCachedEpubFile } from './epubFileStore'
 import {
   deleteCachedComicPagesForBook,
@@ -29,13 +33,14 @@ export const DEFAULT_STORAGE_BUDGET_MB = 2000
 // Fetching it as a sequence of small Range requests instead keeps both
 // the peak memory footprint and the blast radius of any one dropped
 // connection small (a failed chunk gets retried, not the whole file).
-const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+export const DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 const CHUNK_RETRY_ATTEMPTS = 3
 
 interface RangeChunk {
   blob: Blob
   status: number
   contentRange: string | null
+  contentType: string | null
 }
 
 // Fetches AND fully reads one chunk's body — a dropped connection can
@@ -50,7 +55,12 @@ async function fetchRangeChunk(url: string, start: number, end: number): Promise
   const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` } })
   if (!res.ok) throw new Error(`Failed to download: ${res.status}`)
   const blob = await res.blob()
-  return { blob, status: res.status, contentRange: res.headers.get('content-range') }
+  return {
+    blob,
+    status: res.status,
+    contentRange: res.headers.get('content-range'),
+    contentType: res.headers.get('content-type'),
+  }
 }
 
 async function fetchRangeWithRetry(url: string, start: number, end: number): Promise<RangeChunk> {
@@ -65,41 +75,107 @@ async function fetchRangeWithRetry(url: string, start: number, end: number): Pro
   throw lastErr
 }
 
+// Book.format is 'm4b' | 'mp3_folder' | 'epub' | 'cbz' (types.ts) — only the
+// first two are ever audio. Used as the fallback when a download/legacy
+// blob has no Content-Type/blob.type of its own to go on (the synthetic
+// /offline-audio/<id> URL the service worker serves this through has no
+// file extension to sniff a type from — see offlineAudioRange.ts).
+const FORMAT_MIME: Record<string, string> = {
+  m4b: 'audio/mp4',
+  mp3_folder: 'audio/mpeg',
+}
+const DEFAULT_MIME = 'audio/mp4' // this app's dominant/default audio format
+
+export function resolveAudioMimeType(format: Book['format'] | undefined, explicit: string | null | undefined): string {
+  if (explicit) return explicit
+  return (format ? FORMAT_MIME[format] : undefined) ?? DEFAULT_MIME
+}
+
 /**
- * Fetches a URL's full content as a Blob, in small Range-requested chunks
- * rather than one fetch().blob() call — see DOWNLOAD_CHUNK_BYTES above.
- * Falls back to treating the response as the whole file if the server
- * doesn't honor Range (status 200 instead of 206) — every route this
- * calls today does support Range, but this keeps a plain full-response
- * server from breaking instead of relying on that.
+ * Fetches a URL's full content in small Range-requested chunks, writing
+ * each directly into Cache Storage as it arrives (audioChunkStore.ts)
+ * instead of concatenating into one Blob — a single ~800MB+ Blob is
+ * exactly the shape of operation that crashed the phone in two prior,
+ * reverted attempts (a giant Blob URL for playback, and a whole-file
+ * read/write during a storage migration). Resumes from any existing
+ * transfer progress instead of always starting at chunk 0, so an
+ * interrupted download doesn't restart — and potentially fail again on —
+ * the same work from scratch. Falls back to treating the response as the
+ * whole file if the server doesn't honor Range (status 200 instead of
+ * 206) — every route this calls today does support Range, so this is a
+ * rarely-exercised defensive path; even then, the single received Blob is
+ * sliced into chunk-sized pieces before writing, never written as one
+ * giant cache entry.
  */
-async function fetchInChunks(url: string, onProgress?: (loaded: number, total: number) => void): Promise<Blob> {
-  const first = await fetchRangeWithRetry(url, 0, DOWNLOAD_CHUNK_BYTES - 1)
-  if (first.status === 200) {
-    onProgress?.(first.blob.size, first.blob.size)
-    return first.blob
-  }
-  if (first.status !== 206) {
-    throw new Error(`Failed to download: unexpected status ${first.status}`)
+async function fetchInChunks(
+  sourceFileId: string,
+  bookId: string,
+  url: string,
+  format: Book['format'] | undefined,
+  budgetBytes: number,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ totalSize: number; chunkCount: number; mimeType: string }> {
+  const progress = await getTransferProgress(sourceFileId)
+  let resumeFrom = progress?.chunksWritten ?? 0
+  // Defensive: don't just trust the counter if a chunk write succeeded but
+  // the progress-row write that should follow it didn't (or vice versa) —
+  // walk back to the last chunk that's actually present.
+  while (resumeFrom > 0 && !(await hasAudioChunk(sourceFileId, resumeFrom - 1))) resumeFrom--
+
+  let totalSize: number
+  let mimeType: string
+  let chunkCount: number
+
+  if (progress) {
+    // A resumed transfer already passed this check before its first chunk
+    // was ever written — no need to repeat it (and the total is already
+    // known, no need to re-probe for it either).
+    ;({ totalSize, mimeType, chunkCount } = progress)
+  } else {
+    const first = await fetchRangeWithRetry(url, 0, DOWNLOAD_CHUNK_BYTES - 1)
+    if (first.status === 200) {
+      // Server ignored Range — the whole file arrived in one response.
+      // Slice it into chunk-sized pieces before writing (blob.slice() is
+      // lazy) rather than ever writing it as one giant cache entry.
+      totalSize = first.blob.size
+      mimeType = resolveAudioMimeType(format, first.contentType)
+      chunkCount = Math.ceil(totalSize / DOWNLOAD_CHUNK_BYTES)
+      await ensureBudget(totalSize, budgetBytes)
+      for (let i = 0; i < chunkCount; i++) {
+        const start = i * DOWNLOAD_CHUNK_BYTES
+        const end = Math.min(start + DOWNLOAD_CHUNK_BYTES, totalSize)
+        await putAudioChunk(sourceFileId, i, first.blob.slice(start, end))
+        await putTransferProgress({ sourceFileId, bookId, chunksWritten: i + 1, chunkCount, totalSize, mimeType })
+        onProgress?.(end, totalSize)
+      }
+      return { totalSize, chunkCount, mimeType }
+    }
+    if (first.status !== 206) {
+      throw new Error(`Failed to download: unexpected status ${first.status}`)
+    }
+    totalSize = first.contentRange ? Number(first.contentRange.split('/')[1]) : NaN
+    if (!Number.isFinite(totalSize)) {
+      throw new Error('Failed to download: server returned a partial response with no usable Content-Range')
+    }
+    mimeType = resolveAudioMimeType(format, first.contentType)
+    chunkCount = Math.ceil(totalSize / DOWNLOAD_CHUNK_BYTES)
+    await ensureBudget(totalSize, budgetBytes)
+    await putAudioChunk(sourceFileId, 0, first.blob)
+    await putTransferProgress({ sourceFileId, bookId, chunksWritten: 1, chunkCount, totalSize, mimeType })
+    onProgress?.(first.blob.size, totalSize)
+    resumeFrom = 1
   }
 
-  const total = first.contentRange ? Number(first.contentRange.split('/')[1]) : NaN
-  if (!Number.isFinite(total)) {
-    throw new Error('Failed to download: server returned a partial response with no usable Content-Range')
+  for (let i = resumeFrom; i < chunkCount; i++) {
+    const start = i * DOWNLOAD_CHUNK_BYTES
+    const end = Math.min(start + DOWNLOAD_CHUNK_BYTES, totalSize) - 1
+    const chunk = await fetchRangeWithRetry(url, start, end)
+    await putAudioChunk(sourceFileId, i, chunk.blob)
+    await putTransferProgress({ sourceFileId, bookId, chunksWritten: i + 1, chunkCount, totalSize, mimeType })
+    onProgress?.(end + 1, totalSize)
   }
 
-  const parts: Blob[] = [first.blob]
-  let loaded = first.blob.size
-  onProgress?.(loaded, total)
-  while (loaded < total) {
-    const end = Math.min(loaded + DOWNLOAD_CHUNK_BYTES - 1, total - 1)
-    const chunk = await fetchRangeWithRetry(url, loaded, end)
-    parts.push(chunk.blob)
-    loaded += chunk.blob.size
-    onProgress?.(loaded, total)
-  }
-
-  return new Blob(parts)
+  return { totalSize, chunkCount, mimeType }
 }
 
 export async function isChapterCached(chapter: Chapter): Promise<boolean> {
@@ -233,40 +309,53 @@ async function ensureBudget(incomingBytes: number, budgetBytes: number): Promise
 
 // --- Audio -------------------------------------------------------------
 
-/** Downloads a chapter's underlying audio file into IndexedDB for offline
- * playback. A no-op if already cached — including when a *different*
- * chapter of the same M4B already cached the same underlying file.
- * Evicts older cached items first (any format) if needed to stay within
- * the storage budget. */
+/** Downloads a chapter's underlying audio file, chunk by chunk, into Cache
+ * Storage for offline playback (see fetchInChunks). A no-op if already
+ * cached — including when a *different* chapter of the same M4B already
+ * cached the same underlying file. Evicts older cached items first (any
+ * format) if needed to stay within the storage budget — checked as soon
+ * as the file's size is known (inside fetchInChunks), before its first
+ * chunk is ever written, so a rejected download doesn't leave partial
+ * chunks needing cleanup. */
 export async function downloadChapter(
   chapter: Chapter,
+  format: Book['format'] | undefined,
   budgetMb: number = DEFAULT_STORAGE_BUDGET_MB,
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<void> {
   if (await isChapterCached(chapter)) return
 
-  const blob = await fetchInChunks(chapter.audioUrl, onProgress)
+  const { totalSize, chunkCount, mimeType } = await fetchInChunks(
+    chapter.sourceFileId,
+    chapter.bookId,
+    chapter.audioUrl,
+    format,
+    budgetMb * 1024 * 1024,
+    onProgress,
+  )
 
-  await ensureBudget(blob.size, budgetMb * 1024 * 1024)
+  await putAudioManifest(chapter.sourceFileId, { totalSize, chunkSize: DOWNLOAD_CHUNK_BYTES, chunkCount, mimeType })
 
   const now = new Date().toISOString()
   await putCachedAudioFile({
     sourceFileId: chapter.sourceFileId,
     bookId: chapter.bookId,
-    blob,
-    sizeBytes: blob.size,
+    sizeBytes: totalSize,
+    chunkCount,
     downloadedAt: now,
     lastPlayedAt: now,
   })
+  await deleteTransferProgress(chapter.sourceFileId)
 }
 
 export async function downloadBook(
   chapters: Chapter[],
+  format: Book['format'] | undefined,
   budgetMb: number = DEFAULT_STORAGE_BUDGET_MB,
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   for (let i = 0; i < chapters.length; i++) {
-    await downloadChapter(chapters[i], budgetMb)
+    await downloadChapter(chapters[i], format, budgetMb)
     onProgress?.(i + 1, chapters.length)
   }
 }

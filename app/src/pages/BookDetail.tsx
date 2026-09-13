@@ -289,7 +289,7 @@ export function BookDetail() {
   // only, from AppDataContext).
   const partialBook = isFullyLoaded ? result.data : (cachedFullDetail ?? cachedListItem)
 
-  const downloads = useDownloads(bookId!, partialBook?.chapters ?? [])
+  const downloads = useDownloads(bookId!, partialBook?.chapters ?? [], partialBook?.format)
   const epubIdForDownload = partialBook && (partialBook.format === 'epub' ? partialBook.id : partialBook.companionBookId)
   const ebookDownload = useEbookDownload(epubIdForDownload)
   const comicDownload = useComicDownload(

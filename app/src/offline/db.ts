@@ -14,13 +14,46 @@ export interface LocalProgressEntry {
 // would silently re-download the same bytes under every chapter of the
 // same book. Downloading any one chapter of an M4B book makes the whole
 // book playable offline, which is also the behaviorally correct outcome.
+//
+// Metadata only — the actual audio bytes live chunked in the Cache Storage
+// bucket audioChunkStore.ts manages, never as one big Blob anywhere. Two
+// prior, reverted attempts each crashed the phone with an out-of-memory
+// kill from some single operation materializing an entire (~800MB+) file
+// at once — a Blob URL for playback, or a whole-file read/write during a
+// storage migration. Chunking throughout (download, migration, and
+// serving — see audioChunkStore.ts, offlineAudioRange.ts,
+// migrateLegacyAudio.ts) means no operation ever touches more than a
+// handful of ~8MB pieces.
 export interface CachedAudioFileEntry {
   sourceFileId: string
   bookId: string
-  blob: Blob
   sizeBytes: number
+  chunkCount: number
   downloadedAt: string
   lastPlayedAt: string
+}
+
+/** Only ever seen on a row written before the chunked-storage migration
+ * above — a real IndexedDB row from that era still has `blob` on it at
+ * runtime even though CachedAudioFileEntry no longer declares it
+ * (IndexedDB has no schema; old rows keep their old shape until
+ * rewritten). See migrateLegacyAudio.ts. */
+export interface LegacyCachedAudioFileEntry extends CachedAudioFileEntry {
+  blob?: Blob
+}
+
+/** Tracks an in-progress chunked write (fresh download or legacy
+ * migration) so a crash partway through resumes near where it left off
+ * instead of restarting — and potentially crashing again — from scratch.
+ * Read/written only from page context (downloadManager.ts,
+ * migrateLegacyAudio.ts), never the service worker. */
+export interface AudioTransferProgressEntry {
+  sourceFileId: string
+  bookId: string
+  chunksWritten: number
+  chunkCount: number
+  totalSize: number
+  mimeType: string
 }
 
 // One row per epub book id — unlike audio, an epub is a single file with
@@ -143,13 +176,17 @@ interface OzzBooksDB extends DBSchema {
     key: string // bookId
     value: CachedComicDownloadEntry
   }
+  audioTransferProgress: {
+    key: string // sourceFileId
+    value: AudioTransferProgressEntry
+  }
 }
 
 let dbPromise: Promise<IDBPDatabase<OzzBooksDB>> | null = null
 
 export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<OzzBooksDB>('ozzbooks', 5, {
+    dbPromise = openDB<OzzBooksDB>('ozzbooks', 6, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'bookId' })
@@ -177,6 +214,9 @@ export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
         }
         if (!db.objectStoreNames.contains('bookDetailCache')) {
           db.createObjectStore('bookDetailCache', { keyPath: 'bookId' })
+        }
+        if (!db.objectStoreNames.contains('audioTransferProgress')) {
+          db.createObjectStore('audioTransferProgress', { keyPath: 'sourceFileId' })
         }
       },
     })
