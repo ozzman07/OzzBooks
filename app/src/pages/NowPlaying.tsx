@@ -67,8 +67,7 @@ export function NowPlaying() {
 
         const nextBook = await fetchBook(next.book_id).then(adaptBookDetail)
         if (cancelled) return
-        player.loadBook(nextBook)
-        player.play()
+        player.loadBook(nextBook, undefined, 0, true)
       } catch {
         // Best-effort — network hiccup or the next book no longer exists
         // (deleted/relinked). Leave the "finished" state as it is rather

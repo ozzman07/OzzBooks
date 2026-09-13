@@ -332,8 +332,7 @@ export function BookDetail() {
     book.chapters.length > 0 && book.chapters.every((c) => c.sourceFileId === book.chapters[0].sourceFileId)
 
   function playFrom(chapterId: string, resumeAt = 0) {
-    player.loadBook(book, chapterId, resumeAt)
-    player.play()
+    player.loadBook(book, chapterId, resumeAt, true)
     navigate('/now-playing')
   }
 

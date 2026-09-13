@@ -103,7 +103,7 @@ interface PlayerState {
 }
 
 interface PlayerContextValue extends PlayerState {
-  loadBook: (book: Book, chapterId?: string, resumeAt?: number) => void
+  loadBook: (book: Book, chapterId?: string, resumeAt?: number, autoplay?: boolean) => void
   play: () => void
   pause: () => void
   togglePlay: () => void
@@ -504,17 +504,37 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // `autoplay` here — rather than making the caller separately call play()
+  // right after — matters more than it looks like it should: loadIntoAudio
+  // is asynchronous (resolveAudioSrc now awaits migrateLegacyAudioIfNeeded,
+  // a real await even when it's a no-op), so a caller's own immediately-
+  // following play() call fires before audio.src is ever set — a bare
+  // play() on an empty source is a silent no-op. This was the "opens but
+  // doesn't play until you scrub/skip, and the play button still shows
+  // paused even once it does" bug: skip/seek's own seekWithinLoadedStream
+  // calls play() at the right time (after src is set), which is why those
+  // recovered but the initial open never did. Threading autoplay through
+  // to loadIntoAudio instead means play() only ever gets called once
+  // loadedmetadata has actually fired, matching the timing every other
+  // autoplaying path (seek, skip, chapter change) already relies on.
   const loadBook = useCallback(
-    (nextBook: Book, chapterId?: string, resumeAt = 0) => {
+    (nextBook: Book, chapterId?: string, resumeAt = 0, autoplay = false) => {
+      if (autoplay) {
+        // Matches play()'s own reasoning: opening a book to autoplay it is
+        // just as unambiguous a "someone's still here" moment as tapping
+        // Play on an already-loaded one.
+        lastCheckInAtRef.current = Date.now()
+        resolveStillListeningPrompt(false)
+      }
       const target = nextBook.chapters.find((c) => c.id === chapterId) ?? nextBook.chapters[0]
       setBook(nextBook)
       setChapter(target ?? null)
       if (target && audioRef.current) {
         audioRef.current.playbackRate = playbackRate
-        loadIntoAudio(nextBook, target, resumeAt, false)
+        loadIntoAudio(nextBook, target, resumeAt, autoplay)
       }
     },
-    [playbackRate, loadIntoAudio],
+    [playbackRate, loadIntoAudio, resolveStillListeningPrompt],
   )
 
   const play = useCallback(() => {
