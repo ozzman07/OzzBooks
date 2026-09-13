@@ -33,6 +33,15 @@ export default defineConfig({
       // without this, the default auto-injected script would register the
       // service worker a second time.
       injectRegister: null,
+      // Custom service worker (src/sw.ts) instead of the auto-generated
+      // one. Currently only needed for the TEMPORARY /spike-audio route
+      // used by the offline-audio spike test (src/pages/SpikeTest.tsx) —
+      // remove this whole injectManifest block (reverting to generateSW)
+      // once that's validated and torn down, unless the full redesign
+      // (which will also need a custom SW) has landed by then.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       includeAssets: ['apple-touch-icon.png'],
       manifest: {
         name: 'OzzBooks',
@@ -61,18 +70,17 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
+      // injectManifest mode: sw.ts calls precacheAndRoute(self.__WB_MANIFEST)
+      // itself, this just controls what goes into that manifest. The old
+      // navigateFallbackDenylist (a generateSW-only option, protecting the
+      // Google OAuth redirect to /api/sources/oauth/google/start from being
+      // swallowed by the SPA fallback) is now hand-rolled as a
+      // NavigationRoute denylist inside sw.ts instead. Excludes the large
+      // spike-source.wav from precaching too — it's fetched on demand via
+      // Range requests, never meant to be precached whole.
+      injectManifest: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        // Without this, the service worker's default offline/SPA fallback
-        // intercepts EVERY full-page navigation — including ones meant to
-        // reach the server directly, like the Google Drive OAuth flow's
-        // window.location.href to /api/sources/oauth/google/start — and
-        // serves the cached index.html instead. React Router then boots up
-        // at that URL, finds no matching route, and renders blank; the
-        // request never reaches the server at all, so the OAuth redirect to
-        // Google never happens. /api/* is never a client-side route, so it
-        // should always hit the network.
-        navigateFallbackDenylist: [/^\/api\//],
+        globIgnores: ['**/spike-source.wav'],
       },
     }),
   ],
