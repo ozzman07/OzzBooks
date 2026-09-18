@@ -29,6 +29,49 @@ export class OpenLibraryUnavailableError extends Error {
     this.name = 'OpenLibraryUnavailableError'
   }
 }
+
+// Real case: a single timeout after 639 books had already been
+// successfully processed stopped an entire ~6000-book overnight backfill
+// dead, with nobody around to notice and restart it — enrichBooks (by
+// design) treats any OpenLibraryUnavailableError as "stop the whole
+// batch," which is the right call for a genuine sustained outage but far
+// too costly for one transient blip. Retrying a few times with backoff
+// here, underneath that policy, means only a real outage still stops the
+// batch — a lone hiccup now just costs a few extra seconds on that one
+// request instead of losing the rest of an unattended overnight run.
+const MAX_RETRY_ATTEMPTS = 3
+const BASE_RETRY_DELAY_MS = 2000
+
+function retryDelayMs(attempt: number): number {
+  const exponential = BASE_RETRY_DELAY_MS * 2 ** attempt
+  return exponential + Math.random() * exponential * 0.5
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Retries only a transient OpenLibraryUnavailableError (timeout, network
+ * error, non-2xx) — any other error is a bug in our own code, not
+ * something backing off will fix, so it's rethrown immediately. After
+ * MAX_RETRY_ATTEMPTS the error is still rethrown as-is, so a genuine
+ * sustained outage correctly reaches enrichBooks as "stop the batch." */
+async function withRetry<T>(attempt: () => Promise<T>): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < MAX_RETRY_ATTEMPTS; i++) {
+    try {
+      return await attempt()
+    } catch (err) {
+      lastErr = err
+      if (!(err instanceof OpenLibraryUnavailableError) || i === MAX_RETRY_ATTEMPTS - 1) throw err
+      const delay = retryDelayMs(i)
+      console.warn(`Open Library request retry ${i + 1}/${MAX_RETRY_ATTEMPTS} after failure, waiting ${Math.round(delay)}ms:`, err)
+      await sleep(delay)
+    }
+  }
+  throw lastErr
+}
+
 // At least this many significant words (title + author combined) must
 // match before a candidate is trusted — below this, skip rather than
 // risk attaching a wrong genre/cover to a book.
@@ -64,11 +107,11 @@ async function paceRequest(): Promise<void> {
 type OpenLibraryDescription = string | { value?: string } | undefined
 
 interface OpenLibrarySearchDoc {
+  key?: string
   title?: string
   author_name?: string[]
   subject?: string[]
   cover_i?: number
-  description?: OpenLibraryDescription
 }
 
 interface OpenLibrarySearchResponse {
@@ -79,6 +122,37 @@ export interface OpenLibraryMatch {
   genre: string | null
   coverId: number | null
   synopsis: string | null
+  series: string | null
+}
+
+// Open Library sometimes tags a work's subject list with its series
+// (confirmed live: "series:Dungeon Crawler Carl", "Series:Six-of-Crows" —
+// casing of the "series:" prefix itself is inconsistent, hence /i). This
+// is best-effort, NOT comprehensive — confirmed live that plenty of very
+// real series (The Hunger Games, Jim Butcher's Dresden Files) have no
+// series-tagged subject at all, so this only ever fills in a subset.
+// First match wins when a work lists more than one (e.g. a duology's own
+// series alongside its parent universe, "Six-of-Crows" +
+// "Grishaverse") — no principled way to prefer one over the other from
+// this data alone, and guessing wrong once already cost real data
+// correctness today (see ozzbooks-google-drive-chapter-merge-fix memory)
+// — so this takes whichever the source lists first rather than adding a
+// new heuristic. Hyphens are only converted to spaces when the whole tag
+// has no spaces of its own ("Six-of-Crows" -> "Six of Crows") — a tag
+// that already mixes hyphens and spaces is left as-is rather than
+// guessing which hyphens are word separators.
+const SERIES_SUBJECT_RE = /^series:(.+)$/i
+
+function extractSeries(subjects: string[] | undefined): string | null {
+  if (!subjects) return null
+  for (const subject of subjects) {
+    const match = SERIES_SUBJECT_RE.exec(subject.trim())
+    if (!match) continue
+    const raw = match[1].trim()
+    if (!raw) continue
+    return raw.includes(' ') ? raw : raw.replace(/-/g, ' ')
+  }
+  return null
 }
 
 function normalizeDescription(description: OpenLibraryDescription): string | null {
@@ -118,30 +192,64 @@ async function runSearch(title: string, author: string | null): Promise<OpenLibr
   // exclusion operator, so appending raw " - Author Name" text into one
   // combined query string (as this used to do) could silently exclude the
   // correct result. `subject` isn't returned by default, hence `fields=`.
+  //
+  // `description` is deliberately NOT requested here — confirmed live
+  // (2026-09-12) that Open Library's search.json 500s whenever `description`
+  // is combined with any other field in `fields=` (it's fine completely
+  // alone, just not mixed in) — a live bug on their side, not a client
+  // request-shape issue, but one that was silently aborting every single
+  // nightly enrichment run before this was found (every book's search hit
+  // this 500, treated as "Open Library unavailable," so metadata
+  // enrichment had never successfully processed a single book). `key` is
+  // requested instead — searchWork uses it for a separate, working
+  // follow-up request (fetchWorkDescription) to get the synopsis only for
+  // the one confirmed best-matching doc, not for all 5 candidates.
   const params = new URLSearchParams({
     q: title,
     limit: '5',
-    fields: 'title,author_name,subject,cover_i,description',
+    fields: 'key,title,author_name,subject,cover_i',
   })
   if (author) params.set('author', author)
 
-  let res: Response
-  try {
-    res = await fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
-      headers: { 'User-Agent': USER_AGENT },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-  } catch (err) {
-    throw new OpenLibraryUnavailableError('Open Library search request failed or timed out', { cause: err })
-  }
-  if (!res.ok) {
-    throw new OpenLibraryUnavailableError(`Open Library search failed: ${res.status} ${res.statusText}`)
-  }
-  const body = (await res.json()) as OpenLibrarySearchResponse
+  const body = await withRetry(async () => {
+    let res: Response
+    try {
+      res = await fetch(`${SEARCH_ENDPOINT}?${params.toString()}`, {
+        headers: { 'User-Agent': USER_AGENT },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
+    } catch (err) {
+      throw new OpenLibraryUnavailableError('Open Library search request failed or timed out', { cause: err })
+    }
+    if (!res.ok) {
+      // A 4xx means Open Library rejected the request itself — real case
+      // found in production: cleanTitleForSearch's series-prefix-stripping
+      // heuristic can, for a pathological box-set title ("...Books 1 - 4
+      // (... Box Sets) (Unabridged)"), reduce the query down to a bare "4",
+      // which Open Library's search 422s on deterministically, every time.
+      // Retrying or waiting never fixes a 4xx the way it can a 5xx/timeout,
+      // and treating it as "unavailable" would permanently deadlock the
+      // entire rest of the enrichment queue behind this one unmatchable
+      // book forever, since OpenLibraryUnavailableError is deliberately
+      // never stamped as attempted and this book is always first in line.
+      // Log it for visibility, but let searchWork treat it exactly like a
+      // legitimate "no results" response instead.
+      if (res.status >= 400 && res.status < 500) {
+        console.warn(`Open Library rejected the search request (${res.status} for "${title}"), treating as no match`)
+        return { docs: [] }
+      }
+      throw new OpenLibraryUnavailableError(`Open Library search failed: ${res.status} ${res.statusText}`)
+    }
+    return (await res.json()) as OpenLibrarySearchResponse
+  })
   return body.docs ?? []
 }
 
-export async function searchWork(title: string, author: string | null): Promise<OpenLibraryMatch | null> {
+/** Shared by searchWork and lookupSeriesNumber — runs the search (retrying
+ * title-only if an author-filtered search comes back empty, see the retry
+ * comment inline) and picks the best-scoring candidate, or null if nothing
+ * meets MIN_MATCH_SCORE. */
+async function findBestMatch(title: string, author: string | null): Promise<OpenLibrarySearchDoc | null> {
   let docs = await runSearch(title, author)
 
   // Unlike a normal ranking signal, Open Library's `author` param is a
@@ -163,16 +271,145 @@ export async function searchWork(title: string, author: string | null): Promise<
     if (!best || score > best.score) best = { doc, score }
   }
   if (!best || best.score < MIN_MATCH_SCORE) return null
+  return best.doc
+}
+
+export async function searchWork(title: string, author: string | null): Promise<OpenLibraryMatch | null> {
+  const doc = await findBestMatch(title, author)
+  if (!doc) return null
 
   return {
-    // Was best.doc.subject?.[0] — the raw top subject string ("Fiction",
+    // Was doc.subject?.[0] — the raw top subject string ("Fiction",
     // "franchise:Red Rising", "Xanth (Imaginary place)" — see Claude.md
     // Phase 2b note, 2026-08-16). Mapped through the controlled genre list
     // now, scored against the *whole* subject array rather than just
     // whichever one Open Library happened to list first.
-    genre: mapToControlledGenre(best.doc.subject),
-    coverId: best.doc.cover_i ?? null,
-    synopsis: normalizeDescription(best.doc.description),
+    genre: mapToControlledGenre(doc.subject),
+    coverId: doc.cover_i ?? null,
+    synopsis: doc.key ? await fetchWorkDescription(doc.key) : null,
+    series: extractSeries(doc.subject),
+  }
+}
+
+interface OpenLibraryEditionsResponse {
+  entries?: { series?: string[] }[]
+}
+
+/** Lenient like fetchWorkDescription — returns [] on any failure rather
+ * than throwing, since a missing editions list just means "no number
+ * found," not an outage worth aborting a whole backfill batch over. */
+async function fetchEditionSeriesTags(workKey: string): Promise<string[]> {
+  try {
+    await paceRequest()
+    const body = await withRetry(async () => {
+      let res: Response
+      try {
+        res = await fetch(`https://openlibrary.org${workKey}/editions.json?limit=50`, {
+          headers: { 'User-Agent': USER_AGENT },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        })
+      } catch (err) {
+        throw new OpenLibraryUnavailableError('Open Library editions request failed or timed out', { cause: err })
+      }
+      if (!res.ok) throw new OpenLibraryUnavailableError(`Open Library editions request failed: ${res.status} ${res.statusText}`)
+      return (await res.json()) as OpenLibraryEditionsResponse
+    })
+    return (body.entries ?? []).flatMap((e) => e.series ?? [])
+  } catch {
+    return []
+  }
+}
+
+// Real tag shapes confirmed live against Open Library edition records:
+// "The Dresden Files #1", "Dresden Files (1)", "Dresden files ; bk. 1",
+// "Huan xiang cang shu ge -- 16" — the number is always the last digit
+// group in the tag, whatever the surrounding punctuation.
+const SERIES_TAG_NUMBER_RE = /(\d+(?:\.\d+)?)(?!.*\d)/
+
+// A tag needs at least one significant word in common with our own
+// series_name before its number is trusted — an edition can list more than
+// one series (a duology's own series alongside its parent universe), and
+// without this a number meant for the WRONG one could get attached.
+// Requires 2+ shared significant words, or the shorter side's whole word
+// set contained in the longer one's (same threshold companionLink.ts's
+// hasTitleOverlap already uses for the same reason) — a bare single-word
+// overlap is too weak once a common word like "Bond" is involved. Real
+// case caught before this shipped: a book whose (garbage, pre-existing
+// data issue) author field forced the title-only search fallback matched
+// an unrelated Young Bond novel, whose edition tag shared only the single
+// word "bond" with our series name "James Bond - Raymond Benson" — enough
+// to falsely pass a plain single-word-overlap check.
+function seriesTagMatchesOurSeries(tag: string, ourSeriesName: string): boolean {
+  const tagWords = new Set(normalizeWords(tag))
+  const ourWords = new Set(normalizeWords(ourSeriesName))
+  if (tagWords.size === 0 || ourWords.size === 0) return false
+  const overlap = [...ourWords].filter((w) => tagWords.has(w)).length
+  if (overlap >= 2) return true
+  const [smaller, larger] = ourWords.size <= tagWords.size ? [ourWords, tagWords] : [tagWords, ourWords]
+  return [...smaller].every((w) => larger.has(w))
+}
+
+/**
+ * Looks up this book's position within `seriesName` from Open Library
+ * edition records — a separate, best-effort lookup from searchWork's own
+ * series-name backfill (which only reads a work's "series:" subject tag,
+ * never a number). Returns null whenever there's any ambiguity: no
+ * confident title/author match, no edition series tag naming our series,
+ * or edition tags naming our series but disagreeing on the number — never
+ * guesses.
+ */
+export async function lookupSeriesNumber(title: string, author: string | null, seriesName: string): Promise<number | null> {
+  const doc = await findBestMatch(title, author)
+  if (!doc?.key) return null
+
+  const tags = await fetchEditionSeriesTags(doc.key)
+  const numbers = new Set<number>()
+  for (const tag of tags) {
+    if (!seriesTagMatchesOurSeries(tag, seriesName)) continue
+    const match = SERIES_TAG_NUMBER_RE.exec(tag)
+    if (match) numbers.add(Number(match[1]))
+  }
+  return numbers.size === 1 ? [...numbers][0] : null
+}
+
+interface OpenLibraryWorkResponse {
+  description?: OpenLibraryDescription
+}
+
+/**
+ * A second, separate request for the one confirmed best-matching doc's
+ * synopsis — see runSearch's comment on why `description` can no longer be
+ * requested inline in the search call. Deliberately lenient: returns null
+ * once retries are exhausted (network, timeout, non-2xx) rather than
+ * throwing OpenLibraryUnavailableError like every other request in this
+ * module — synopsis is bonus data on top of an already-confirmed match
+ * (genre and cover are already decided by this point), so this shouldn't
+ * discard the rest of that match or abort the whole enrichment batch the
+ * way a genuine search-endpoint outage should. Still goes through the
+ * same withRetry as everything else first, so a lone transient blip still
+ * resolves to a real synopsis instead of giving up on the first try.
+ */
+async function fetchWorkDescription(workKey: string): Promise<string | null> {
+  try {
+    await paceRequest()
+    const body = await withRetry(async () => {
+      let res: Response
+      try {
+        res = await fetch(`https://openlibrary.org${workKey}.json`, {
+          headers: { 'User-Agent': USER_AGENT },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        })
+      } catch (err) {
+        throw new OpenLibraryUnavailableError('Open Library work request failed or timed out', { cause: err })
+      }
+      if (!res.ok) {
+        throw new OpenLibraryUnavailableError(`Open Library work request failed: ${res.status} ${res.statusText}`)
+      }
+      return (await res.json()) as OpenLibraryWorkResponse
+    })
+    return normalizeDescription(body.description)
+  } catch {
+    return null
   }
 }
 
@@ -184,15 +421,17 @@ export async function searchWork(title: string, author: string | null): Promise<
 export async function fetchCover(coverId: number): Promise<Buffer | null> {
   await paceRequest()
 
-  let res: Response
-  try {
-    res = await fetch(`${COVERS_ENDPOINT}/${coverId}-L.jpg`, {
+  // Only the network/timeout path is retried — a non-ok response here is a
+  // real, stable "no cover at this id" (typically 404), not a transient
+  // failure, so retrying it would just waste the backoff delay.
+  const res = await withRetry(() =>
+    fetch(`${COVERS_ENDPOINT}/${coverId}-L.jpg`, {
       headers: { 'User-Agent': USER_AGENT },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    })
-  } catch (err) {
-    throw new OpenLibraryUnavailableError('Open Library cover request failed or timed out', { cause: err })
-  }
+    }).catch((err) => {
+      throw new OpenLibraryUnavailableError('Open Library cover request failed or timed out', { cause: err })
+    }),
+  )
   if (!res.ok) return null
   return Buffer.from(await res.arrayBuffer())
 }

@@ -36,6 +36,7 @@ async function insertBook(
   overrides: Partial<{
     genre: string | null
     synopsis: string | null
+    seriesName: string | null
     artworkThumbPath: string | null
     artworkFullPath: string | null
     attemptedAt: string | null
@@ -52,8 +53,8 @@ async function insertBook(
   db.prepare(
     `INSERT INTO books (
        id, source_id, file_path, format, title, author, status,
-       genre, synopsis, artwork_thumb_path, artwork_full_path, metadata_enrichment_attempted_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       genre, synopsis, series_name, artwork_thumb_path, artwork_full_path, metadata_enrichment_attempted_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     sourceId,
@@ -64,6 +65,7 @@ async function insertBook(
     overrides.status ?? 'active',
     overrides.genre ?? null,
     overrides.synopsis ?? null,
+    overrides.seriesName ?? null,
     overrides.artworkThumbPath ?? null,
     overrides.artworkFullPath ?? null,
     overrides.attemptedAt ?? null,
@@ -86,6 +88,7 @@ describe('enrichBooks', () => {
     const fullyPopulated = await insertBook(sourceId, {
       genre: 'Fantasy',
       synopsis: 'Already has a synopsis',
+      seriesName: 'Mistborn',
       artworkThumbPath: '/x',
       artworkFullPath: '/x',
     })
@@ -185,10 +188,15 @@ describe('enrichBooks', () => {
 
   it('populates genre on a confident match and stamps the attempt', async () => {
     const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
-    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: null })
+    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: null, series: null })
 
     const sourceId = await insertSource()
-    const bookId = await insertBook(sourceId, { genre: null, artworkThumbPath: '/existing', artworkFullPath: '/existing' })
+    const bookId = await insertBook(sourceId, {
+      genre: null,
+      seriesName: 'Mistborn',
+      artworkThumbPath: '/existing',
+      artworkFullPath: '/existing',
+    })
 
     const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
     const result = await enrichBooks()
@@ -211,10 +219,16 @@ describe('enrichBooks', () => {
       genre: null,
       coverId: null,
       synopsis: 'A wizard for hire in modern-day Chicago.',
+      series: null,
     })
 
     const sourceId = await insertSource()
-    const bookId = await insertBook(sourceId, { genre: null, artworkThumbPath: '/existing', artworkFullPath: '/existing' })
+    const bookId = await insertBook(sourceId, {
+      genre: null,
+      seriesName: 'Mistborn',
+      artworkThumbPath: '/existing',
+      artworkFullPath: '/existing',
+    })
 
     const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
     const result = await enrichBooks()
@@ -225,15 +239,87 @@ describe('enrichBooks', () => {
     expect(row.synopsis).toBe('A wizard for hire in modern-day Chicago.')
   })
 
+  it('populates series_name on a confident match, same as genre/synopsis', async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue({ genre: null, coverId: null, synopsis: null, series: 'Mistborn' })
+
+    const sourceId = await insertSource()
+    const bookId = await insertBook(sourceId, {
+      genre: 'Fantasy',
+      synopsis: 'Already enriched otherwise',
+      seriesName: null,
+      artworkThumbPath: '/existing',
+      artworkFullPath: '/existing',
+    })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    const result = await enrichBooks()
+
+    expect(result.seriesUpdated).toBe(1)
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    const row = db.prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    expect(row.series_name).toBe('Mistborn')
+
+    const logEntry = db.prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'metadata_updated'").get(bookId) as any
+    expect(logEntry.detail).toContain('series')
+  })
+
+  it('never overwrites an existing series_name, even when Open Library returns one — and is only a best-effort fill (real series like The Hunger Games often have no series-tagged subject at all)', async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue({ genre: null, coverId: null, synopsis: null, series: 'A Different Series Name' })
+
+    const sourceId = await insertSource()
+    // Missing genre (so it's a candidate) but already has a series_name.
+    const bookId = await insertBook(sourceId, {
+      genre: null,
+      seriesName: 'Already Had This Series',
+      artworkThumbPath: '/existing',
+      artworkFullPath: '/existing',
+    })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    const result = await enrichBooks()
+
+    expect(result.seriesUpdated).toBe(0)
+    const { getDb } = await import('../src/db/index.js')
+    const row = getDb().prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    expect(row.series_name).toBe('Already Had This Series')
+  })
+
+  it('selects a book missing only series_name (genre/synopsis/cover all already present)', async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue({ genre: null, coverId: null, synopsis: null, series: 'Mistborn' })
+
+    const sourceId = await insertSource()
+    const bookId = await insertBook(sourceId, {
+      genre: 'Fantasy',
+      synopsis: 'Already has a synopsis',
+      seriesName: null,
+      artworkThumbPath: '/x',
+      artworkFullPath: '/x',
+    })
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    const result = await enrichBooks()
+
+    expect(result.attempted).toBe(1)
+    expect(result.seriesUpdated).toBe(1)
+    const { getDb } = await import('../src/db/index.js')
+    const row = getDb().prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
+    expect(row.series_name).toBe('Mistborn')
+  })
+
   it('never overwrites an existing synopsis, even when Open Library returns one', async () => {
     const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
-    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: 'A different synopsis' })
+    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: 'A different synopsis', series: null })
 
     const sourceId = await insertSource()
     // Missing genre (so it's a candidate) but already has a synopsis.
     const bookId = await insertBook(sourceId, {
       genre: null,
       synopsis: 'Already had this synopsis',
+      seriesName: 'Mistborn',
       artworkThumbPath: '/existing',
       artworkFullPath: '/existing',
     })
@@ -249,11 +335,16 @@ describe('enrichBooks', () => {
 
   it('never overwrites an existing cover, even when Open Library returns one', async () => {
     const { searchWork, fetchCover } = await import('../src/ingestion/enrichment/openLibrary.js')
-    vi.mocked(searchWork).mockResolvedValue({ genre: null, coverId: 555, synopsis: null })
+    vi.mocked(searchWork).mockResolvedValue({ genre: null, coverId: 555, synopsis: null, series: null })
 
     const sourceId = await insertSource()
     // Missing genre (so it's a candidate) but already has a cover.
-    const bookId = await insertBook(sourceId, { genre: null, artworkThumbPath: '/already-there-thumb', artworkFullPath: '/already-there-full' })
+    const bookId = await insertBook(sourceId, {
+      genre: null,
+      seriesName: 'Mistborn',
+      artworkThumbPath: '/already-there-thumb',
+      artworkFullPath: '/already-there-full',
+    })
 
     const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
     await enrichBooks()
@@ -292,7 +383,7 @@ describe('enrichBooks', () => {
     const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
     vi.mocked(searchWork)
       .mockRejectedValueOnce(new Error('network blip'))
-      .mockResolvedValueOnce({ genre: 'Sci-Fi', coverId: null, synopsis: null })
+      .mockResolvedValueOnce({ genre: 'Sci-Fi', coverId: null, synopsis: null, series: null })
 
     const sourceId = await insertSource()
     const failingBook = await insertBook(sourceId, { genre: null, title: 'First Book' })
@@ -313,9 +404,9 @@ describe('enrichBooks', () => {
   it('stops the run early on OpenLibraryUnavailableError, leaving the rest unattempted for next time', async () => {
     const { searchWork, OpenLibraryUnavailableError } = await import('../src/ingestion/enrichment/openLibrary.js')
     vi.mocked(searchWork)
-      .mockResolvedValueOnce({ genre: 'Fantasy', coverId: null, synopsis: null }) // succeeds first
+      .mockResolvedValueOnce({ genre: 'Fantasy', coverId: null, synopsis: null, series: null }) // succeeds first
       .mockRejectedValueOnce(new OpenLibraryUnavailableError('Open Library search request failed or timed out'))
-      .mockResolvedValueOnce({ genre: 'Mystery', coverId: null, synopsis: null }) // must never be reached
+      .mockResolvedValueOnce({ genre: 'Mystery', coverId: null, synopsis: null, series: null }) // must never be reached
 
     const sourceId = await insertSource()
     const okBook = await insertBook(sourceId, { genre: null, title: 'First Book' })

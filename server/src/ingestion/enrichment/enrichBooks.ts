@@ -29,7 +29,7 @@ import { MAX_PLAUSIBLE_SERIES_NUMBER } from '../seriesNumber.js'
 // "Odyssey Series/1997 - 3001 The Final Odyssey" case documented there —
 // 1997 exceeds the ceiling, so this falls back to the old suffix-strip
 // behavior instead, same as before this case was handled at all).
-function cleanTitleForSearch(title: string): string {
+export function cleanTitleForSearch(title: string): string {
   let cleaned = title.replace(/^\d{1,3}\s*[._-]\s*/, '').replace(/_/g, ' ').trim()
 
   const seriesPrefixMatch = cleaned.match(/^(.+?)\s+(\d{1,3}(?:\.\d+)?)\s*[-:]\s*(.+)$/)
@@ -51,6 +51,7 @@ export interface EnrichmentResult {
   genreUpdated: number
   synopsisUpdated: number
   coverUpdated: number
+  seriesUpdated: number
   skipped: number
   failed: number
   /** True if the run stopped early because Open Library itself appears to
@@ -94,7 +95,7 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
        WHERE status = 'active'
          AND format != 'cbz'
          AND metadata_enrichment_attempted_at IS NULL
-         AND (genre IS NULL OR synopsis IS NULL OR (artwork_thumb_path IS NULL AND artwork_full_path IS NULL))
+         AND (genre IS NULL OR synopsis IS NULL OR series_name IS NULL OR (artwork_thumb_path IS NULL AND artwork_full_path IS NULL))
        ORDER BY created_at, rowid`,
     )
     .all() as BookRow[]
@@ -104,6 +105,7 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
     genreUpdated: 0,
     synopsisUpdated: 0,
     coverUpdated: 0,
+    seriesUpdated: 0,
     skipped: 0,
     failed: 0,
     abortedDueToUnavailability: false,
@@ -121,6 +123,7 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
 
       let genre = book.genre
       let synopsis = book.synopsis
+      let seriesName = book.series_name
       let artworkThumbPath = book.artwork_thumb_path
       let artworkFullPath = book.artwork_full_path
       const changedFields: string[] = []
@@ -135,6 +138,19 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
         synopsis = match.synopsis
         result.synopsisUpdated++
         changedFields.push('synopsis')
+      }
+
+      // Best-effort only — Open Library tags a series on some works'
+      // subject list but not others (confirmed live: present for some
+      // genre fiction, absent even for very well-known series like The
+      // Hunger Games or Jim Butcher's Dresden Files), so this fills in a
+      // subset, not every book missing a series. Never overwrites an
+      // existing (folder/tag/manual-derived) value — same as genre/
+      // synopsis above.
+      if (!seriesName && match.series) {
+        seriesName = match.series
+        result.seriesUpdated++
+        changedFields.push('series')
       }
 
       if (!artworkThumbPath && !artworkFullPath && match.coverId) {
@@ -156,10 +172,10 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
 
       result.attempted++
       db.prepare(
-        `UPDATE books SET genre = ?, synopsis = ?, artwork_thumb_path = ?, artwork_full_path = ?,
+        `UPDATE books SET genre = ?, synopsis = ?, series_name = ?, artwork_thumb_path = ?, artwork_full_path = ?,
            metadata_enrichment_attempted_at = datetime('now')
          WHERE id = ?`,
-      ).run(genre, synopsis, artworkThumbPath, artworkFullPath, book.id)
+      ).run(genre, synopsis, seriesName, artworkThumbPath, artworkFullPath, book.id)
     } catch (err) {
       if (err instanceof OpenLibraryUnavailableError) {
         // Deliberately leaves this book (and everything after it in

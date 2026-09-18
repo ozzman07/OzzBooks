@@ -49,6 +49,7 @@ describe('enrichment routes', () => {
       genreUpdated: 0,
       synopsisUpdated: 0,
       coverUpdated: 0,
+      seriesUpdated: 0,
       skipped: 0,
       failed: 0,
       abortedDueToUnavailability: false,
