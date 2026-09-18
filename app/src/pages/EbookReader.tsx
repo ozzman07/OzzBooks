@@ -4,7 +4,9 @@ import Epub from 'epubjs'
 import type Rendition from 'epubjs/types/rendition'
 import { fetchBook, fetchEpubBytes } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
-import { fetchBookProgress, putProgress } from '../api/cloudClient'
+import { reconcileProgress } from '../offline/reconcile'
+import { trySync } from '../offline/syncEngine'
+import { putLocalProgress } from '../offline/progressStore'
 import { getCachedEpubFile, touchEpubLastRead } from '../offline/epubFileStore'
 import { getCachedLocations, putCachedLocations } from '../offline/bookLocationsStore'
 import { useAuth } from '../auth/AuthContext'
@@ -22,6 +24,48 @@ import {
 
 const FONT_STACK = 'Georgia, "Times New Roman", Times, serif'
 const READER_THEME_NAME = 'reader'
+
+// Module-level (survives unmount, shared across every EbookReader
+// instance) — every genuine relocate fires an immediate, un-debounced
+// local write via `void putLocalProgress(...)` (see the 'relocated'
+// handler below), deliberately not awaited so the event handler returns
+// immediately. Reopening the same book right after closing it can
+// otherwise start reading local storage before that write actually
+// lands — local IndexedDB writes aren't instantaneous, even when
+// started right away. Tracked per book id so the next mount for that
+// same book can await it before reconciling, without making an
+// unrelated book's open wait on anything.
+const pendingFlushes = new Map<string, Promise<void>>()
+
+// REMOVED (real bug, caught live): a localStorage-based "last known
+// position" mirror used to live here, meant to survive a quit/OS-suspend
+// interrupting the regular async save. It backfired badly — deleting a
+// book's progress (Library's "Remove from In Progress") only ever cleared
+// the real local/cloud records, never knew this separate layer existed at
+// all, so a stale value here could silently resurrect itself forever:
+// confirmed live, deleting progress and reopening immediately still
+// landed on the old page, before any new activity that session. Worse,
+// there was no clear evidence it ever reliably won a genuine race in the
+// first place. Removed entirely rather than patched, since the debounced
+// save plus its three flush points (visibilitychange, pagehide, unmount —
+// see pendingFlushes above and the 'relocated' handler below) already
+// cover the same ground without a second, unmanaged persistence layer.
+//
+// Runs once, the first time this module loads in a session — purges
+// whatever got stuck under the old key prefix while that mechanism
+// existed, for every book, not just the one being opened right now. A
+// plain module-level statement rather than a per-mount effect: this only
+// ever needs to happen once per app load, not once per book opened.
+const LAST_POSITION_STORAGE_PREFIX = 'ozzbooks_ebook_last_position_'
+try {
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const key = localStorage.key(i)
+    if (key?.startsWith(LAST_POSITION_STORAGE_PREFIX)) localStorage.removeItem(key)
+  }
+} catch {
+  // Best-effort — private browsing/storage-disabled can throw; nothing to
+  // clean up in that case anyway.
+}
 
 // A single theme (name never changes — only its rules do), applied via
 // the object-rules API (register/registerRules), not registerCss. Two
@@ -167,30 +211,38 @@ export function EbookReader() {
   // how a stale tab's delayed flush can stamp an old page with a fresh
   // "now" and clobber real, more recent progress from another device.
   const currentCfiCapturedAtRef = useRef<string | undefined>(undefined)
-  // True immediately before a programmatic display()/resize() call this
-  // component makes on the reader's own behalf (restoring saved progress,
-  // the reflow-correction re-display, a live prefs change re-paginating) —
-  // consumed (reset to false) by the very next 'relocated' event, which
-  // skips scheduling a save. Restoring a CFI can resolve to a very
-  // slightly different paginated position than where it was originally
-  // saved (epub.js snapping to the nearest page boundary is not perfectly
-  // stable across re-renders) — without this guard, simply *reopening*
-  // the book fires a real relocate for that resolved position and
-  // schedules a save for it, quietly regressing progress by a page or two
-  // even though the user never touched anything. Genuine page turns
-  // (next()/prev()/tap navigation) never set this, so they save normally.
-  const suppressNextSaveRef = useRef(false)
-  // Sets the guard above with a short auto-expiry rather than leaving it
-  // set indefinitely — resize() (unlike display()) doesn't reliably
-  // trigger a re-display every time it's called (only when it detects an
-  // actual size change), so a bare `.current = true` before it could leak
-  // forward and silently swallow a real, later save if no relocate ever
-  // came along to consume it.
+  // A timestamp (not a single-consume boolean — see below) set just
+  // before a programmatic display()/resize() call this component makes on
+  // the reader's own behalf (restoring saved progress, the
+  // reflow-correction re-display, a live prefs change re-paginating, or
+  // epub.js's own internal window-resize redisplay). Every 'relocated'
+  // event that fires before this deadline is treated as a side effect of
+  // that programmatic call, not a real page turn, and skips scheduling a
+  // save. Restoring a CFI can resolve to a very slightly different
+  // paginated position than where it was originally saved (epub.js
+  // snapping to the nearest page boundary is not perfectly stable across
+  // re-renders) — without this guard, simply *reopening* the book fires a
+  // real relocate for that resolved position and schedules a save for it,
+  // quietly regressing progress by a page or two even though the user
+  // never touched anything. Genuine page turns (next()/prev()/tap
+  // navigation) never touch this, so they save normally.
+  //
+  // Real bug caught live: this used to be a boolean consumed (reset) by
+  // the very next 'relocated' event. That worked for a single display()
+  // call, but epub.js's own internal resize handling — confirmed in its
+  // source, see the window-resize listener below and the showSettings
+  // effect further down — does its own clear() *then* a separate
+  // re-display, firing 'relocated' twice for one logical resize: once for
+  // the transitional clear() (correctly suppressed and consuming the
+  // flag), then again once the reflow actually settles, at a
+  // recalculated position a column-width change can land earlier than
+  // intended. With a single-consume flag, that second event was
+  // completely unprotected and got saved as if it were a genuine page
+  // turn. A time window that stays open for every event in that stretch,
+  // rather than clearing after the first, covers both.
+  const suppressUntilRef = useRef(0)
   const suppressNextSave = useCallback(() => {
-    suppressNextSaveRef.current = true
-    setTimeout(() => {
-      suppressNextSaveRef.current = false
-    }, 500)
+    suppressUntilRef.current = Date.now() + 500
   }, [])
   // Guards the live-prefs effect below against firing a redundant, racing
   // display() call the moment status first flips to 'ready' — that effect
@@ -209,6 +261,21 @@ export function EbookReader() {
   // below. A ref, not state: it's only ever read inside that handler, and
   // flipping it shouldn't itself trigger a re-render.
   const locationsReadyRef = useRef(false)
+  // True for the duration of epub.locations.generate() (see the
+  // background-indexing block below) — this build of epub.js drives the
+  // real, visible Rendition through the whole book to measure it, firing
+  // a genuine 'relocated' for every step. The relocated handler checks
+  // this first and ignores those events entirely (not just skipping the
+  // save — see its own comment for why).
+  const indexingLocationsRef = useRef(false)
+  // True once a genuine (non-suppressed, non-indexing) 'relocated' has
+  // fired since this book's own load() started — i.e. the reader has
+  // actually turned a page since opening, as opposed to just having
+  // *resolved* its initial display(startCfi) call. Reset at the top of
+  // every load(). See the 800ms reflow-correction setTimeout further down
+  // for why this, not a raw CFI comparison, is what that correction needs
+  // to check.
+  const hasNavigatedSinceLoadRef = useRef(false)
   const [title, setTitle] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [showSettings, setShowSettings] = useState(false)
@@ -224,6 +291,7 @@ export function EbookReader() {
     if (!bookId || !containerRef.current) return
     skipNextPrefsApplyRef.current = true
     skipNextResizeRef.current = true
+    hasNavigatedSinceLoadRef.current = false
     let cancelled = false
     let rendition: Rendition | null = null
     let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -231,6 +299,11 @@ export function EbookReader() {
 
     async function load() {
       try {
+        // Waits for this exact book's own still-in-flight close-time save
+        // (if any) to actually finish writing to local storage before this
+        // new session reads from it — see pendingFlushes' own comment for
+        // why that write isn't awaited at the point it's fired.
+        await pendingFlushes.get(bookId!)
         // Cache-first, unconditionally (not gated on navigator.onLine) —
         // same pattern as PlayerContext's audio resolution: if it's
         // downloaded, use it, regardless of connectivity.
@@ -239,7 +312,19 @@ export function EbookReader() {
         const [detail, bytes, progress] = await Promise.all([
           fetchBook(bookId!).then(adaptBookDetail),
           cached ? cached.blob.arrayBuffer() : fetchEpubBytes(bookId!),
-          auth.token ? fetchBookProgress(auth.token, bookId!) : Promise.resolve(null),
+          // reconcileProgress (local-vs-cloud, newer wins), not a raw
+          // cloud fetch — see the 'relocated' handler's local-write switch
+          // below for why: a fetch straight from the cloud could race ahead of this same
+          // book's *own* still-in-flight background sync from the
+          // session that just closed (close book, reopen it right away —
+          // the debounced/flush PUT from a moment ago hadn't necessarily
+          // reached the server yet), silently restoring a stale position
+          // a page or two behind where the reader actually left off.
+          // reconcileProgress checks local IndexedDB first, which that
+          // same just-closed session already wrote to synchronously, so
+          // a same-device reopen never has to win a race against the
+          // network at all.
+          reconcileProgress(auth.token, bookId!),
         ])
         if (cancelled) return
         setTitle(detail.title)
@@ -277,50 +362,74 @@ export function EbookReader() {
           (location: { start?: { cfi?: string; displayed?: { page?: number; total?: number } } }) => {
             const cfi = location?.start?.cfi
             if (!cfi) return
+            const displayed = location.start?.displayed
+            if (indexingLocationsRef.current) {
+              // epub.locations.generate() (see the background-indexing
+              // block further down) doesn't parse sections headlessly in
+              // this build — it drives the real, visible Rendition
+              // through the entire book from the start to measure it,
+              // which fires a genuine 'relocated' event for every step of
+              // that walk. Nothing about this reflects where the reader
+              // actually is, so it must not touch
+              // currentCfiRef/pageInfo/percent either (a later flush —
+              // pagehide, unmount — could otherwise pick up the scan's
+              // position instead of the real one), not just skip the save.
+              return
+            }
             currentCfiRef.current = cfi
             currentCfiCapturedAtRef.current = new Date().toISOString()
-            const displayed = location.start?.displayed
             if (displayed?.page && displayed.total) {
               setPageInfo({ page: displayed.page, total: displayed.total })
             }
             if (locationsReadyRef.current) {
               setPercent(Math.round(epub.locations.percentageFromCfi(cfi) * 100))
             }
-            if (suppressNextSaveRef.current) {
-              suppressNextSaveRef.current = false
+            if (Date.now() < suppressUntilRef.current) {
               return
             }
-            if (!auth.token) return
-            // Debounced — relocated fires on every page turn, syncing
-            // every single one would spam the cloud API for no benefit
-            // over just capturing where the reader settles. Flushed
-            // immediately on visibilitychange below, since iOS suspends
-            // pending timers the moment the app backgrounds — without
-            // that flush, turning a page and immediately switching apps
-            // within the debounce window loses that page turn entirely,
-            // and reopening the book restores the previous page instead.
+            hasNavigatedSinceLoadRef.current = true
+            // Real bug caught live: the whole save — including the local
+            // IndexedDB write, not just the network push — used to sit
+            // behind this same 2-second debounce. An abrupt PWA quit
+            // (swiped away in the app switcher, not a graceful
+            // backgrounding) doesn't reliably fire visibilitychange or
+            // pagehide in time to flush it, so a page turn followed
+            // quickly by quitting could lose the local write entirely —
+            // reopening then restored whatever the *last actually-saved*
+            // position was, several pages behind. The local write below
+            // is now immediate and undebounced on every genuine relocate —
+            // it's cheap, and durability shouldn't depend on a timer or a
+            // lifecycle event firing correctly. Only the network push
+            // (syncing every page turn would spam the cloud API for no
+            // benefit) stays debounced, further down.
             const capturedAt = currentCfiCapturedAtRef.current
+            const flushPromise: Promise<void> = putLocalProgress({
+              bookId: bookId!,
+              chapterId: '',
+              position: { type: 'cfi', value: cfi },
+              updatedAt: capturedAt,
+              synced: false,
+            }).finally(() => {
+              if (pendingFlushes.get(bookId!) === flushPromise) pendingFlushes.delete(bookId!)
+            })
+            pendingFlushes.set(bookId!, flushPromise)
+
             if (saveTimer) clearTimeout(saveTimer)
             saveTimer = setTimeout(() => {
               saveTimer = null
-              void putProgress(auth.token!, bookId!, {
-                position: { type: 'cfi', value: cfi },
-                chapterId: null,
-                updatedAt: capturedAt!,
-              })
+              void trySync(auth.token)
             }, 2000)
           },
         )
 
         const flushPendingSave = () => {
-          if (!saveTimer || !auth.token || !currentCfiRef.current || !currentCfiCapturedAtRef.current) return
+          if (!saveTimer) return
           clearTimeout(saveTimer)
           saveTimer = null
-          void putProgress(auth.token, bookId!, {
-            position: { type: 'cfi', value: currentCfiRef.current },
-            chapterId: null,
-            updatedAt: currentCfiCapturedAtRef.current,
-          })
+          // The local write itself already happened synchronously above,
+          // on the relocate itself — this only needs to push it to the
+          // cloud without waiting out the rest of the debounce window.
+          void trySync(auth.token)
         }
         const onVisibilityChange = () => {
           if (document.visibilityState === 'hidden') flushPendingSave()
@@ -330,9 +439,29 @@ export function EbookReader() {
         // backgrounded (no visibilitychange guaranteed in that case) —
         // belt and suspenders for the same flush.
         window.addEventListener('pagehide', flushPendingSave)
+        // Real bug caught live: epub.js wires its own window 'resize'
+        // listener internally (see the showSettings effect's comment
+        // below) — completely separately from this component's own
+        // explicit rendition.resize() calls, which are the only ones
+        // guarded by suppressNextSave(). On iOS Safari, the toolbar
+        // auto-hiding/showing as the page scrolls fires a genuine
+        // window resize event, which trips epub.js's *own* internal
+        // handler: it re-measures the column width and re-displays at
+        // its last-known location on its own, with no way for this
+        // component to tell that redisplay apart from a real page
+        // turn. In two-column (spread) layout that re-pagination can
+        // land the "current" CFI on the previous screen's worth of
+        // text — a genuinely different, earlier position — which then
+        // gets saved immediately as if the reader had turned back a
+        // page. Treating every window resize as a potential
+        // programmatic re-display, exactly like this component's own
+        // resize() calls, closes that gap.
+        const onWindowResize = () => suppressNextSave()
+        window.addEventListener('resize', onWindowResize)
         removeVisibilityListeners = () => {
           document.removeEventListener('visibilitychange', onVisibilityChange)
           window.removeEventListener('pagehide', flushPendingSave)
+          window.removeEventListener('resize', onWindowResize)
         }
 
         const startCfi = progress?.position.type === 'cfi' ? progress.position.value : undefined
@@ -360,12 +489,31 @@ export function EbookReader() {
           // though the section itself rendered fine (hence the theme/
           // background color still showing). Re-issuing display() at the
           // same CFI once things have settled re-does that offset
-          // calculation against the final layout. Guarded on the current
-          // location still being where we left it, so this can't yank the
-          // reader back if they've already turned a page in the meantime.
+          // calculation against the final layout. Guarded on the reader
+          // not having genuinely turned a page in the meantime, so this
+          // can't yank them back if they have.
+          //
+          // Real bug caught live, and the actual source of the "goes back
+          // several pages" regression: this used to compare
+          // currentCfiRef.current against startCfi instead of checking
+          // hasNavigatedSinceLoadRef. That looks equivalent but isn't —
+          // currentCfiRef.current is updated by the *initial*
+          // display(startCfi) call's own (suppressed-from-saving, but
+          // not from updating state) relocate too. When that first
+          // resolve was itself imprecise — exactly the reflow/column-
+          // width-timing problem this correction exists to fix — it left
+          // currentCfiRef pointing at the wrong, already-regressed
+          // position, which then never equals startCfi, so the
+          // comparison silently concluded "the user already navigated,
+          // leave it alone" and skipped the very correction meant to fix
+          // that regressed position — every time it happened. Checking
+          // whether the reader has genuinely navigated (a real,
+          // unsuppressed relocate) instead of comparing CFIs correctly
+          // still protects a real page turn in this window, without
+          // being fooled by the initial resolve's own imprecision.
           setTimeout(() => {
             if (cancelled || !renditionRef.current) return
-            if (currentCfiRef.current !== startCfi) return
+            if (hasNavigatedSinceLoadRef.current) return
             suppressNextSave()
             void renditionRef.current.display(startCfi)
           }, 800)
@@ -376,8 +524,14 @@ export function EbookReader() {
         // reader from opening. Cached locations restore near-instantly;
         // a fresh generate() is several seconds (walks the whole book's
         // text), so this can easily still be running while the reader is
-        // already showing pages. Character-count-based, not layout-based,
-        // so it's valid regardless of font-size/line-height changes.
+        // already showing pages. The resulting percentage is still valid
+        // regardless of font-size/line-height changes (it's a character
+        // count under the hood) — but real bug caught live: generate()
+        // itself is NOT the headless, rendition-independent parse that
+        // implies. In this build it drives the actual visible Rendition
+        // through the entire book to measure it, from the very start —
+        // see indexingLocationsRef below and the relocated handler above
+        // for how that's kept from being saved as real reading progress.
         void (async () => {
           try {
             const cachedLocations = await getCachedLocations(bookId!)
@@ -385,8 +539,25 @@ export function EbookReader() {
             if (cachedLocations) {
               epub.locations.load(cachedLocations.locations)
             } else {
-              await epub.locations.generate(150)
+              // See indexingLocationsRef's own comment and the relocated
+              // handler above — generate() drives the visible Rendition
+              // through the whole book, so the reader's real position
+              // (currentCfiRef) must be untouched by that walk's own
+              // 'relocated' events, and the walk itself visibly leaves
+              // the rendition wherever it happened to finish. Both are
+              // repaired below once it's done.
+              const realCfiBeforeIndexing = currentCfiRef.current
+              indexingLocationsRef.current = true
+              try {
+                await epub.locations.generate(150)
+              } finally {
+                indexingLocationsRef.current = false
+              }
               if (cancelled) return
+              if (realCfiBeforeIndexing && renditionRef.current) {
+                suppressNextSave()
+                void renditionRef.current.display(realCfiBeforeIndexing)
+              }
               void putCachedLocations(bookId!, epub.locations.save())
             }
             if (cancelled) return
@@ -412,20 +583,13 @@ export function EbookReader() {
     void load()
     return () => {
       cancelled = true
-      // Flush rather than just clear — navigating away from the reader
-      // within the debounce window (e.g. tapping back right after a page
-      // turn) previously discarded that pending save entirely, same class
-      // of lost-position bug as backgrounding without a visibilitychange
-      // flush (see the 'relocated' handler above).
+      // The local write already happened synchronously on the 'relocated'
+      // handler itself, not deferred to here — this only needs to push
+      // whatever's pending to the cloud rather than waiting out the rest
+      // of the debounce window.
       if (saveTimer) {
         clearTimeout(saveTimer)
-        if (auth.token && currentCfiRef.current && currentCfiCapturedAtRef.current) {
-          void putProgress(auth.token, bookId!, {
-            position: { type: 'cfi', value: currentCfiRef.current },
-            chapterId: null,
-            updatedAt: currentCfiCapturedAtRef.current,
-          })
-        }
+        void trySync(auth.token)
       }
       removeVisibilityListeners?.()
       rendition?.destroy()
