@@ -40,7 +40,7 @@ export interface TestLibrary {
   misgroupedBook3Path: string
 }
 
-async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
+export async function makeTone(outPath: string, durationSeconds: number, extraArgs: string[] = []) {
   await execFileAsync('ffmpeg', [
     '-y',
     '-f',

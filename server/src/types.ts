@@ -1,4 +1,5 @@
 export type SourceType = 'local' | 'synology' | 'dropbox' | 'google_drive'
+export type SourceContentKind = 'audio' | 'ebook' | 'comic'
 export type BookFormat = 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
 export type BookStatus = 'active' | 'missing'
 export type CredentialsStatus = 'ok' | 'needs_reconnect'
@@ -14,6 +15,10 @@ export interface SourceRow {
   credentials_account_label: string | null
   path_resource_key: string | null
   created_at: string
+  /** Null (default) scans for every format; set to restrict a source
+   * dedicated to one kind of content so a stray file of the wrong kind
+   * elsewhere in its tree is never discovered as a candidate at all. */
+  content_kind: SourceContentKind | null
   last_scanned_at: string | null
   last_scan_found: number | null
   last_scan_created: number | null
@@ -37,8 +42,11 @@ export interface BookRow {
   format: BookFormat
   companion_book_id: string | null
   title: string
+  title_source: 'manual' | null
   author: string | null
+  author_source: 'manual' | null
   series_name: string | null
+  series_name_source: 'manual' | null
   series_number: number | null
   series_number_source: 'tag' | 'folder' | 'manual' | null
   status: BookStatus

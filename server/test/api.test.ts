@@ -637,6 +637,56 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
     expect(logEntry.detail).toContain('Manual Series')
   })
 
+  it('sets title/author and locks their source to manual', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'Corrected Title', author: 'Corrected Author' })
+    expect(res.status).toBe(200)
+    expect(res.body.title).toBe('Corrected Title')
+    expect(res.body.title_source).toBe('manual')
+    expect(res.body.author).toBe('Corrected Author')
+    expect(res.body.author_source).toBe('manual')
+
+    const { getDb } = await import('../src/db/index.js')
+    const logEntry = getDb()
+      .prepare("SELECT * FROM activity_log WHERE book_id = ? AND action = 'metadata_updated' ORDER BY created_at DESC LIMIT 1")
+      .get(bookId) as any
+    expect(logEntry.detail).toContain('title')
+    expect(logEntry.detail).toContain('author')
+  })
+
+  it('un-locks author when explicitly cleared back to null, but title has no null form (NOT NULL column)', async () => {
+    await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ author: 'Some Author' })
+
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ author: null })
+    expect(res.status).toBe(200)
+    expect(res.body.author).toBeNull()
+    expect(res.body.author_source).toBeNull()
+  })
+
+  it('400s for an empty/whitespace-only title instead of writing a blank title', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: '   ' })
+    expect(res.status).toBe(400)
+  })
+
+  it('400s for a malformed author', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ author: 42 })
+    expect(res.status).toBe(400)
+  })
+
   it('un-locks the series number when explicitly cleared back to null', async () => {
     await request(app)
       .patch(`/api/books/${bookId}`)

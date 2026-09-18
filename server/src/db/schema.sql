@@ -9,6 +9,14 @@ CREATE TABLE IF NOT EXISTS sources (
   credentials_account_label TEXT, -- display only, e.g. "connected as name@gmail.com"
   path_resource_key TEXT, -- Google Drive only: required alongside path_scope for a link-shared folder id
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Null (default) scans for every recognized format, same as always.
+  -- Set on a source dedicated to one kind of content (e.g. an audiobook
+  -- library folder) so a stray file of the wrong kind sitting somewhere
+  -- inside it — a bonus ebook bundled into a Graphic Audio production
+  -- folder, real case that prompted this — is never even discovered as a
+  -- candidate, rather than being cataloged as if it were a real, separate
+  -- library entry. See scan.ts's findCandidates for where this is applied.
+  content_kind TEXT CHECK (content_kind IN ('audio', 'ebook', 'comic')),
   -- Summary of the most recent scan, surfaced in the UI as index status.
   -- Null until the first scan runs.
   last_scanned_at TEXT,
@@ -47,8 +55,19 @@ CREATE TABLE IF NOT EXISTS books (
   -- (own id, own missing/status tracking, own relink flow).
   companion_book_id TEXT REFERENCES books(id),
   title TEXT NOT NULL,
+  -- NULL means "keep refreshing this from the file/folder on every scan"
+  -- (today's default behavior); 'manual' means a Book Detail correction —
+  -- e.g. a source file's own embedded metadata is wrong and, for a
+  -- read-only source like Google Drive, can't be fixed at the source —
+  -- pins the value so it survives every future rescan instead of being
+  -- silently overwritten back to whatever the file says. Same convention
+  -- as series_number_source below, extended to the two other fields a
+  -- rescan unconditionally refreshes.
+  title_source TEXT CHECK (title_source IN ('manual')),
   author TEXT,
+  author_source TEXT CHECK (author_source IN ('manual')),
   series_name TEXT,
+  series_name_source TEXT CHECK (series_name_source IN ('manual')),
   series_number REAL,
   -- Tracks where series_number came from so a manual correction survives
   -- future rescans, while an automatic value keeps refreshing on every

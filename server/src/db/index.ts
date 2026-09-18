@@ -50,6 +50,8 @@ function migrate(db: Database.Database): void {
     // driveClient.ts's resourceKeys param). Only ever set for a Google
     // Drive source's path_scope; null for everything else.
     ['path_resource_key', 'TEXT'],
+    // See schema.sql's own comment on this column.
+    ['content_kind', "TEXT CHECK (content_kind IN ('audio', 'ebook', 'comic'))"],
   ]
   for (const [name, type] of scanSummaryColumns) {
     if (!sourcesColumns.has(name)) {
@@ -73,6 +75,9 @@ function migrate(db: Database.Database): void {
     ['synopsis', 'TEXT'],
     ['metadata_enrichment_attempted_at', 'TEXT'],
     ['series_number_source', "TEXT CHECK (series_number_source IN ('tag', 'folder', 'manual'))"],
+    ['title_source', "TEXT CHECK (title_source IN ('manual'))"],
+    ['author_source', "TEXT CHECK (author_source IN ('manual'))"],
+    ['series_name_source', "TEXT CHECK (series_name_source IN ('manual'))"],
     ['missing_since', 'TEXT'],
     ['narrator', 'TEXT'],
     ['writer', 'TEXT'],

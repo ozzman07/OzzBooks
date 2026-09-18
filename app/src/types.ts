@@ -74,8 +74,11 @@ export interface Book {
    * on both list and detail books, driving both Book Detail's display and
    * the Library/Store Source filter facet. */
   sourceLabel?: string
-  /** Only present on detail-view books (from ApiBookDetail). */
-  sourceType?: string
+  /** Present on both list and detail books, same as sourceLabel above —
+   * drives the Google Drive badge on tiles/rows (see BookGrid's
+   * SourceBadge) so an externally-sourced copy is visually distinct from
+   * a home-library one. */
+  sourceType?: 'local' | 'synology' | 'dropbox' | 'google_drive'
   chapters: Chapter[]
   progress?: {
     position: Position

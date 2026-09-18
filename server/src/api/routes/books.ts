@@ -29,7 +29,7 @@ booksRouter.get('/', (req, res) => {
   const status = req.query.status === 'active' || req.query.status === 'missing' ? req.query.status : undefined
   const rows = getDb()
     .prepare(
-      `SELECT books.*, sources.label AS source_label, COALESCE(SUM(chapters.duration), 0) AS total_duration,
+      `SELECT books.*, sources.label AS source_label, sources.type AS source_type, COALESCE(SUM(chapters.duration), 0) AS total_duration,
          (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id
        FROM books
        LEFT JOIN chapters ON chapters.book_id = books.id
@@ -38,7 +38,12 @@ booksRouter.get('/', (req, res) => {
        GROUP BY books.id
        ORDER BY books.title`,
     )
-    .all(...(status ? [status] : [])) as (BookRow & { source_label: string; total_duration: number; last_chapter_id: string | null })[]
+    .all(...(status ? [status] : [])) as (BookRow & {
+    source_label: string
+    source_type: SourceRow['type']
+    total_duration: number
+    last_chapter_id: string | null
+  })[]
   res.json(rows.map((row) => ({ ...row, is_orphaned_conversion: isOrphanedConversion(row) })))
 })
 
@@ -71,6 +76,10 @@ booksRouter.patch('/:id', (req, res) => {
   // scan/backfill; explicitly clearing it back to null un-locks it instead
   // of leaving it permanently stuck on whatever guess came before.
   const seriesNumberSource = 'seriesNumber' in body ? (seriesNumber === null ? null : 'manual') : existing.series_number_source
+  // Same lock/unlock convention as series_number, now covering series_name
+  // too (previously unprotected — a manual series_name edit used to get
+  // silently overwritten by the very next rescan).
+  const seriesNameSource = 'seriesName' in body ? (seriesName === null ? null : 'manual') : existing.series_name_source
 
   // Malformed types (an object/array instead of a string/number) would
   // otherwise reach the raw SQL bind below and throw there instead —
@@ -84,6 +93,27 @@ booksRouter.patch('/:id', (req, res) => {
     return
   }
 
+  // title/author: same manual-pin convention as series_name/series_number
+  // above — this is what makes a correction stick against a source whose
+  // own embedded metadata is wrong and, for a read-only source like
+  // Google Drive, can never be fixed at the source itself. title has no
+  // "clear it back to auto" null form (the column is NOT NULL) — an
+  // empty/whitespace-only string is rejected rather than silently
+  // becoming the book's title.
+  if ('title' in body && (typeof body.title !== 'string' || body.title.trim() === '')) {
+    res.status(400).json({ error: 'title must be a non-empty string' })
+    return
+  }
+  const title = 'title' in body ? body.title.trim() : existing.title
+  const titleSource = 'title' in body ? 'manual' : existing.title_source
+
+  if ('author' in body && body.author !== null && typeof body.author !== 'string') {
+    res.status(400).json({ error: 'author must be a string or null' })
+    return
+  }
+  const author = 'author' in body ? body.author : existing.author
+  const authorSource = 'author' in body ? (author === null ? null : 'manual') : existing.author_source
+
   if ('genre' in body && body.genre !== null && !GENRE_OPTIONS.includes(body.genre)) {
     res.status(400).json({ error: 'invalid genre' })
     return
@@ -93,9 +123,25 @@ booksRouter.patch('/:id', (req, res) => {
 
   getDb()
     .prepare(
-      'UPDATE books SET series_name = ?, series_number = ?, series_number_source = ?, genre = ?, narrator = ? WHERE id = ?',
+      `UPDATE books SET
+         title = ?, title_source = ?, author = ?, author_source = ?,
+         series_name = ?, series_name_source = ?, series_number = ?, series_number_source = ?,
+         genre = ?, narrator = ?
+       WHERE id = ?`,
     )
-    .run(seriesName, seriesNumber, seriesNumberSource, genre, narrator, existing.id)
+    .run(
+      title,
+      titleSource,
+      author,
+      authorSource,
+      seriesName,
+      seriesNameSource,
+      seriesNumber,
+      seriesNumberSource,
+      genre,
+      narrator,
+      existing.id,
+    )
 
   // Only a genuine change is worth a log entry — e.g. the "leave fields
   // not present in the body untouched" call pattern (an empty PATCH to
@@ -103,18 +149,23 @@ booksRouter.patch('/:id', (req, res) => {
   if (seriesName !== existing.series_name || seriesNumber !== existing.series_number) {
     logActivity(
       existing.id,
-      existing.title,
-      existing.author,
+      title,
+      author,
       'series_updated',
       `Series set to ${seriesName ?? '(none)'}${seriesNumber !== null ? ` #${seriesNumber}` : ''}`,
     )
   }
   // Reuses 'metadata_updated' — the same action type enrichBooks.ts logs
   // for an automatic genre/synopsis/cover backfill — since this is the
-  // same field changing, just via a manual edit instead.
-  if (genre !== existing.genre || narrator !== existing.narrator) {
-    const changed = [genre !== existing.genre && 'genre', narrator !== existing.narrator && 'narrator'].filter(Boolean)
-    logActivity(existing.id, existing.title, existing.author, 'metadata_updated', `Manually edited: ${changed.join(', ')}`)
+  // same fields changing, just via a manual edit instead.
+  if (title !== existing.title || author !== existing.author || genre !== existing.genre || narrator !== existing.narrator) {
+    const changed = [
+      title !== existing.title && 'title',
+      author !== existing.author && 'author',
+      genre !== existing.genre && 'genre',
+      narrator !== existing.narrator && 'narrator',
+    ].filter(Boolean)
+    logActivity(existing.id, title, author, 'metadata_updated', `Manually edited: ${changed.join(', ')}`)
   }
 
   res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))

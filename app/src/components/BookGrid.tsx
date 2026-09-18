@@ -30,6 +30,24 @@ export function FormatBadge({ book, className = '' }: { book: Book; className?: 
   )
 }
 
+// Marks a book sourced from an external cloud drive rather than the home
+// library (local disk/Synology NAS) — the user's own distinction, made
+// concrete after a Google Drive copy of a book got auto-companion-linked
+// over a home-library copy purely by coincidence of filename wording (see
+// companionLink.ts's HOME_LIBRARY_SOURCE_TYPES, which now excludes this
+// case from auto-linking entirely). This badge is what makes that
+// distinction visible at a glance instead of only living in the data —
+// spotting "oh, this one's from Google Drive" now takes one look, not a
+// trip to Book Detail's source label.
+function SourceBadge({ book, className = '' }: { book: Book; className?: string }) {
+  if (book.sourceType !== 'google_drive') return null
+  return (
+    <span className={`whitespace-nowrap ${className}`} title={`From Google Drive${book.sourceLabel ? ` (${book.sourceLabel})` : ''}`}>
+      ☁️
+    </span>
+  )
+}
+
 // The tile/row subtitle line — author for audio/ebooks, but a comic has no
 // author concept (Writer/Artist are separate fields shown on Book Detail,
 // not stored on books.author — see Ozzbooks_Addendum_Comics). Shows issue
@@ -91,6 +109,10 @@ function BookTile({
           book={book}
           className="absolute right-1 top-1 rounded bg-slate-950/70 px-1 py-0.5 text-xs leading-none text-white"
         />
+        <SourceBadge
+          book={book}
+          className="absolute bottom-1 right-1 rounded bg-slate-950/70 px-1 py-0.5 text-xs leading-none text-white"
+        />
         {onToggleLibrary && (
           <LibraryToggleButton
             inMyLibrary={inMyLibrary ?? false}
@@ -107,6 +129,13 @@ function BookTile({
       <p className="truncate text-xs text-muted">
         <BookSubtitle book={book} />
       </p>
+      {/* Its own line rather than appended to the (truncating) subtitle
+          above — tacked onto a long author name there, the number itself
+          was the part getting clipped off, which defeats the point of
+          showing it at all. */}
+      {!isComicFormat(book) && book.seriesNumber !== undefined && (
+        <p className="truncate text-xs text-subtle">Book {book.seriesNumber}</p>
+      )}
       {/* A pure ebook/comic has no chapters, so totalDuration is 0 —
           showing "0m" next to it reads as broken, not as "this book has no
           runtime." Audio books and companion pairs (which use the audio
@@ -133,20 +162,24 @@ function BookRow({
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-1.5 truncate text-sm text-primary">
           <FormatBadge book={book} className="text-xs" />
+          <SourceBadge book={book} className="text-xs" />
           {book.title}
         </p>
-        <p className="truncate text-xs text-muted">
+        <p className="flex min-w-0 gap-1 text-xs text-muted">
           {isComicFormat(book) ? (
-            <BookSubtitle book={book} />
+            <span className="truncate">
+              <BookSubtitle book={book} />
+            </span>
           ) : (
             <>
-              {book.author}
-              {book.seriesName && (
-                <span className="text-subtle">
-                  {' '}
-                  · {book.seriesName}
-                  {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
-                </span>
+              <span className="min-w-0 truncate">
+                {book.author}
+                {book.seriesName && <span className="text-subtle"> · {book.seriesName}</span>}
+              </span>
+              {/* shrink-0 so a long author/series name truncates on its own
+                  above and never eats into the number itself. */}
+              {book.seriesNumber !== undefined && (
+                <span className="shrink-0 text-subtle">#{book.seriesNumber}</span>
               )}
             </>
           )}

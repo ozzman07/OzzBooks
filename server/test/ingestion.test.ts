@@ -782,6 +782,304 @@ describe('ingestion', () => {
     expect(afterRescan.series_number_source).toBe('manual')
   }, 30_000)
 
+  it('preserves a manually-pinned title/author/series name across a rescan, while an un-pinned field still refreshes', async () => {
+    // The real motivating case: a source file's own embedded metadata is
+    // wrong (e.g. a leading series-index number baked into the title) and,
+    // for a read-only source like Google Drive, can never be fixed at the
+    // source itself — this is the only place such a correction can live
+    // and have it survive every future rescan instead of being silently
+    // overwritten back to whatever the file says (writeBookAndChapters'
+    // upsert previously refreshed title/author/series_name unconditionally
+    // on every scan, unlike series_number above).
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-manual-title-'))
+    const bookDir = path.join(tempRoot, 'Real Author')
+    await mkdir(bookDir, { recursive: true })
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1.2',
+      '-metadata',
+      'title=02 Bad Embedded Title',
+      '-c:a',
+      'aac',
+      path.join(bookDir, 'Book.m4b'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Manual Title Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const book = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").get(sourceId) as any
+    expect(book.title).toBe('02 Bad Embedded Title')
+    expect(book.author).toBe('Real Author') // folder-derived, correct already
+    expect(book.title_source).toBeNull()
+
+    // Simulate a manual correction via the PATCH route's effect directly:
+    // fix the title, and separately pin an author override even though the
+    // folder-derived one was already fine — proving the pin, not the
+    // value, is what's being tested.
+    db.prepare(
+      "UPDATE books SET title = 'Bad Embedded Title', title_source = 'manual', author = 'Overridden Author', author_source = 'manual' WHERE id = ?",
+    ).run(book.id)
+
+    await scanSource(source)
+    const afterRescan = db.prepare('SELECT * FROM books WHERE id = ?').get(book.id) as any
+    expect(afterRescan.title).toBe('Bad Embedded Title')
+    expect(afterRescan.title_source).toBe('manual')
+    expect(afterRescan.author).toBe('Overridden Author')
+    expect(afterRescan.author_source).toBe('manual')
+  }, 30_000)
+
+  it('preserves an existing cover across a rescan when the file has no embedded art of its own to re-extract', async () => {
+    // Real bug found in production: writeBookAndChapters used to overwrite
+    // artwork_thumb_path/artwork_full_path unconditionally on every scan,
+    // just like title/author/series_name did before those got manual-pin
+    // protection. A book whose file has no embedded cover art extracts
+    // null on every scan — so a cover Open Library's enrichment pass had
+    // backfilled was silently erased by the very next nightly rescan, for
+    // good, since an already-enriched book is never retried. Fixed with
+    // COALESCE(new, existing) instead of a plain overwrite.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-cover-preserve-'))
+    const bookDir = path.join(tempRoot, 'No Art Author')
+    await mkdir(bookDir, { recursive: true })
+    // No -metadata title/artwork at all, and no cover.jpg alongside it —
+    // extractArtwork() has nothing to find here on any scan.
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1.2',
+      '-c:a',
+      'aac',
+      path.join(bookDir, 'Book.m4b'),
+    ])
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Cover Preserve Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    await scanSource(source)
+    const book = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").get(sourceId) as any
+    expect(book.artwork_thumb_path).toBeNull() // confirmed nothing to extract
+
+    // Simulate enrichBooks() backfilling a cover, exactly as it does via
+    // saveArtworkBuffer — a plain DB write is enough to test scan.ts's own
+    // upsert behavior in isolation.
+    db.prepare('UPDATE books SET artwork_thumb_path = ?, artwork_full_path = ? WHERE id = ?').run(
+      '/fake/artwork/thumb.png',
+      '/fake/artwork/full.png',
+      book.id,
+    )
+
+    await scanSource(source)
+    const afterRescan = db.prepare('SELECT * FROM books WHERE id = ?').get(book.id) as any
+    expect(afterRescan.artwork_thumb_path).toBe('/fake/artwork/thumb.png')
+    expect(afterRescan.artwork_full_path).toBe('/fake/artwork/full.png')
+  }, 30_000)
+
+  it('treats a byte-identical file sitting under both an author folder and a general collection folder as one book, not two', async () => {
+    // Real case found in this library: 80 pairs of byte-identical files
+    // sit at two different paths within the same local source — most
+    // commonly a book kept under its own author folder ("Gardner, John/")
+    // and again under a general franchise/collection folder ("James
+    // Bond/") alongside it. Previously each got its own separate book row
+    // (same-source duplicates were only ever caught for a *moved* file,
+    // never two files coexisting in the same scan). Now the second copy
+    // is skipped, and — since the survivor sits directly in a real
+    // per-author folder with no series layer of its own — the collection
+    // folder's name backfills series_name, exactly the info a plain
+    // author folder alone could never supply.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, copyFile } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-same-source-dup-'))
+    const authorDir = path.join(tempRoot, 'Gardner, John')
+    const collectionDir = path.join(tempRoot, 'James Bond')
+    await mkdir(authorDir, { recursive: true })
+    await mkdir(collectionDir, { recursive: true })
+
+    const authorPath = path.join(authorDir, 'Icebreaker.m4b')
+    const collectionPath = path.join(collectionDir, 'James Bond 018 - Icebreaker.m4b')
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1.2',
+      '-metadata',
+      'title=Icebreaker',
+      '-c:a',
+      'aac',
+      authorPath,
+    ])
+    await copyFile(authorPath, collectionPath) // byte-identical — guarantees the same content hash
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Same-Source Duplicate Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.skippedDuplicates).toBe(1)
+
+    const books = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].author).toBe('Gardner, John') // the real author-folder copy survived
+    expect(books[0].series_name).toBe('James Bond') // backfilled from the collection folder
+    expect(books[0].series_name_source).toBe('manual') // must survive a future rescan
+  }, 30_000)
+
+  it('still keeps the author-folder copy even when the scan reaches the collection-folder copy first', async () => {
+    // Directory traversal order isn't guaranteed, and the test above uses
+    // folder names ("Gardner, John" / "James Bond") that already happen to
+    // sort author-folder-first alphabetically — which alone wouldn't prove
+    // the swap logic actually engages, only that the "already correct
+    // order" path works. Named here so the collection folder ("Bond
+    // Collection") sorts well before the author folder ("Ward, JR")
+    // regardless of scan order, to force resolveSameSourceDuplicate's
+    // swap branch specifically: the author-folder copy must still win
+    // even if it's discovered second.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, copyFile } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-same-source-dup-order-'))
+    const collectionDir = path.join(tempRoot, 'Bond Collection')
+    const authorDir = path.join(tempRoot, 'Ward, JR')
+    await mkdir(collectionDir, { recursive: true })
+    await mkdir(authorDir, { recursive: true })
+
+    const collectionPath = path.join(collectionDir, 'Bond Collection 01 - Some Bond Book.m4b')
+    const authorPath = path.join(authorDir, 'Some Bond Book.m4b')
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=330:duration=1.2',
+      '-metadata',
+      'title=Some Bond Book',
+      '-c:a',
+      'aac',
+      collectionPath,
+    ])
+    await copyFile(collectionPath, authorPath) // byte-identical — guarantees the same content hash
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Same-Source Duplicate Order Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.skippedDuplicates).toBe(1)
+
+    const books = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].file_path).toBe(authorPath) // re-pointed at the author-folder copy...
+    expect(books[0].author).toBe('Ward, JR') // ...with the correctly re-derived author
+    expect(books[0].series_name).toBe('Bond Collection')
+    expect(books[0].series_name_source).toBe('manual')
+
+    // The book's chapter(s) must be re-pointed too, not left referencing
+    // the now-non-canonical collection-folder path.
+    const chapters = db.prepare('SELECT * FROM chapters WHERE book_id = ?').all(books[0].id) as any[]
+    expect(chapters.every((c) => c.file_path === authorPath)).toBe(true)
+  }, 30_000)
+
+  it('never backfills series_name from a grab-bag topic folder ("_Romance Books"), even though it is not comma-shaped either', async () => {
+    // Real bug caught before this shipped: a leading underscore is this
+    // library's own convention for "misc/grab-bag collection, not a real
+    // series" (deriveAuthorFromSegments already treats it the same way
+    // for author derivation) — several J.R. Ward books duplicated between
+    // their real "Ward, JR" author folder and a generic "_Romance Books"
+    // folder would otherwise have backfilled series_name to the literal
+    // string "_Romance Books".
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { mkdir, copyFile } = await import('node:fs/promises')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-same-source-dup-grabbag-'))
+    const authorDir = path.join(tempRoot, 'Ward, JR')
+    const grabBagDir = path.join(tempRoot, '_Romance Books')
+    await mkdir(authorDir, { recursive: true })
+    await mkdir(grabBagDir, { recursive: true })
+
+    const authorPath = path.join(authorDir, 'The Wolf.epub')
+    const grabBagPath = path.join(grabBagDir, 'The Wolf by J. R. Ward.epub')
+    const { makeTestEpub } = await import('./fixtures.js')
+    await makeTestEpub(authorPath, { title: 'The Wolf', author: 'J.R. Ward' })
+    await copyFile(authorPath, grabBagPath) // byte-identical — guarantees the same content hash
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope) VALUES (?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Same-Source Duplicate Grab-Bag Test Library',
+      tempRoot,
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.skippedDuplicates).toBe(1)
+
+    const books = db.prepare("SELECT * FROM books WHERE source_id = ? AND status = 'active'").all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].author).toBe('Ward, JR')
+    expect(books[0].series_name).toBeNull() // NOT "_Romance Books"
+    expect(books[0].series_name_source).toBeNull()
+  }, 30_000)
+
   it('auto-replaces a missing book with a re-encoded file that has a different content hash', async () => {
     const { getDb } = await import('../src/db/index.js')
     const { scanSource } = await import('../src/ingestion/scan.js')
@@ -1591,5 +1889,55 @@ describe('ingestion', () => {
     const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
     expect(books).toHaveLength(1)
     expect(books[0].file_path).toBe(realEpubPath)
+  }, 30_000)
+
+  it('never discovers a book of the wrong kind when the source declares content_kind (real case: a bonus ebook bundled into a Graphic Audio folder)', async () => {
+    // Real case: "Brandon Sanderson - The Final Empire (Mistborn 1)/The
+    // Final Empire - Brandon Sanderson.epub" sitting inside an audiobook
+    // source's Graphic Audio production folder got cataloged as its own
+    // separate library entry — a second, unrelated ebook with no
+    // connection to the user's real, properly-organized copy, each
+    // silently accumulating its own separate reading progress. Declaring
+    // this source content_kind='audio' means the epub is never even
+    // discovered as a candidate, regardless of where it's sitting.
+    const { mkdir } = await import('node:fs/promises')
+    const { getDb } = await import('../src/db/index.js')
+    const { scanSource } = await import('../src/ingestion/scan.js')
+    const { makeTone, makeTestEpub } = await import('./fixtures.js')
+
+    const tempRoot = await mkdtemp(path.join(tmpdir(), 'ozzbooks-content-kind-'))
+    const bookDir = path.join(tempRoot, 'Sanderson, Brandon', 'Graphic Audio Bonus')
+    await mkdir(bookDir, { recursive: true })
+    await makeTone(path.join(bookDir, 'The Final Empire.m4b'), 2, [
+      '-metadata',
+      'title=The Final Empire',
+      '-metadata',
+      'artist=Brandon Sanderson',
+      '-c:a',
+      'aac',
+    ])
+    await makeTestEpub(path.join(bookDir, 'The Final Empire - Brandon Sanderson.epub'), {
+      title: 'The Final Empire',
+      author: 'Brandon Sanderson',
+    })
+
+    const db = getDb()
+    const sourceId = randomUUID()
+    db.prepare('INSERT INTO sources (id, type, label, path_scope, content_kind) VALUES (?, ?, ?, ?, ?)').run(
+      sourceId,
+      'local',
+      'Audio-only Test Source',
+      tempRoot,
+      'audio',
+    )
+    const source = db.prepare('SELECT * FROM sources WHERE id = ?').get(sourceId) as any
+
+    const result = await scanSource(source)
+    expect(result.found).toBe(1) // the bundled epub was never a candidate at all
+    expect(result.created).toBe(1)
+
+    const books = db.prepare('SELECT * FROM books WHERE source_id = ?').all(sourceId) as any[]
+    expect(books).toHaveLength(1)
+    expect(books[0].format).toBe('m4b')
   }, 30_000)
 })

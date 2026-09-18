@@ -75,6 +75,13 @@ export interface ApiBook {
    * routes) so it can drive the Library/Store Source filter facet without
    * a full per-book detail fetch. */
   source_label: string
+  /** The owning source's type — used to badge a Google Drive book on its
+   * tile (see BookGrid's SourceBadge) so it's visually distinct from a
+   * home-library (local/synology) copy of the same title, now that
+   * companion auto-linking deliberately never crosses that boundary (see
+   * companionLink.ts's HOME_LIBRARY_SOURCE_TYPES). Present on both list
+   * and detail responses, same reasoning as source_label above. */
+  source_type: 'local' | 'synology' | 'dropbox' | 'google_drive'
   file_path: string
   format: 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
   companion_book_id: string | null
@@ -120,7 +127,6 @@ export interface ApiBookListItem extends ApiBook {
 
 export interface ApiBookDetail extends ApiBook {
   chapters: ApiChapter[]
-  source_type: string
 }
 
 export interface ApiSource {

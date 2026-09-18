@@ -34,6 +34,7 @@ function adaptBookFields(book: ApiBook): Omit<Book, 'chapters' | 'totalDuration'
     publisher: book.publisher ?? undefined,
     arcName: book.arc_name ?? undefined,
     sourceLabel: book.source_label,
+    sourceType: book.source_type,
     status: book.status,
     isOrphanedConversion: book.is_orphaned_conversion,
     format: book.format,
@@ -60,6 +61,5 @@ export function adaptBookDetail(book: ApiBookDetail): Book {
     ...adaptBookFields(book),
     chapters,
     totalDuration: chapters.reduce((sum, c) => sum + c.duration, 0),
-    sourceType: book.source_type,
   }
 }

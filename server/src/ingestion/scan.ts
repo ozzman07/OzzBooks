@@ -6,7 +6,7 @@ import { parseFile } from 'music-metadata'
 import { getDb } from '../db/index.js'
 import { logActivity } from '../db/activityLog.js'
 import type { BookFormat, BookRow, SourceRow } from '../types.js'
-import { ingestMp3Folder, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
+import { ingestMp3Folder, isDurationLikeTag, isPlaceholderTag, type IngestedBook, type IngestedChapter } from './mp3Folder.js'
 import { ingestM4b, isDrmFile } from './m4b.js'
 import { groupM4bParts, groupSiblingFolders } from './partGrouping.js'
 import { contentHash } from './contentHash.js'
@@ -90,6 +90,17 @@ export const BACKUP_FOLDER_RE = /^((zzz)?\s*sources?(\s+files?)?|to\s+delete)$/i
 // Synology NAS (@eaDir) and stray macOS Trash/Spotlight folders that can
 // end up inside a mounted share.
 const SYSTEM_METADATA_FOLDER_RE = /^(\.AppleDouble|@eaDir|\.Trashes|\.TemporaryItems|\.fseventsd|\.Spotlight-V100|#recycle)$/i
+
+// See sources.content_kind's own schema.sql comment — null (absent from
+// this map entirely) means no restriction, every format is discovered as
+// before. A mobi candidate is already tagged format 'epub' by the time it
+// reaches this filter (see applyIngestedCandidate), so 'ebook' correctly
+// covers it too without a separate case.
+const CONTENT_KIND_FORMATS: Partial<Record<string, BookFormat[]>> = {
+  audio: ['m4b', 'mp3_folder'],
+  ebook: ['epub'],
+  comic: ['cbz'],
+}
 
 // .m4a and .m4b are the same MPEG-4/AAC container — Apple just uses .m4b as
 // a convention for "this M4A has audiobook chapter markers," not a
@@ -428,7 +439,13 @@ function isSameBookAsAnyEpub(mobiName: string, epubFiles: Dirent[]): boolean {
 async function readAlbumTag(filePath: string): Promise<string> {
   try {
     const metadata = await parseFile(filePath, { duration: false })
-    return metadata.common.album?.trim() ?? ''
+    const album = metadata.common.album?.trim() ?? ''
+    // A duration-shaped or ripper-placeholder Album tag (see
+    // isDurationLikeTag/isPlaceholderTag) is per-file junk, not a real
+    // shared book/album identifier — treating it as blank here means a
+    // file carrying one lands in the same ('') group as any other
+    // untagged sibling instead of splitting off into its own fake book.
+    return isDurationLikeTag(album) || isPlaceholderTag(album) ? '' : album
   } catch {
     return ''
   }
@@ -693,6 +710,110 @@ function deriveAuthorFromFolder(pathScope: string, filePath: string): string | n
   return deriveAuthorFromSegments(relative.split(path.sep))
 }
 
+// A real per-author folder in this library always follows "Lastname,
+// Firstname" (confirmed across every author folder encountered this
+// session — Benson, Raymond / Gardner, John / Ward, JR / Norton, Andre /
+// etc.). A general series/franchise collection folder sitting alongside
+// them at the same level (e.g. "James Bond", "James Bond Books") never
+// has a comma. Used to decide, when the same file sits under both kinds
+// of folder, which one is the "real" identity (the author folder always
+// wins, regardless of which one the scan happens to reach first) and
+// which one just supplies a series_name backfill (the collection folder).
+function looksLikeAuthorFolderName(name: string): boolean {
+  return /^[^,]+,\s*.+/.test(name.trim())
+}
+
+// A grab-bag/topic folder ("_Romance Books", "_Horror", "_History Books")
+// is exactly as unfit to become a series_name as it already is to become
+// an author (see deriveAuthorFromSegments' own underscore check above) —
+// real case caught before this shipped: without this, a duplicate inside
+// "_Romance Books" would have backfilled series_name to the literal
+// string "_Romance Books" on several J.R. Ward books.
+function looksLikePlausibleSeriesFolderName(name: string): boolean {
+  return name.trim() !== '' && !looksLikeAuthorFolderName(name) && !name.startsWith('_')
+}
+
+function topLevelFolderName(pathScope: string, filePath: string): string {
+  const relative = path.relative(pathScope, filePath)
+  const first = relative.split(path.sep)[0] ?? ''
+  // Real bug found in production: a mobi's converted-epub output can live
+  // entirely outside the source's own folder tree (OzzBooksData/converted-
+  // ebooks, nowhere near the real ebooks source), which makes path.relative
+  // return a path starting with ".." — not a real folder name at all. That
+  // leaked through as a literal ".." series_name on 3 books before this
+  // guard existed.
+  return first === '..' ? '' : first
+}
+
+/**
+ * Real case found in this library: 80 pairs of byte-identical files sit at
+ * two different paths within the same local source — most commonly a book
+ * kept both under its own author folder and again under a general
+ * franchise/collection folder (e.g. "James Bond", "James Bond Books").
+ * Called when a fresh candidate's content hash matches a book already
+ * created earlier in this same scan (a genuine intra-library duplicate,
+ * not a moved file — see scanSource's relinkMatch/mobi-match checks just
+ * above every call site). Never creates a second row for it.
+ *
+ * The author-folder copy must always be the one that survives, regardless
+ * of which one the scan happens to reach first — so when the *new*
+ * candidate is the real author-folder copy and the *earlier-claimed* row
+ * is the collection-folder one, this re-points the existing row at the
+ * new path (and its correctly-derived author) rather than leaving it
+ * stuck on the collection folder's path. Either way, the collection
+ * folder's own name backfills series_name when the survivor doesn't
+ * already have one — exactly what a plain author folder alone could
+ * never supply. Marked 'manual' so it survives every future rescan (the
+ * survivor's own path has no series layer of its own to re-derive it
+ * from).
+ */
+function resolveSameSourceDuplicate(source: SourceRow, survivor: BookRow, duplicateFilePath: string): void {
+  const survivorTopFolder = topLevelFolderName(source.path_scope, survivor.file_path)
+  const duplicateTopFolder = topLevelFolderName(source.path_scope, duplicateFilePath)
+  const survivorIsAuthorFolder = looksLikeAuthorFolderName(survivorTopFolder)
+  const duplicateIsAuthorFolder = looksLikeAuthorFolderName(duplicateTopFolder)
+  const db = getDb()
+
+  if (!survivorIsAuthorFolder && duplicateIsAuthorFolder) {
+    // The new candidate is the real author-folder copy — re-point the
+    // survivor's identity at it instead of leaving the collection-folder
+    // path canonical just because it was scanned first.
+    const newAuthor = deriveAuthorFromFolder(source.path_scope, duplicateFilePath)
+    const seriesBackfill = looksLikePlausibleSeriesFolderName(survivorTopFolder) ? survivorTopFolder : null
+    db.prepare(
+      `UPDATE books SET file_path = ?, author = COALESCE(?, author),
+         series_name = COALESCE(series_name, ?), series_name_source = CASE WHEN series_name IS NULL AND ? IS NOT NULL THEN 'manual' ELSE series_name_source END
+       WHERE id = ?`,
+    ).run(duplicateFilePath, newAuthor, seriesBackfill, seriesBackfill, survivor.id)
+    // A single-file format's chapters all reference the book's own file
+    // path directly (m4b's chapter markers) — repoint those too, so
+    // playback stays consistent with the new canonical path instead of
+    // silently still reading the now-non-canonical file (still correct
+    // today since both are byte-identical, but not once one is ever
+    // deleted). mp3_folder's chapters each reference their own distinct
+    // per-track file, never the book's own synthetic folder path, so this
+    // exact-match replace is naturally a no-op for that format.
+    db.prepare('UPDATE chapters SET file_path = ? WHERE book_id = ? AND file_path = ?').run(
+      duplicateFilePath,
+      survivor.id,
+      survivor.file_path,
+    )
+    return
+  }
+
+  if (
+    survivorIsAuthorFolder &&
+    !duplicateIsAuthorFolder &&
+    !survivor.series_name &&
+    looksLikePlausibleSeriesFolderName(duplicateTopFolder)
+  ) {
+    db.prepare("UPDATE books SET series_name = ?, series_name_source = 'manual' WHERE id = ?").run(
+      duplicateTopFolder,
+      survivor.id,
+    )
+  }
+}
+
 /**
  * Same idea as deriveAuthorFromFolder, one level down: when a book's own
  * folder sits inside an extra layer between it and the author folder (e.g.
@@ -722,21 +843,158 @@ function deriveAuthorFromFolder(pathScope: string, filePath: string): string | n
  * one broad "series" rather than each actual sub-series — a future
  * LLM-assisted pass would be needed to disambiguate this.
  */
+// A content-type/category label, not a title — real cases found sitting
+// in books.series_name in production: "Turtledove, Harry/Series/Crosstime
+// Traffic/Crosstime Traffic 05 - The Gladiator.epub" put the literal word
+// "Series" into series_name instead of "Crosstime Traffic" one level
+// deeper (the folder directly above the book's own folder is normally
+// always right, but this library sometimes inserts an extra generic
+// category layer above that); "Patterson, James/Novels/Beach Road
+// (2006).m4b" and "Clark, Arthur C/Short Stories/..." put "Novels" and
+// "Short Stories" into series_name for a bucket of otherwise-unrelated
+// standalone works that merely share a category folder, not a series.
+// "Collections" is the same shape — "Roth, Philip/Collections/Shop
+// Talk.epub" and "Turtledove, Harry/Collections/..." each put the literal
+// word "Collections" into series_name for two completely unrelated
+// authors' unrelated short-story/essay collections. Filtered out of the
+// segment list entirely before the position-based logic below runs,
+// rather than just rejected outright, so a real series folder sitting
+// *behind* one of these still gets found (this is what correctly resolves
+// "Series/Crosstime Traffic" down to "Crosstime Traffic" — removing
+// "Series" leaves "Crosstime Traffic" as if it were the folder directly
+// above the book's own folder, which real-data-wise it always turns out
+// to be whenever this pattern occurs).
+const GENERIC_SERIES_LABEL_RE = /^(?:series|novels?|e?books?|short\s*stor(?:y|ies)|shortfiction|standalone|collections?)$/i
+
+// Real case found in production: "Star Wars/2 Rise of the Empire Era
+// 33-1 BBY/.../book.m4b" correctly identifies the era folder as the
+// series level, but the leading "2 " chronology index (era 2 of the
+// saga's own timeline, not this book's position within the era) was left
+// stuck on the front of the displayed series name. Bounded to 1-2 digits
+// specifically so a real series/title that happens to start with a
+// 4-digit year (rare, but seen elsewhere in this library) is never
+// mistaken for an index prefix and stripped.
+// The digit group must be followed by a real separator — either a
+// dash/dot/colon (with optional surrounding whitespace, so "33 - Title"
+// strips as one unit rather than leaving a dangling "- Title" behind,
+// caught by this file's own regression test) or plain whitespace on its
+// own ("2 Rise of the Empire..."). Never just optional — otherwise this
+// matches the first 1-2 digits of *any* longer number, silently
+// truncating a real series/title starting with a 4-digit year ("1984
+// Trilogy" -> "84 Trilogy", also caught by a regression test here)
+// instead of correctly leaving it untouched.
+const LEADING_SERIES_INDEX_RE = /^\d{1,2}(?:\s*[-.:]\s*|\s+)/
+
+// Real case: "_History/Cornwell, Bernard - The Saxon Stories/..." puts an
+// author-name prefix in front of a real series name instead of a clean
+// series folder — left in place, this fragmented "The Saxon Stories" into
+// two separate series entries, one clean and one with this prefix still
+// attached. Deliberately narrow (requires the "Lastname, First - " shape
+// exactly, no extra commas/dashes before the real name, AND no digits in
+// either name part) so it only ever strips a genuine author-name prefix,
+// never eats into an actual series title that happens to contain a dash.
+// Regression caught before this shipped: without the no-digits
+// requirement, this matched "1 Old Republic Era 4,000 BBY - 3,996 BBY"
+// (treating "...Era 4" / "000 BBY" as a fake "Lastname, First") and
+// stripped it down to the bare year fragment "3,996 BBY".
+const AUTHOR_PREFIXED_SERIES_RE = /^[^,\d]+,\s*[^,\-\d]+\s-\s+(.+)$/
+function stripAuthorNamePrefix(name: string): string | null {
+  const match = name.match(AUTHOR_PREFIXED_SERIES_RE)
+  return match ? match[1].trim() : null
+}
+
+// Real case: "_History/Chernow, Ron/Grant.m4b", ".../Titan...m4b" etc. —
+// several standalone nonfiction books sharing a bare "Lastname, First"
+// author folder (siblingBookCount >= 2) read as one "series" named after
+// the author instead of not being a series at all. Same "Lastname, First"
+// shape looksLikeAuthorFolderName already treats as an author folder one
+// level up; reused here for the series-folder level. Requires no dash or
+// colon so a hybrid folder like "Cornwell, Bernard - The Saxon Stories"
+// (handled above by stripping the prefix instead) is never rejected
+// outright — a real series name often survives behind it.
+function isBareAuthorNameFolder(name: string): boolean {
+  return looksLikeAuthorFolderName(name) && !/[-:]/.test(name)
+}
+
+function cleanSeriesFolderName(name: string): string {
+  const authorPrefixStripped = stripAuthorNamePrefix(name) ?? name
+  // Real case: "Zahn, Timothy/06 - The  Hand of Thrawn Duology/..." has a
+  // genuine double space baked into the folder name itself (unrelated to
+  // the index-prefix stripping above) — collapsed here since a folder
+  // name typo shouldn't have to be fixed on disk to display correctly.
+  const stripped = authorPrefixStripped.replace(LEADING_SERIES_INDEX_RE, '').replace(/\s{2,}/g, ' ').trim()
+  return stripped || name
+}
+
 /** Segment-array core — see deriveAuthorFromSegments's docstring above,
  * same reasoning applies here. siblingBookCount defaults to 1 (no
  * promotion) for callers with no full-scan sibling context, e.g. a single-
  * candidate relink. */
+// Same underscore/grab-bag convention deriveAuthorFromSegments already
+// applies to the author level (e.g. "_History Books/_American
+// History/book.epub" — a topic folder, not a real series), plus the
+// generic-label and garbled-name exclusions above.
+function isValidSeriesFolderName(name: string | undefined): name is string {
+  return (
+    !!name &&
+    !name.startsWith('_') &&
+    !GARBLED_FOLDER_NAME_RE.test(name) &&
+    !GENERIC_SERIES_LABEL_RE.test(name.trim()) &&
+    !isBareAuthorNameFolder(name.trim())
+  )
+}
+
 export function deriveSeriesFromSegments(segments: string[], siblingBookCount = 1): string | null {
   if (segments.length < 2) return null // directly under the author folder — no folder layer at all
   if (segments.length === 2) {
     if (siblingBookCount < 2) return null // just this one book's own wrapper folder, not a series
-    const seriesFolder = segments[1]
-    if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
-    return seriesFolder
+    return isValidSeriesFolderName(segments[1]) ? cleanSeriesFolderName(segments[1]) : null
   }
-  const seriesFolder = segments[segments.length - 2]
-  if (!seriesFolder || GARBLED_FOLDER_NAME_RE.test(seriesFolder)) return null
-  return seriesFolder
+  // Real case: old CD rips leave a garbled 8.3-style per-disc remnant
+  // folder sitting directly beneath the book's own folder (e.g. "Rice,
+  // Anne/1990 - The Witching Hour (MW1 - read by Laura Giannarelli)/
+  // 1O912L~0/track.mp3"). When that's the shape, the folder one level up
+  // is never a series — it's this book's own folder (encoding the year,
+  // title, and narrator), and the garbled folder beneath it is just a
+  // disc artifact, never itself part of a series path. Bail to null
+  // before the primary check below, which would otherwise wrongly trust
+  // that folder as a series name (real case: "The Witching Hour" and
+  // "Belinda" both showed up as a series named after their own year-
+  // prefixed book folder instead of having no series at all).
+  if (GARBLED_FOLDER_NAME_RE.test(segments[segments.length - 1])) return null
+  // The folder directly above the book's own folder is normally always
+  // the series, trusted unconditionally regardless of sibling count (see
+  // this function's own docstring) — but if this library inserted an
+  // extra generic category layer there instead of a real series name
+  // (see GENERIC_SERIES_LABEL_RE's comment), the real series is one level
+  // deeper, exactly where the book's own folder would otherwise sit.
+  // Never searches further than that one extra level, so a genuinely
+  // per-book folder name is never mistaken for a series.
+  const primary = segments[segments.length - 2]
+  if (isValidSeriesFolderName(primary)) return cleanSeriesFolderName(primary)
+  // Only look one level deeper when primary was rejected specifically for
+  // being a generic category LABEL standing in for a real series name
+  // (see GENERIC_SERIES_LABEL_RE) — that's the one shape where the real
+  // series reliably sits one level down (Turtledove's "Series/Crosstime
+  // Traffic"). Any other rejection reason (underscore grab-bag, bare
+  // author-name folder, garbled name) means this path was never
+  // series-shaped to begin with, and drilling deeper just risks landing on
+  // the book's own wrapper folder instead. Regressions caught before this
+  // shipped: "_History Books/_World History/A History of the World in 12
+  // Maps/book.epub" (rejected as an underscore bucket) and "_History/
+  // Goodheart, Adam/1861_ The Civil War Awakening - Adam Goodheart/
+  // book.epub" (rejected as a bare author-name folder) each wrongly
+  // produced a "series of one" landing on the book's own folder name once
+  // the fallback was reachable from those rejection reasons too.
+  const rejectedPrimary: string = primary
+  if (!GENERIC_SERIES_LABEL_RE.test(rejectedPrimary.trim())) return null
+  // Needs sibling confirmation before it's trusted — same requirement the
+  // plain 2-segment case already applies, so a folder that merely happens
+  // to hold 2+ format-variant copies of the very same single book isn't
+  // mistaken for 2+ distinct books sharing a real series folder.
+  if (siblingBookCount < 2) return null
+  const oneLevelDeeper = segments[segments.length - 1]
+  return isValidSeriesFolderName(oneLevelDeeper) ? cleanSeriesFolderName(oneLevelDeeper) : null
 }
 
 function deriveSeriesFromFolder(pathScope: string, bookOwnFolder: string, siblingBookCount = 1): string | null {
@@ -904,15 +1162,32 @@ export function writeBookAndChapters(
     ON CONFLICT(id) DO UPDATE SET
       file_path = excluded.file_path,
       format = excluded.format,
-      title = excluded.title,
-      author = excluded.author,
-      series_name = excluded.series_name,
+      -- A rescan normally refreshes title/author/series_name straight from
+      -- the file/folder every time — but once Book Detail has pinned one
+      -- of them ('manual', set by the PATCH route), that correction must
+      -- survive future rescans instead of being silently overwritten,
+      -- exactly like series_number_source already protects series_number.
+      -- This matters most for a read-only source (Google Drive): the
+      -- source file's own bad embedded metadata can never be fixed at the
+      -- source, so this is the only place such a fix can live.
+      title = CASE WHEN title_source = 'manual' THEN title ELSE excluded.title END,
+      author = CASE WHEN author_source = 'manual' THEN author ELSE excluded.author END,
+      series_name = CASE WHEN series_name_source = 'manual' THEN series_name ELSE excluded.series_name END,
       series_number = excluded.series_number,
       series_number_source = excluded.series_number_source,
       status = 'active',
       missing_since = NULL,
-      artwork_thumb_path = excluded.artwork_thumb_path,
-      artwork_full_path = excluded.artwork_full_path,
+      -- COALESCE, not a plain overwrite: a real, freshly-extracted cover
+      -- (embedded art, or a local cover.jpg) should still win when one is
+      -- found, but a scan finding *no* art must never blank out a cover
+      -- that's already there — including one Open Library's enrichment
+      -- pass backfilled, since a book's own file has no embedded art to
+      -- extract on every future rescan too. Real bug found in production:
+      -- a nightly rescan silently erased every enrichment-added cover the
+      -- very next night, for good, since an already-enriched book is never
+      -- retried.
+      artwork_thumb_path = COALESCE(excluded.artwork_thumb_path, artwork_thumb_path),
+      artwork_full_path = COALESCE(excluded.artwork_full_path, artwork_full_path),
       content_hash = excluded.content_hash,
       page_count = excluded.page_count,
       writer = excluded.writer,
@@ -1210,7 +1485,17 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
     return result
   }
 
-  const { candidates, issues: comicIssues } = await findCandidates(source.path_scope)
+  const { candidates: allCandidates, issues: comicIssues } = await findCandidates(source.path_scope)
+  // Restricts discovery to the source's own declared content kind, when
+  // set — real case: a bonus ebook bundled inside an audiobook source's
+  // Graphic Audio production folder got cataloged as if it were its own
+  // separate library entry, creating a second, unrelated progress record
+  // for what the user experienced as "the same book." A pre-existing book
+  // of the now-excluded kind isn't touched here — it simply stops being
+  // "found" by this scan and is marked missing through the normal
+  // not-found-this-run path below, same as a file moved away for real.
+  const allowedFormats = CONTENT_KIND_FORMATS[source.content_kind ?? '']
+  const candidates = allowedFormats ? allCandidates.filter((c) => allowedFormats.includes(c.format)) : allCandidates
   const seriesSiblingCounts = buildSeriesSiblingCounts(source, candidates)
 
   const result: ScanResult = {
@@ -1261,6 +1546,7 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
       const isMobi = isMobiFile(candidate.filePath)
 
       let existing: BookRow | undefined
+      let skipAsSameSourceDuplicate = false
       if (isMobi) {
         const match = db
           .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND content_hash = ?')
@@ -1269,11 +1555,23 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         // scan" guard the relink match below uses — protects against two
         // genuinely-duplicate mobi files (identical content, different
         // paths) both matching the same existing book.
-        if (match && !seenFilePaths.has(match.file_path)) existing = match
+        if (match) {
+          if (!seenFilePaths.has(match.file_path)) {
+            existing = match
+          } else {
+            resolveSameSourceDuplicate(source, match, candidate.filePath)
+            skipAsSameSourceDuplicate = true
+          }
+        }
       } else {
         existing = db
           .prepare<[string, string], BookRow>('SELECT * FROM books WHERE source_id = ? AND file_path = ?')
           .get(source.id, candidate.filePath)
+      }
+
+      if (skipAsSameSourceDuplicate) {
+        result.skippedDuplicates++
+        continue
       }
 
       if (!existing) {
@@ -1291,19 +1589,29 @@ export async function scanSource(source: SourceRow): Promise<ScanResult> {
         // 'missing' from an earlier scan) — without this, a same-source
         // move orphans the old row as missing and creates a duplicate at
         // the new path, silently resetting progress/bookmarks/downloads.
-        // Excludes rows already claimed by another file processed earlier
-        // in this same scan, guarding against genuine intra-library
-        // duplicates confusing the match. Doesn't apply to mobi — the
-        // content-hash lookup above already covers it (mobi has no
-        // separate "own path" tracked to detect a move against).
+        // A match already claimed by another file processed earlier in
+        // this same scan is a genuine intra-library duplicate instead of
+        // a move (real case: 80 pairs in this library, e.g. a book kept
+        // under both its own author folder and a general franchise
+        // collection folder like "James Bond") — never create a second
+        // row for it; see resolveSameSourceDuplicate for the only other
+        // effect. Doesn't apply to mobi — the content-hash lookup above
+        // already covers it (mobi has no separate "own path" tracked to
+        // detect a move against).
         if (!isMobi) {
           const relinkMatch = db
             .prepare<[string, string, string], BookRow>(
               'SELECT * FROM books WHERE source_id = ? AND content_hash = ? AND file_path != ?',
             )
             .get(source.id, hash, candidate.filePath)
-          if (relinkMatch && !seenFilePaths.has(relinkMatch.file_path)) {
-            existing = relinkMatch
+          if (relinkMatch) {
+            if (!seenFilePaths.has(relinkMatch.file_path)) {
+              existing = relinkMatch
+            } else {
+              resolveSameSourceDuplicate(source, relinkMatch, candidate.filePath)
+              result.skippedDuplicates++
+              continue
+            }
           }
         }
       }
