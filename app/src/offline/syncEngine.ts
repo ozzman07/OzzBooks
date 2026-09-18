@@ -1,5 +1,5 @@
 import * as cloud from '../api/cloudClient'
-import { getUnsyncedProgress, markSyncedIfUnchanged, putLocalProgress } from './progressStore'
+import { getLocalProgress, getUnsyncedProgress, markSyncedIfUnchanged, putLocalProgress } from './progressStore'
 import type { LocalProgressEntry } from './db'
 
 const MIN_BACKOFF_MS = 2_000
@@ -33,6 +33,19 @@ function installReconnectListener() {
 }
 
 async function syncOne(token: string, entry: LocalProgressEntry): Promise<boolean> {
+  // Real bug caught live: trySync's pending list is a snapshot taken at
+  // the start of the run — if the user removes this exact book from
+  // Continue Listening (deleteLocalProgress + a cloud DELETE) while this
+  // loop is still working through an earlier snapshot, the queued PUT
+  // below would fire *after* the delete and resurrect the very row the
+  // user just removed, on both the cloud and (via the next reconcile, on
+  // any device) locally again. Re-checking right before the network call
+  // closes that window down to the gap between this check and the fetch
+  // itself, instead of the whole request+backoff cycle. Deleted (or
+  // superseded by a newer write in the meantime) means skip, not sync.
+  const stillPending = await getLocalProgress(entry.bookId)
+  if (!stillPending || stillPending.updatedAt !== entry.updatedAt) return true
+
   const result = await cloud.putProgress(token, entry.bookId, {
     position: entry.position,
     chapterId: entry.chapterId,

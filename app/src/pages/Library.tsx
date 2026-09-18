@@ -189,16 +189,30 @@ export function Library() {
   // no visible feedback that the click did anything.
   const [isRefreshing, setIsRefreshing] = useState(false)
 
-  async function handleRemoveFromContinueListening(e: React.MouseEvent, bookId: string) {
+  // Real bug caught live: a companion pair can carry two independent
+  // progress rows — one keyed to the audio id, one to the epub id (see
+  // canonicalBookFor above) — both resolving to this same displayed tile.
+  // Deleting only `book.id`'s progress left the other format's row
+  // (e.g. the ebook side, if the audiobook was what got removed) sitting
+  // untouched in the cloud, so the very next reconcile pulled it back in
+  // and the tile reappeared even after being removed on every device.
+  // Clears both ids of a companion pair, not just the one the tile is
+  // keyed by.
+  async function handleRemoveFromContinueListening(e: React.MouseEvent, book: Book) {
     e.preventDefault() // don't follow the enclosing Link to the book
     e.stopPropagation()
-    setRemovedFromShelf((prev) => new Set(prev).add(bookId))
+    const ids = book.companionBookId ? [book.id, book.companionBookId] : [book.id]
+    setRemovedFromShelf((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) next.add(id)
+      return next
+    })
     try {
-      await removeFromContinueListening(auth.token, bookId)
+      await Promise.all(ids.map((id) => removeFromContinueListening(auth.token, id)))
     } catch {
       setRemovedFromShelf((prev) => {
         const next = new Set(prev)
-        next.delete(bookId)
+        for (const id of ids) next.delete(id)
         return next
       })
     }
@@ -238,6 +252,33 @@ export function Library() {
   // book/shelf cache doesn't need to reason about).
   const progressResult = useAsync(() => reconcileAllProgress(auth.token), [])
 
+  // Same "regained visibility or reconnected" refresh AppDataContext
+  // already does for the book catalog (this PWA has no pull-to-refresh) —
+  // without it, the In Progress shelf only ever re-checks the cloud on a
+  // full remount (navigating away and back, or a fresh launch). Leaving
+  // the app open/backgrounded on one device while progress changes on
+  // another — the ordinary "pick up my phone, then later open my
+  // tablet that's already sitting open" case — showed stale positions
+  // indefinitely otherwise, reading as "not syncing" even though the sync
+  // itself was working. No staleness threshold unlike the book catalog's
+  // 5-minute one: this payload is light and the whole point is showing an
+  // accurate cross-device position right away.
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') progressResult.retry()
+    }
+    function onOnline() {
+      progressResult.retry()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('online', onOnline)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('online', onOnline)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Missing books live exclusively on the Needs Attention page — filtered
   // out here (both /library and /store) so a book that needs relinking
   // never shows up as a dead tile/row in either grid.
@@ -271,11 +312,22 @@ export function Library() {
   // shelf without needing a full re-fetch.
   const continueListeningCandidates = useMemo(() => {
     if (progressResult.status !== 'success') return []
-    return progressResult.data
-      .slice()
-      .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
-      .map((p) => canonicalBookFor.get(p.bookId))
-      .filter((b): b is Book => b !== undefined)
+    const seen = new Set<string>()
+    const result: Book[] = []
+    // A companion pair can carry two independent progress rows (one per
+    // format, see canonicalBookFor above) that both resolve to the same
+    // Book — de-duped here by that Book's own id, keeping whichever comes
+    // first in this already-most-recent-first sort, so this tile's own
+    // "Remove from In Progress" ✕ only has one entry to worry about
+    // instead of a second copy silently surviving under the same React
+    // key.
+    for (const p of progressResult.data.slice().sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))) {
+      const book = canonicalBookFor.get(p.bookId)
+      if (!book || seen.has(book.id)) continue
+      seen.add(book.id)
+      result.push(book)
+    }
+    return result
   }, [progressResult, canonicalBookFor])
 
   // Shared by both the actual filtered list and the facet-count computation
@@ -562,7 +614,7 @@ export function Library() {
                 {continueListening.map((book) => (
                   <li key={book.id} className="relative w-28 shrink-0">
                     <button
-                      onClick={(e) => void handleRemoveFromContinueListening(e, book.id)}
+                      onClick={(e) => void handleRemoveFromContinueListening(e, book)}
                       aria-label={`Remove ${book.title} from In Progress`}
                       className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-slate-950/80 text-xs text-slate-300"
                     >
