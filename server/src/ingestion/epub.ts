@@ -1,5 +1,6 @@
 import path from 'node:path'
 import EPub from 'epub'
+import { isJunkNameTag, isPlaceholderTag } from './mp3Folder.js'
 
 export interface EpubMetadata {
   title: string
@@ -81,11 +82,33 @@ export async function readEpubMetadata(filePath: string): Promise<EpubMetadata> 
     }
   }
 
+  // Real case found in this library: 3 Andre Norton epubs have <dc:title>
+  // literally encoded as "&lt;" — decodes to a bare "<" with no actual
+  // title text at all, presumably a broken template left over from
+  // whatever tool produced these files. Same "no letters or digits at
+  // all is junk" check mp3Folder.ts already uses for a junk Artist tag
+  // (there a bare "."), reused here since the shape of the problem is
+  // identical — treat it as if the tag were empty and fall through to the
+  // filename, rather than display a lone "<" as the title.
+  const rawTitle = epub.metadata.title?.trim()
+  const title = rawTitle && !isJunkNameTag(rawTitle) ? rawTitle : path.basename(filePath, path.extname(filePath))
+
+  // Same library, a different 6 books: <dc:creator> is a bare "Unknown" or
+  // "Unknown Author" rather than a real name or being left blank — the
+  // same ripper/converter-placeholder pattern as mp3Folder.ts's "Unknown
+  // Artist" case. Harmless when a folder-derived author wins downstream
+  // (the common case), but this book's own author-folder derivation isn't
+  // always available (e.g. a book sitting directly under a grab-bag
+  // collection folder), so the raw tag can still surface — reject it here
+  // rather than display "Unknown" as the author.
+  const rawAuthor = epub.metadata.creator?.trim()
+  const author = rawAuthor && !isPlaceholderTag(rawAuthor) ? rawAuthor : null
+
   return {
     // Same filename fallback as m4b.ts/mp3Folder.ts when the tag/metadata
     // is missing — a real (if imperfect) title beats a generic placeholder.
-    title: epub.metadata.title?.trim() || path.basename(filePath, path.extname(filePath)),
-    author: epub.metadata.creator?.trim() || null,
+    title,
+    author,
     coverBuffer,
     hasDrm: await hasContentDrm(epub),
     subjects: epub.metadata.subjects?.filter((s) => s.trim()).map((s) => s.trim()) || null,

@@ -29,6 +29,32 @@ describe('readEpubMetadata', () => {
     expect(meta.coverBuffer).toBeNull()
   })
 
+  it('falls back to the filename when <dc:title> is junk (real case: a bare "<" with no actual title text)', async () => {
+    // Real case found in this library: 3 Andre Norton epubs have
+    // <dc:title>&lt;</dc:title> — decodes to a lone "<" character, a
+    // broken-template leftover from whatever tool produced these files.
+    // Passed here as the literal escaped entity, matching the real file's
+    // own raw XML exactly (a bare "<" would be invalid XML on its own).
+    const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-'))
+    const filePath = path.join(dir, 'Secret of the Lost Race.epub')
+    await makeTestEpub(filePath, { title: '&lt;', author: 'Andre Norton' })
+
+    const meta = await readEpubMetadata(filePath)
+    expect(meta.title).toBe('Secret of the Lost Race')
+  })
+
+  it('treats a placeholder <dc:creator> ("Unknown" / "Unknown Author") as no author at all', async () => {
+    // Real case found in this library: 6 epubs have a bare "Unknown" or
+    // "Unknown Author" <dc:creator> — a converter placeholder, not a real
+    // (if unusual) name.
+    const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-'))
+    const filePath = path.join(dir, 'book.epub')
+    await makeTestEpub(filePath, { title: 'A Real Title', author: 'Unknown Author' })
+
+    const meta = await readEpubMetadata(filePath)
+    expect(meta.author).toBeNull()
+  })
+
   it('flags an epub whose actual content is encrypted as DRM', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-epub-'))
     const filePath = path.join(dir, 'drm.epub')
