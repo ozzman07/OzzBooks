@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { open, stat } from 'node:fs/promises'
+import { DriveHttpError, withDriveLimit, withDriveRetry } from '../integrations/remote/httpRetry.js'
 
 const SAMPLE_BYTES = 64 * 1024
 
@@ -38,11 +39,20 @@ export async function contentHash(filePath: string): Promise<string> {
 }
 
 async function fetchRange(url: string, headers: Record<string, string>, start: number, end: number): Promise<Buffer> {
-  const res = await fetch(url, { headers: { ...headers, Range: `bytes=${start}-${end}` } })
-  if (!res.ok && res.status !== 206) {
-    throw new Error(`Range request failed while hashing: ${res.status} ${res.statusText}`)
-  }
-  return Buffer.from(await res.arrayBuffer())
+  return withDriveRetry(`hash range ${start}-${end}`, () =>
+    withDriveLimit(async () => {
+      const res = await fetch(url, { headers: { ...headers, Range: `bytes=${start}-${end}` } })
+      if (!res.ok && res.status !== 206) {
+        const body = await res.text().catch(() => '')
+        throw new DriveHttpError(
+          `Range request failed while hashing: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`,
+          res.status,
+          body,
+        )
+      }
+      return Buffer.from(await res.arrayBuffer())
+    }),
+  )
 }
 
 /**

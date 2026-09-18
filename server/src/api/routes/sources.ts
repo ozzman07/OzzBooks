@@ -229,6 +229,35 @@ sourcesRouter.get('/:id/browse', async (req, res) => {
   }
 })
 
+// TEMPORARY diagnostic — 2026-09-11, remove once the M4B folder-merge
+// redesign is done. browseSourceDirectory above only works for local
+// filesystem sources (plain readdir); this is the remote-provider
+// equivalent, dumping raw listTree() entries (real Drive file/folder
+// names, not embedded tags) so the merge-detection heuristic can be
+// redesigned against real naming conventions instead of guessing. See
+// ozzbooks-google-drive-chapter-merge-fix memory.
+sourcesRouter.get('/:id/drive-debug-listing', async (req, res) => {
+  const source = getDb().prepare('SELECT * FROM sources WHERE id = ?').get(req.params.id) as
+    | SourceRow
+    | undefined
+  if (!source) {
+    res.status(404).json({ error: 'source not found' })
+    return
+  }
+  const provider = getProvider(source.type)
+  if (!provider) {
+    res.status(400).json({ error: `no provider registered for source type "${source.type}"` })
+    return
+  }
+  try {
+    const credentials = await getValidAccessToken(source, provider)
+    const entries = await provider.listTree(source, credentials)
+    res.json(entries)
+  } catch (err) {
+    res.status(500).json({ error: 'listTree failed', detail: String(err) })
+  }
+})
+
 // Fire-and-forget: a real scan can take well over an hour on a large
 // library, so this returns immediately instead of blocking on the whole
 // thing — a client on a phone would otherwise lose the response the

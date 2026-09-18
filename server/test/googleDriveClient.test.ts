@@ -8,6 +8,7 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('createFolder', () => {
@@ -36,12 +37,19 @@ describe('createFolder', () => {
     await createFolder('test-token', 'x', 'parent-id')
   })
 
-  it('throws with response detail on a non-ok response', async () => {
+  it('throws with response detail after exhausting retries on a non-ok response', async () => {
+    // 403 is one of the statuses driveFetch retries with backoff (Google's
+    // own recovery strategy for rate-limit responses) — fake timers let
+    // this test observe the eventual failure without waiting out the real
+    // multi-second backoff delays.
+    vi.useFakeTimers()
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: false, status: 403, statusText: 'Forbidden', text: async () => '{"error":"insufficient permissions"}' })),
     )
-    await expect(createFolder('test-token', 'x')).rejects.toThrow('403')
+    const pending = expect(createFolder('test-token', 'x')).rejects.toThrow('403')
+    await vi.runAllTimersAsync()
+    await pending
   })
 })
 

@@ -14,7 +14,13 @@ import {
 import type { BookRow, SourceRow } from '../../../types.js'
 import { getValidAccessToken } from '../credentials.js'
 import type { RemoteEntry, RemoteProvider } from '../types.js'
-import { ingestRemoteM4b, ingestRemoteMp3Folder } from './remoteMetadata.js'
+import { ingestRemoteM4b, ingestRemoteM4bParts, ingestRemoteMp3Folder } from './remoteMetadata.js'
+import {
+  groupM4bParts,
+  groupChapterRipsByPrefix,
+  groupParenthesizedTrackRips,
+  extractLeadingIndexTag,
+} from '../../../ingestion/partGrouping.js'
 
 // extractArtwork() falls back to checking for a local cover.jpg/folder.jpg
 // only when there's no embedded picture — passing a path that can never
@@ -60,6 +66,13 @@ interface DriveCandidate {
    * or the first (sorted) mp3 in a folder. */
   hashInput: RemoteEntry
   files: RemoteEntry[]
+  /** A "(#N)" prefix stripped from the owning folder's name (see
+   * extractLeadingIndexTag) — a real, if low-priority, series-number
+   * signal alongside the local pipeline's folder-name-based guess. Null
+   * for a single-file candidate (its name comes from the file itself, not
+   * a folder, so this convention never applies) or when the folder name
+   * carries no such prefix. */
+  seriesIndexNumber: number | null
 }
 
 // Same container as .m4b (Apple's convention for "M4A with chapter
@@ -79,9 +92,61 @@ function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
   }
 
   const candidates: DriveCandidate[] = []
+  // M4B files claimed by the folder-based chapter/part grouping below, so
+  // the single-file loop after it doesn't also treat them as their own
+  // separate book.
+  //
+  // REDESIGNED 2026-09-11 after a real-data incident — the original "2+
+  // M4B files in a folder = one book" rule was too broad: it wrongly
+  // merged several folders holding multiple different standalone books
+  // (e.g. a "Jim Butcher" folder with 10 separate novels, each already
+  // having its own full embedded chapter structure) into one fake book.
+  // File count alone can't distinguish that from a genuine chapter-per-
+  // file rip. Replaced with two independent, narrow, real-data-tested
+  // filename patterns (see partGrouping.ts for the full reasoning behind
+  // each): groupM4bParts (identical base + a trailing part/disc marker —
+  // e.g. the Dresden Files "-1" size-split books) runs first, then
+  // groupChapterRipsByPrefix (a shared long title prefix + " - N - " + an
+  // actual chapter label — e.g. Going Postal's 19 per-chapter files) runs
+  // on whatever's left, so a file can never be claimed by both. Every
+  // real case from the incident — the correct merges and the wrong ones —
+  // is a regression test in partGrouping.test.ts. See
+  // ozzbooks-google-drive-chapter-merge-fix memory for the full incident
+  // and the repair already applied to the affected books.
+  const groupedM4bIds = new Set<string>()
+  for (const folder of folderById.values()) {
+    if (isUnderExcludedFolder(folder.id, folderById)) continue
+    const children = filesByParent.get(folder.id) ?? []
+    const m4bChildren = children.filter((c) => M4B_EXTENSIONS.has(c.extension))
+    if (m4bChildren.length < 2) continue
+
+    const byName = new Map(m4bChildren.map((c) => [c.name, c]))
+    const { groups: partGroups, singles: afterPartGrouping } = groupM4bParts(m4bChildren.map((c) => c.name))
+    const { groups: chapterRipGroups, singles: afterChapterRipGrouping } = groupChapterRipsByPrefix(afterPartGrouping)
+    const { groups: parenthesizedTrackGroups } = groupParenthesizedTrackRips(afterChapterRipGrouping)
+    const segments = buildSegmentsToFolder(folder.id, folderById)
+
+    const { title: cleanedFolderName, index: folderIndexNumber } = extractLeadingIndexTag(folder.name)
+
+    for (const groupNames of [...partGroups, ...chapterRipGroups, ...parenthesizedTrackGroups]) {
+      const groupEntries = groupNames.map((n) => byName.get(n)!)
+      for (const e of groupEntries) groupedM4bIds.add(e.id)
+      candidates.push({
+        format: 'm4b',
+        id: `gdrive://${groupEntries[0].id}`,
+        name: cleanedFolderName,
+        authorSegments: segments,
+        seriesSegments: segments,
+        hashInput: groupEntries[0],
+        files: groupEntries,
+        seriesIndexNumber: folderIndexNumber,
+      })
+    }
+  }
 
   for (const entry of entries) {
     if (entry.kind !== 'file' || !M4B_EXTENSIONS.has(entry.extension)) continue
+    if (groupedM4bIds.has(entry.id)) continue
     if (isUnderExcludedFolder(entry.parentId, folderById)) continue
     const seriesSegments = buildSegmentsToFolder(entry.parentId, folderById)
     candidates.push({
@@ -92,6 +157,7 @@ function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
       seriesSegments,
       hashInput: entry,
       files: [entry],
+      seriesIndexNumber: null,
     })
   }
 
@@ -104,14 +170,16 @@ function discoverCandidates(entries: RemoteEntry[]): DriveCandidate[] {
 
     const sortedMp3s = [...mp3s].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     const segments = buildSegmentsToFolder(folder.id, folderById)
+    const { title: cleanedFolderName, index: folderIndexNumber } = extractLeadingIndexTag(folder.name)
     candidates.push({
       format: 'mp3_folder',
       id: `gdrive-folder://${folder.id}`,
-      name: folder.name,
+      name: cleanedFolderName,
       authorSegments: segments,
       seriesSegments: segments,
       hashInput: sortedMp3s[0],
       files: sortedMp3s,
+      seriesIndexNumber: folderIndexNumber,
     })
   }
 
@@ -238,7 +306,17 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
 
       const ingested =
         candidate.format === 'm4b'
-          ? await ingestRemoteM4b(primaryAccess.url, primaryAccess.headers, candidate.hashInput.name, candidate.id)
+          ? candidate.files.length > 1
+            ? await ingestRemoteM4bParts(
+                await Promise.all(
+                  candidate.files.map(async (file) => {
+                    const access = await provider.getMetadataAccess(source, credentials, file.id)
+                    return { url: access.url, headers: access.headers, fileName: file.name, fileUri: `gdrive://${file.id}` }
+                  }),
+                ),
+                candidate.name,
+              )
+            : await ingestRemoteM4b(primaryAccess.url, primaryAccess.headers, candidate.hashInput.name, candidate.id)
           : await ingestRemoteMp3Folder(
               candidate.name,
               await Promise.all(
@@ -255,14 +333,33 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
       const bookId = existing?.id ?? randomUUID()
       const artwork = await extractArtwork(bookId, NO_LOCAL_FOLDER, ingested.artworkMetadata)
 
-      // Same "manual survives every future rescan" exception as the local
-      // pipeline (scan.ts's resolveSeriesNumber) — no folder-based guess
-      // exists here yet (series_number is tag-only for remote sources), but
-      // a manually-set value must still not get silently cleared back to
-      // whatever (or nothing) the tag says on the next scan.
-      const seriesNumber = existing?.series_number_source === 'manual' ? existing.series_number : ingested.seriesNumber
+      // A grouped candidate's title (see discoverCandidates) is already
+      // stripped of any "(#N)" folder prefix — extracting again here is a
+      // harmless no-op for it. This is what actually catches the case that
+      // matters: a *single*-file M4B whose own filename/embedded tag still
+      // carries the prefix (e.g. "(#9) Eric.m4b" with no title tag, sitting
+      // in its own "(#9) Eric" folder) — discoverCandidates never touches a
+      // single file's name, so without this the prefix would otherwise
+      // reach ingested.title untouched.
+      const { title: cleanedTitle, index: titleIndexNumber } = extractLeadingIndexTag(ingested.title)
+      const folderIndexNumber = candidate.seriesIndexNumber ?? titleIndexNumber
+
+      // Same manual > folder > tag precedence as the local pipeline's
+      // resolveSeriesNumber: once a user has manually corrected it, that
+      // value must survive every future rescan; otherwise a folder-derived
+      // "(#N)" guess (see extractLeadingIndexTag) beats a bare embedded tag
+      // the same way a local "Series Name 16 - Title" folder already would.
+      const seriesNumber = existing?.series_number_source === 'manual'
+        ? existing.series_number
+        : folderIndexNumber ?? ingested.seriesNumber
       const seriesNumberSource =
-        existing?.series_number_source === 'manual' ? 'manual' : ingested.seriesNumber !== null ? 'tag' : null
+        existing?.series_number_source === 'manual'
+          ? 'manual'
+          : folderIndexNumber !== null
+            ? 'folder'
+            : ingested.seriesNumber !== null
+              ? 'tag'
+              : null
 
       const wasHashRelink = Boolean(existing && existing.file_path !== candidate.id)
       const previousPath = existing?.file_path
@@ -270,7 +367,7 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
       const { created } = writeBookAndChapters(source, bookId, !existing, {
         filePath: candidate.id,
         format: candidate.format,
-        title: ingested.title,
+        title: cleanedTitle,
         author,
         seriesName,
         seriesNumber,
@@ -284,11 +381,11 @@ export async function scanGoogleDriveSource(source: SourceRow, provider: RemoteP
 
       if (created) {
         result.created++
-        logActivity(bookId, ingested.title, author, 'created')
+        logActivity(bookId, cleanedTitle, author, 'created')
       } else {
         result.updated++
         if (wasHashRelink) {
-          logActivity(bookId, ingested.title, author, 'relinked', `Same content found at a new path — moved from ${previousPath}`)
+          logActivity(bookId, cleanedTitle, author, 'relinked', `Same content found at a new path — moved from ${previousPath}`)
         }
       }
     } catch (err) {

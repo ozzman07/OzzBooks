@@ -1,3 +1,5 @@
+import { DriveHttpError, withDriveLimit, withDriveRetry } from '../httpRetry.js'
+
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3'
 const FIELDS = 'id,name,parents,mimeType,size,modifiedTime'
 // Stay well under Drive's query-length limits while still cutting
@@ -17,19 +19,28 @@ export interface DriveFile {
 }
 
 async function driveFetch<T>(accessToken: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${DRIVE_API_BASE}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Drive API request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`)
-  }
-  return res.json() as Promise<T>
+  return withDriveRetry(path, () =>
+    withDriveLimit(async () => {
+      const res = await fetch(`${DRIVE_API_BASE}${path}`, {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+          ...init?.headers,
+        },
+      })
+      if (!res.ok) {
+        // Capture the body: Google's own error JSON (an "errors[].reason"
+        // like "userRateLimitExceeded" or "dailyLimitExceeded") is what
+        // actually distinguishes a quota hit from an unrelated 403 — the
+        // bare status code alone (all scan_issues previously recorded)
+        // can't tell the two apart.
+        const body = await res.text().catch(() => '')
+        throw new DriveHttpError(`Drive API request failed: ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`, res.status, body)
+      }
+      return res.json() as Promise<T>
+    }),
+  )
 }
 
 /** Creates a folder — the app-owned default root a freshly-connected

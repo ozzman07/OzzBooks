@@ -23,7 +23,7 @@ function titleFallback(filePath: string): string {
 // numbering across the whole merged book instead.
 const GENERIC_CHAPTER_RE = /^(?:chapter|part|track|segment)\s*\d+\.?$/i
 
-function isGenericChapterLabel(title: string): boolean {
+export function isGenericChapterLabel(title: string): boolean {
   return GENERIC_CHAPTER_RE.test(title.trim())
 }
 

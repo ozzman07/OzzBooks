@@ -5,7 +5,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { buildTestLibrary, type TestLibrary } from './fixtures.js'
+import { buildTestLibrary, makeTone, type TestLibrary } from './fixtures.js'
 import type { RemoteEntry, RemoteProvider } from '../src/integrations/remote/types.js'
 
 function serveFileWithRanges(filePath: string): Promise<{ url: string; close: () => Promise<void> }> {
@@ -281,6 +281,267 @@ describe('scanGoogleDriveSource', () => {
     const book = getDb().prepare('SELECT * FROM books WHERE id = ?').get(bookId) as any
     expect(book.status).toBe('missing')
   })
+})
+
+// REDESIGNED 2026-09-11 after a real-data incident (see
+// ozzbooks-google-drive-chapter-merge-fix memory) — the original "2+ M4B
+// files in a folder = one book" rule was too broad and wrongly merged
+// folders holding multiple different standalone books. Replaced with two
+// narrow filename-pattern checks in partGrouping.ts (unit-tested there
+// against every real filename from the incident); these two tests are the
+// end-to-end check that discoverCandidates/scanGoogleDriveSource wire that
+// logic up correctly, covering both the "should merge" and "should NOT
+// merge" real shapes.
+describe('scanGoogleDriveSource — chapter-per-file M4B rip in one folder', () => {
+  it('merges a folder of single-chapter M4B files sharing a long title prefix, cleaning each chapter title', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanGoogleDriveSource } = await import(
+      '../src/integrations/remote/googleDrive/remoteScan.js'
+    )
+
+    // Mirrors the real "Going Postal" incident shape: filenames share one
+    // long, specific title prefix and differ only in an embedded
+    // " - N - <chapter label>" segment; no file has its own internal
+    // chapter markers.
+    const scratchDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-chapter-rip-'))
+    const chapterFiles = [
+      { file: 'Going Postal Discworld Book 33 - 01 - Opening Credits.m4b', title: 'Opening Credits' },
+      { file: 'Going Postal Discworld Book 33 - 02 - The Prologue.m4b', title: 'The Prologue' },
+      { file: 'Going Postal Discworld Book 33 - 03 - Chapter One The Angel.m4b', title: 'Chapter One The Angel' },
+    ]
+    for (const ch of chapterFiles) {
+      await makeTone(path.join(scratchDir, ch.file), 1, [
+        '-metadata',
+        `title=${ch.title}`,
+        '-metadata',
+        'artist=Terry Pratchett',
+        '-c:a',
+        'aac',
+      ])
+    }
+
+    const servers = await Promise.all(chapterFiles.map((f) => serveFileWithRanges(path.join(scratchDir, f.file))))
+
+    try {
+      const fileServers = new Map<string, string>(chapterFiles.map((f, i) => [`chapter-file-${i}`, servers[i].url]))
+      const entries: RemoteEntry[] = [
+        { id: 'author-folder', name: 'Terry Pratchett', parentId: null, kind: 'folder' },
+        { id: 'book-folder', name: 'Going Postal', parentId: 'author-folder', kind: 'folder' },
+        ...chapterFiles.map((f, i) => ({
+          id: `chapter-file-${i}`,
+          name: f.file,
+          parentId: 'book-folder',
+          kind: 'file' as const,
+          extension: '.m4b',
+          size: statSync(path.join(scratchDir, f.file)).size,
+        })),
+      ]
+
+      const provider = makeFakeProvider(entries, fileServers)
+      const source = await insertSource()
+
+      const result = await scanGoogleDriveSource(source, provider)
+
+      expect(result.found).toBe(1) // one merged candidate, not three
+      expect(result.created).toBe(1)
+      expect(result.failed).toBe(0)
+
+      const books = getDb().prepare('SELECT * FROM books WHERE source_id = ?').all(source.id) as any[]
+      expect(books).toHaveLength(1)
+
+      const book = books[0]
+      expect(book.title).toBe('Going Postal') // folder name, not any single chapter's tag
+      expect(book.author).toBe('Terry Pratchett')
+      expect(book.file_path).toBe('gdrive://chapter-file-0') // first part, sorted by embedded number
+
+      const chapters = getDb().prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY idx').all(book.id) as any[]
+      expect(chapters).toHaveLength(3)
+      expect(chapters.map((c) => c.title)).toEqual(['Opening Credits', 'The Prologue', 'Chapter One The Angel'])
+      // Each chapter still points at its own distinct source file.
+      expect(new Set(chapters.map((c) => c.file_path)).size).toBe(3)
+    } finally {
+      await Promise.all(servers.map((s) => s.close()))
+    }
+  }, 30_000)
+
+  it('strips a "(#N)" folder-name prefix into series_number instead of leaving it stuck on the title', async () => {
+    // Real case found in production: an entire Discworld folder tree names
+    // each book's own folder "(#N) Title" (e.g. "(#33) Going Postal") —
+    // same merged-chapter-rip shape as the test above, just with the
+    // book-folder itself carrying a series-index prefix that needs
+    // stripping into series_number rather than showing up in the title.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanGoogleDriveSource } = await import(
+      '../src/integrations/remote/googleDrive/remoteScan.js'
+    )
+
+    const scratchDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-index-prefix-'))
+    const chapterFiles = [
+      { file: 'Going Postal Discworld Book 33 - 01 - Opening Credits.m4b', title: 'Opening Credits' },
+      { file: 'Going Postal Discworld Book 33 - 02 - The Prologue.m4b', title: 'The Prologue' },
+      { file: 'Going Postal Discworld Book 33 - 03 - Chapter One The Angel.m4b', title: 'Chapter One The Angel' },
+    ]
+    for (const ch of chapterFiles) {
+      await makeTone(path.join(scratchDir, ch.file), 1, ['-metadata', `title=${ch.title}`, '-c:a', 'aac'])
+    }
+
+    const servers = await Promise.all(chapterFiles.map((f) => serveFileWithRanges(path.join(scratchDir, f.file))))
+
+    try {
+      const fileServers = new Map<string, string>(chapterFiles.map((f, i) => [`idx-chapter-file-${i}`, servers[i].url]))
+      const entries: RemoteEntry[] = [
+        { id: 'idx-author-folder', name: 'Terry Pratchett', parentId: null, kind: 'folder' },
+        { id: 'idx-series-folder', name: 'Discworld', parentId: 'idx-author-folder', kind: 'folder' },
+        { id: 'idx-book-folder', name: '(#33) Going Postal', parentId: 'idx-series-folder', kind: 'folder' },
+        ...chapterFiles.map((f, i) => ({
+          id: `idx-chapter-file-${i}`,
+          name: f.file,
+          parentId: 'idx-book-folder',
+          kind: 'file' as const,
+          extension: '.m4b',
+          size: statSync(path.join(scratchDir, f.file)).size,
+        })),
+      ]
+
+      const provider = makeFakeProvider(entries, fileServers)
+      const source = await insertSource()
+
+      await scanGoogleDriveSource(source, provider)
+
+      const book = getDb().prepare('SELECT * FROM books WHERE source_id = ?').get(source.id) as any
+      expect(book.title).toBe('Going Postal') // "(#33)" stripped, not part of the title
+      expect(book.series_number).toBe(33)
+      expect(book.series_number_source).toBe('folder')
+
+      // A manual correction must still beat the folder prefix on a later
+      // rescan — same precedence the local pipeline already guarantees.
+      getDb().prepare("UPDATE books SET series_number = 99, series_number_source = 'manual' WHERE id = ?").run(book.id)
+      await scanGoogleDriveSource(source, provider)
+      const afterRescan = getDb().prepare('SELECT * FROM books WHERE id = ?').get(book.id) as any
+      expect(afterRescan.series_number).toBe(99)
+      expect(afterRescan.series_number_source).toBe('manual')
+    } finally {
+      await Promise.all(servers.map((s) => s.close()))
+    }
+  }, 30_000)
+
+  it('strips a "(#N)" prefix on a single-file M4B book too, not just a merged chapter-rip group', async () => {
+    // Real case found in production: not every Discworld book on Drive is
+    // a chapter-per-file rip — some are one plain M4B file, still sitting
+    // in (and named after) a "(#N) Title" folder (e.g. "(#9) Eric.m4b" in
+    // a folder called "(#9) Eric") with no embedded title tag. This never
+    // goes through discoverCandidates' folder-based grouping loop at all
+    // (single-file candidates keep the file's own name), so the "(#N)"
+    // prefix has to be caught centrally, against the final resolved title,
+    // not just at the folder-name grouping sites.
+    const { getDb } = await import('../src/db/index.js')
+    const { scanGoogleDriveSource } = await import(
+      '../src/integrations/remote/googleDrive/remoteScan.js'
+    )
+    const { makeTone } = await import('./fixtures.js')
+
+    const scratchDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-single-index-prefix-'))
+    const filePath = path.join(scratchDir, '(#9) Eric.m4b')
+    await makeTone(filePath, 1, ['-c:a', 'aac']) // no title tag at all — falls back to the filename
+
+    const server = await serveFileWithRanges(filePath)
+    try {
+      const entries: RemoteEntry[] = [
+        { id: 'single-author-folder', name: 'Terry Pratchett', parentId: null, kind: 'folder' },
+        { id: 'single-series-folder', name: 'Discworld', parentId: 'single-author-folder', kind: 'folder' },
+        { id: 'single-book-folder', name: '(#9) Eric', parentId: 'single-series-folder', kind: 'folder' },
+        {
+          id: 'single-file-id',
+          name: '(#9) Eric.m4b',
+          parentId: 'single-book-folder',
+          kind: 'file',
+          extension: '.m4b',
+          size: statSync(filePath).size,
+        },
+      ]
+
+      const provider = makeFakeProvider(entries, new Map([['single-file-id', server.url]]))
+      const source = await insertSource()
+
+      await scanGoogleDriveSource(source, provider)
+
+      const book = getDb().prepare('SELECT * FROM books WHERE source_id = ?').get(source.id) as any
+      expect(book.title).toBe('Eric')
+      expect(book.series_number).toBe(9)
+      expect(book.series_number_source).toBe('folder')
+    } finally {
+      await server.close()
+    }
+  }, 30_000)
+
+  it('does NOT merge a folder of separate standalone books sharing only a short generic prefix (the actual incident shape)', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { scanGoogleDriveSource } = await import(
+      '../src/integrations/remote/googleDrive/remoteScan.js'
+    )
+
+    // Mirrors the real "Books 1-8" / "Jim Butcher" incident shape: same
+    // "prefix - N - suffix" shape as a real chapter rip, but the suffix is
+    // a whole different book title each time, and the shared prefix is
+    // short — must stay as 3 separate books, not merge.
+    const scratchDir = await mkdtemp(path.join(tmpdir(), 'ozzbooks-standalone-books-'))
+    const bookFiles = [
+      { file: 'DCC - 1 - Dungeon Crawler Carl.m4b', title: 'Dungeon Crawler Carl' },
+      { file: "DCC - 2 - Carl's Doomsday Scenario.m4b", title: "Carl's Doomsday Scenario" },
+      { file: 'DCC - 3 - The Dungeon Anarchists Cookbook.m4b', title: 'The Dungeon Anarchists Cookbook' },
+    ]
+    for (const b of bookFiles) {
+      await makeTone(path.join(scratchDir, b.file), 1, [
+        '-metadata',
+        `title=${b.title}`,
+        '-metadata',
+        'artist=Matt Dinniman',
+        '-c:a',
+        'aac',
+      ])
+    }
+
+    const servers = await Promise.all(bookFiles.map((f) => serveFileWithRanges(path.join(scratchDir, f.file))))
+
+    try {
+      const fileServers = new Map<string, string>(bookFiles.map((f, i) => [`book-file-${i}`, servers[i].url]))
+      const entries: RemoteEntry[] = [
+        { id: 'author-folder', name: 'Matt Dinniman', parentId: null, kind: 'folder' },
+        { id: 'series-folder', name: 'Books 1-8', parentId: 'author-folder', kind: 'folder' },
+        ...bookFiles.map((f, i) => ({
+          id: `book-file-${i}`,
+          name: f.file,
+          parentId: 'series-folder',
+          kind: 'file' as const,
+          extension: '.m4b',
+          size: statSync(path.join(scratchDir, f.file)).size,
+        })),
+      ]
+
+      const provider = makeFakeProvider(entries, fileServers)
+      const source = await insertSource()
+
+      const result = await scanGoogleDriveSource(source, provider)
+
+      expect(result.found).toBe(3) // three separate candidates, not one merged
+      expect(result.created).toBe(3)
+      expect(result.failed).toBe(0)
+
+      const books = getDb().prepare('SELECT * FROM books WHERE source_id = ? ORDER BY title').all(source.id) as any[]
+      expect(books).toHaveLength(3)
+      expect(books.map((b) => b.title)).toEqual([
+        "Carl's Doomsday Scenario",
+        'Dungeon Crawler Carl',
+        'The Dungeon Anarchists Cookbook',
+      ])
+      for (const book of books) {
+        const chapters = getDb().prepare('SELECT * FROM chapters WHERE book_id = ?').all(book.id) as any[]
+        expect(chapters).toHaveLength(1) // each its own single-chapter book, not merged
+      }
+    } finally {
+      await Promise.all(servers.map((s) => s.close()))
+    }
+  }, 30_000)
 })
 
 afterAll(() => {})

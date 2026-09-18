@@ -7,6 +7,7 @@ import { contentHash, remoteContentHash } from '../src/ingestion/contentHash.js'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('contentHash / remoteContentHash comparability', () => {
@@ -51,8 +52,17 @@ describe('contentHash / remoteContentHash comparability', () => {
     expect(a).not.toBe(b)
   })
 
-  it('throws a clear error on a failed range request', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, statusText: 'Internal Server Error' })))
-    await expect(remoteContentHash('https://example.com/x', {}, 1000)).rejects.toThrow('Range request failed')
+  it('throws a clear error after exhausting retries on a failed range request', async () => {
+    // 500 is one of the statuses fetchRange retries with backoff — fake
+    // timers let this test observe the eventual failure without waiting
+    // out the real multi-second backoff delays.
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 500, statusText: 'Internal Server Error', text: async () => '' })),
+    )
+    const pending = expect(remoteContentHash('https://example.com/x', {}, 1000)).rejects.toThrow('Range request failed')
+    await vi.runAllTimersAsync()
+    await pending
   })
 })
