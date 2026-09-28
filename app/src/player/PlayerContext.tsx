@@ -16,6 +16,7 @@ import { getCachedAudioFile, touchLastPlayed } from '../offline/audioFileStore'
 import { downloadChapter, isChapterCached } from '../offline/downloadManager'
 import { migrateLegacyAudioIfNeeded } from '../offline/migrateLegacyAudio'
 import { offlineAudioUrl } from '../offline/offlineAudioRange'
+import { logPlayerEvent } from './playerDebugLog'
 import {
   loadStillListeningPrefs,
   saveStillListeningPrefs,
@@ -72,6 +73,13 @@ const SEEK_DEBOUNCE_MS = 200
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// TEMPORARY diagnostic (see playerDebugLog.ts) — snapshots the bits of
+// audio element state most likely to explain a CarPlay-only stutter.
+function audioSnapshot(audio: HTMLAudioElement | null): Record<string, unknown> {
+  if (!audio) return {}
+  return { paused: audio.paused, readyState: audio.readyState, t: audio.currentTime.toFixed(1) }
 }
 
 interface PlayerState {
@@ -285,6 +293,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (seekWatchdogRef.current) {
       clearTimeout(seekWatchdogRef.current)
       seekWatchdogRef.current = null
+      logPlayerEvent('watchdog:cleared', audioSnapshot(audioRef.current))
     }
   }, [])
 
@@ -304,7 +313,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const pending = pendingLoadRef.current
     if (!pending) return
     clearSeekWatchdog()
+    logPlayerEvent('watchdog:armed', audioSnapshot(audioRef.current))
     seekWatchdogRef.current = setTimeout(() => {
+      logPlayerEvent('watchdog:FIRED (full reload)', audioSnapshot(audioRef.current))
       loadIntoAudioRef.current(pending.book, pending.target, pending.offset, pending.autoplay)
     }, LOAD_TIMEOUT_MS)
   }, [clearSeekWatchdog])
@@ -324,6 +335,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         for (let attempt = 0; attempt <= MAX_LOAD_RETRIES; attempt++) {
           try {
             const src = await resolveAudioSrc(target)
+            logPlayerEvent('load:src resolved', { via: src.startsWith('/offline-audio/') ? 'cache' : 'network', attempt })
             if (loadedSourceFileIdRef.current !== target.sourceFileId) return
             await attemptLoadOnce(audio, src, target.startTime + chapterRelativeOffset, autoplay)
             if (loadedSourceFileIdRef.current !== target.sourceFileId) return
@@ -784,8 +796,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const audio = audioRef.current
     if (!audio) return
 
-    const onPlay = () => setIsPlaying(true)
+    const onPlay = () => {
+      logPlayerEvent('audio:play', audioSnapshot(audio))
+      setIsPlaying(true)
+    }
     const onPause = () => {
+      logPlayerEvent('audio:pause', audioSnapshot(audio))
       setIsPlaying(false)
       pushProgress()
     }
@@ -797,6 +813,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // `seeked` as done when nothing was expected to play afterward (a
     // paused seek) — an autoplaying one waits for genuine `playing` instead.
     const onSeeked = () => {
+      logPlayerEvent('audio:seeked', { ...audioSnapshot(audio), pendingAutoplay: pendingLoadRef.current?.autoplay })
       if (!pendingLoadRef.current?.autoplay) {
         clearSeekWatchdog()
         setIsBuffering(false)
@@ -805,6 +822,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // The authoritative "recovered" signal — audio is actually producing
     // sound again, not just that a seek/load nominally completed.
     const onPlaying = () => {
+      logPlayerEvent('audio:playing', audioSnapshot(audio))
       clearSeekWatchdog()
       setIsBuffering(false)
       setStreamError(null)
@@ -818,12 +836,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // nothing to recover, and arming here anyway was causing an unattended
     // paused book to reload itself (and, if that reload failed, land on the
     // Retry error) with no play/seek action from the user at all.
-    const onWaiting = () => {
-      if (loadInProgressRef.current || audio.paused) return
+    const onWaiting = (e: Event) => {
+      if (loadInProgressRef.current) {
+        logPlayerEvent(`audio:${e.type} (stood down: load in progress)`, audioSnapshot(audio))
+        return
+      }
+      if (audio.paused) {
+        logPlayerEvent(`audio:${e.type} (stood down: paused)`, audioSnapshot(audio))
+        return
+      }
+      logPlayerEvent(`audio:${e.type} -> arming watchdog`, audioSnapshot(audio))
       setIsBuffering(true)
       armSeekWatchdog()
     }
     const onEnded = () => {
+      logPlayerEvent('audio:ended', audioSnapshot(audio))
       if (sleepTimer?.kind === 'end-of-chapter') {
         setSleepTimer(null)
         return
@@ -937,8 +964,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         : undefined,
     })
 
-    navigator.mediaSession.setActionHandler('play', play)
-    navigator.mediaSession.setActionHandler('pause', pause)
+    navigator.mediaSession.setActionHandler('play', () => {
+      logPlayerEvent('mediaSession:play', audioSnapshot(audioRef.current))
+      play()
+    })
+    navigator.mediaSession.setActionHandler('pause', () => {
+      logPlayerEvent('mediaSession:pause', audioSnapshot(audioRef.current))
+      pause()
+    })
     navigator.mediaSession.setActionHandler('previoustrack', prevChapter)
     navigator.mediaSession.setActionHandler('nexttrack', nextChapter)
     navigator.mediaSession.setActionHandler('seekbackward', () => skip(-15))

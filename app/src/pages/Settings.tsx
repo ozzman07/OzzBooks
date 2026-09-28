@@ -20,6 +20,7 @@ import {
 } from '../api/client'
 import { fetchSettings, putSettings, CloudApiError } from '../api/cloudClient'
 import { usePlayer } from '../player/PlayerContext'
+import { readPlayerDebugLog, clearPlayerDebugLog } from '../player/playerDebugLog'
 import {
   IDLE_MINUTES_MIN,
   IDLE_MINUTES_MAX,
@@ -524,6 +525,59 @@ function StillListeningCard() {
   )
 }
 
+// TEMPORARY diagnostic — remove once the CarPlay stutter bug (plays a few
+// words, goes silent, repeats — only over CarPlay, not the phone speaker)
+// is understood. Nobody can watch devtools while driving, so PlayerContext
+// persists events to localStorage instead (see playerDebugLog.ts) — this
+// is just a viewer for it, checked after the drive rather than during.
+function PlayerDebugLogCard() {
+  const [log, setLog] = useState('')
+  const refresh = useCallback(() => setLog(readPlayerDebugLog()), [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(log)
+    } catch {
+      // Clipboard API can be unavailable/denied — the visible text below is the fallback.
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border p-4 lg:col-span-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-medium text-primary">Player diagnostic log (temporary)</h2>
+          <p className="text-xs text-subtle">Recent audio-player events, for tracking down the CarPlay stutter.</p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button onClick={refresh} className="rounded border border-border-strong px-2 py-1 text-xs text-secondary">
+            Refresh
+          </button>
+          <button onClick={() => void copy()} className="rounded border border-border-strong px-2 py-1 text-xs text-secondary">
+            Copy
+          </button>
+          <button
+            onClick={() => {
+              clearPlayerDebugLog()
+              refresh()
+            }}
+            className="rounded border border-border-strong px-2 py-1 text-xs text-red-400"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-surface p-2 text-[10px] text-subtle">
+        {log || 'No events logged yet.'}
+      </pre>
+    </section>
+  )
+}
+
 // Shares one card between the two per-device, localStorage-backed player/UI
 // preferences above — keeping the top row's grid item count the same as
 // before Still Listening existed, so the dense-packing grid below still
@@ -894,6 +948,8 @@ export function Settings() {
         </section>
 
         <PreferencesCard />
+
+        <PlayerDebugLogCard />
 
         <section className="rounded-lg border border-border p-4 lg:col-span-3">
           <h2 className="mb-2 text-sm font-medium text-primary">Library index</h2>
