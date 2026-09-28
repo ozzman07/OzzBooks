@@ -722,6 +722,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(id)
   }, [isPlaying, pushProgress])
 
+  // Flushes progress immediately when the app backgrounds or the page is
+  // about to be discarded — same class of bug as the ebook reader's
+  // debounced-save flush (see EbookReader.tsx). Background audio keeps
+  // playing after the tab is hidden, but iOS throttles/suspends plain JS
+  // timers for a hidden page regardless, so the 20s interval above can sit
+  // starved for far longer than 20s while the user is off in another app.
+  // Switching apps (or the OS later reclaiming the suspended page and
+  // reloading it from scratch under memory pressure) then restored
+  // whatever position that last periodic push happened to land on —
+  // several minutes behind where playback actually was by the time the
+  // user came back. pagehide additionally covers iOS discarding the page
+  // outright while backgrounded, which visibilitychange isn't guaranteed
+  // to fire for.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') pushProgress()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', pushProgress)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', pushProgress)
+    }
+  }, [pushProgress])
+
   // Sleep timer countdown for fixed-duration timers
   useEffect(() => {
     if (!sleepTimer || sleepTimer.kind !== 'duration') return
