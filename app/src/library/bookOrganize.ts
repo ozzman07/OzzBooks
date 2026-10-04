@@ -167,6 +167,26 @@ export function groupBySeries(
   return { series, standalone }
 }
 
+// Feeds "add this series/saga to a playlist" (AddBooksToPlaylist) — a
+// flat, playback-ordered, companion-deduped list, independent of whatever
+// grouping/sort a given display already did to its own input (cheap
+// enough to just redo here rather than thread a pre-sorted list through
+// three different call sites with three different display-only shapes).
+export function orderedSeriesBooks(books: Book[]): Book[] {
+  return dedupeCompanionPairs(books).slice().sort(compareWithinSeries)
+}
+
+// Same idea, one level up — every book across a saga's member series, in
+// saga order, each series internally in its own series-number order. Only
+// series-block order is supported today, not interleaving individual
+// books from different series — see the saga design conversation this
+// was built from.
+export function orderedSagaBooks(books: Book[], seriesNamesInOrder: string[]): Book[] {
+  return seriesNamesInOrder.flatMap((name) =>
+    orderedSeriesBooks(books.filter((b) => b.status === 'active' && b.seriesName === name)),
+  )
+}
+
 export interface ArcGroup {
   arcName: string
   books: Book[]

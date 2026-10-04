@@ -1682,6 +1682,19 @@ describe('ingestion', () => {
     // Nested one level below the series folder — the "Elseworlds" folder
     // itself becomes the arc grouping.
     expect(gaslight.arc_name).toBe('Elseworlds')
+
+    // A manual arc_name correction (same simulated-PATCH-effect pattern as
+    // the title/author manual-pin test above) must survive a rescan —
+    // previously arc_name was unconditionally overwritten by the
+    // folder-derived guess every time, with no way for a Book Detail
+    // correction to stick even one more scan.
+    db.prepare("UPDATE books SET arc_name = 'Manually Corrected Arc', arc_name_source = 'manual' WHERE id = ?").run(
+      gaslight.id,
+    )
+    await scanSource(source)
+    const afterRescan = db.prepare('SELECT * FROM books WHERE id = ?').get(gaslight.id) as any
+    expect(afterRescan.arc_name).toBe('Manually Corrected Arc')
+    expect(afterRescan.arc_name_source).toBe('manual')
   }, 30_000)
 
   it('routes a real .cbr to scan_issues with the locked message, without ever ingesting it', async () => {

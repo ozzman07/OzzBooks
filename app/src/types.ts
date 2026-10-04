@@ -24,19 +24,33 @@ export type Position =
 export interface Book {
   id: string
   title: string
+  /** 'manual' once pinned via EditMetadataDialog's "Edit metadata" — see
+   * ApiBook's own title_source comment for why title's reset path is
+   * different from the other five *Source fields below (no null form of
+   * its own). */
+  titleSource?: 'manual'
   author: string
+  authorSource?: 'manual'
   seriesName?: string
+  seriesNameSource?: 'manual'
   seriesNumber?: number
+  seriesNumberSource?: 'tag' | 'folder' | 'manual'
+  /** Set only when seriesName is a member of a saga — see ApiBook's own
+   * saga_name comment. Present on both list and detail. */
+  sagaName?: string
+  sagaPosition?: number
   synopsis?: string
   /** One of GENRE_OPTIONS (library/genreOptions.ts) — from Open Library
    * enrichment, from-file subject tags, or a manual edit. Undefined until
    * enriched/set, same as synopsis. */
   genre?: string
+  genreSource?: 'manual'
   /** Audiobooks only — from the composer/writer tag at ingestion, or a
    * manual edit. Frequently missing; real audio tagging is inconsistent
    * about this (see genreOptions.ts's sibling narrator doc comment
    * server-side). */
   narrator?: string
+  narratorSource?: 'manual'
   /** Comics only ('cbz') — from ComicInfo.xml. Undefined for every other format. */
   writer?: string
   penciller?: string
@@ -47,6 +61,7 @@ export interface Book {
    * subfolder. Undefined for every other format, and for a comic with no
    * such subfolder (it sits directly under its series folder). */
   arcName?: string
+  arcNameSource?: 'manual'
   status: 'active' | 'missing'
   /** True only for a 'missing' book that can never be relinked by a scan
    * (a pre-dedup-rule mobi conversion whose original folder isn't

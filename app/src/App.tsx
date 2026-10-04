@@ -18,6 +18,8 @@ import { ActivityLog } from './pages/ActivityLog'
 import { NeedsAttention } from './pages/NeedsAttention'
 import { Playlists } from './pages/Playlists'
 import { PlaylistDetail } from './pages/PlaylistDetail'
+import { Sagas } from './pages/Sagas'
+import { SagaDetail } from './pages/SagaDetail'
 import { BookReaderRoute } from './pages/BookReaderRoute'
 
 // The PWA's start_url is '/' (see vite.config.ts's manifest) — this is
@@ -73,6 +75,8 @@ function AppShell() {
         <Route path="/book/:bookId/read" element={<BookReaderRoute />} />
         <Route path="/playlists" element={<Playlists />} />
         <Route path="/playlists/:playlistId" element={<PlaylistDetail />} />
+        <Route path="/sagas" element={<Sagas />} />
+        <Route path="/sagas/:sagaName" element={<SagaDetail />} />
         <Route path="/now-playing" element={<NowPlaying />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/activity-log" element={<ActivityLog />} />

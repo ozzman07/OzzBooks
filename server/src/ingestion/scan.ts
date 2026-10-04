@@ -1173,6 +1173,10 @@ export function writeBookAndChapters(
       title = CASE WHEN title_source = 'manual' THEN title ELSE excluded.title END,
       author = CASE WHEN author_source = 'manual' THEN author ELSE excluded.author END,
       series_name = CASE WHEN series_name_source = 'manual' THEN series_name ELSE excluded.series_name END,
+      -- Same manual-pin protection, now extended to arc_name (comics only)
+      -- — previously unconditionally overwritten on every rescan, with no
+      -- way for a Book Detail correction to survive even one more scan.
+      arc_name = CASE WHEN arc_name_source = 'manual' THEN arc_name ELSE excluded.arc_name END,
       series_number = excluded.series_number,
       series_number_source = excluded.series_number_source,
       status = 'active',
@@ -1193,7 +1197,6 @@ export function writeBookAndChapters(
       writer = excluded.writer,
       penciller = excluded.penciller,
       publisher = excluded.publisher,
-      arc_name = excluded.arc_name,
       updated_at = datetime('now')
       -- created_at deliberately not touched on conflict — set once at
       -- first insert, preserved across every rescan after that. file_path

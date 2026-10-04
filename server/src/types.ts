@@ -56,12 +56,15 @@ export interface BookRow {
   content_hash: string | null
   page_count: number | null
   genre: string | null
+  genre_source: 'manual' | null
   synopsis: string | null
   narrator: string | null
+  narrator_source: 'manual' | null
   writer: string | null
   penciller: string | null
   publisher: string | null
   arc_name: string | null
+  arc_name_source: 'manual' | null
   metadata_enrichment_attempted_at: string | null
   missing_since: string | null
   created_at: string
@@ -91,6 +94,13 @@ export interface AppSettingsRow {
   auto_purge_enabled: number // SQLite INTEGER 0/1, not a JS boolean
   auto_purge_after_days: number
   updated_at: string
+}
+
+export interface SeriesSagaRow {
+  series_name: string
+  saga_name: string
+  position: number
+  created_at: string
 }
 
 export type ActivityAction = 'created' | 'relinked' | 'missing' | 'removed' | 'metadata_updated' | 'series_updated'

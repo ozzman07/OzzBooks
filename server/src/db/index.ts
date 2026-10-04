@@ -78,12 +78,15 @@ function migrate(db: Database.Database): void {
     ['title_source', "TEXT CHECK (title_source IN ('manual'))"],
     ['author_source', "TEXT CHECK (author_source IN ('manual'))"],
     ['series_name_source', "TEXT CHECK (series_name_source IN ('manual'))"],
+    ['genre_source', "TEXT CHECK (genre_source IN ('manual'))"],
+    ['narrator_source', "TEXT CHECK (narrator_source IN ('manual'))"],
     ['missing_since', 'TEXT'],
     ['narrator', 'TEXT'],
     ['writer', 'TEXT'],
     ['penciller', 'TEXT'],
     ['publisher', 'TEXT'],
     ['arc_name', 'TEXT'],
+    ['arc_name_source', "TEXT CHECK (arc_name_source IN ('manual'))"],
   ]
   for (const [name, type] of booksTextColumns) {
     if (!booksColumns.has(name)) {

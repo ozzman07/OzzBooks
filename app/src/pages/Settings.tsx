@@ -12,6 +12,7 @@ import {
   updateAppSettings,
   backfillSeriesNumbers,
   fetchActivityLogSummary,
+  fetchSagas,
   type ApiSource,
   type ApiEnrichmentState,
   type ApiAppSettings,
@@ -382,6 +383,33 @@ function AutoPurgeCard() {
 // Just a snapshot + link — the actual list lives on its own page
 // (ActivityLog.tsx), same "card summarizes, dedicated page has the
 // detail" split as NeedsAttentionCard above.
+// Same snapshot-card + dedicated-page split as NeedsAttentionCard/
+// ActivityLogCard above — the real list, create flow, and ordering UI
+// live on Sagas.tsx/SagaDetail.tsx.
+function SagasCard() {
+  const [count, setCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    fetchSagas()
+      .then((sagas) => setCount(sagas.length))
+      .catch(() => setCount(null))
+  }, [])
+
+  return (
+    <div className="mt-3 rounded border border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-sm text-primary">Sagas</p>
+          <p className="text-xs text-subtle">Overarching collections of series, like Sanderson's Cosmere.</p>
+        </div>
+        <Link to="/sagas" className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary">
+          {count !== null ? `${count} saga${count === 1 ? '' : 's'}` : 'View'}
+        </Link>
+      </div>
+    </div>
+  )
+}
+
 function ActivityLogCard() {
   const [summary, setSummary] = useState<ApiActivityLogSummary | null>(null)
 
@@ -1040,6 +1068,7 @@ export function Settings() {
           <MetadataEnrichmentCard />
           <NightlyRescanCard />
           <SeriesNumberBackfillCard />
+          <SagasCard />
           <NeedsAttentionCard />
           <AutoPurgeCard />
           <ActivityLogCard />

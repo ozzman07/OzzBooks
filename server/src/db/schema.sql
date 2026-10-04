@@ -88,12 +88,30 @@ CREATE TABLE IF NOT EXISTS books (
   content_hash TEXT, -- for duplicate detection across sources
   page_count INTEGER, -- comics only ('cbz'); computed once at ingestion from the archive's own entry count, never re-derived at serve time (no pages table — see ingestion/comic.ts)
   genre TEXT, -- backfilled from Open Library (see ingestion/enrichment/), null until enriched; always one of GENRE_OPTIONS, not a raw subject string
+  -- Same manual-pin convention as title_source/author_source/etc above —
+  -- NULL means enrichBooks.ts may (re-)fill this the next time it finds
+  -- the book with a null genre; 'manual' means a Book Detail edit, which
+  -- enrichment must never overwrite. Added alongside narrator_source
+  -- below specifically so a Book Detail edit has somewhere to go back to
+  -- ("reset to auto") instead of being permanently stuck once touched.
+  genre_source TEXT CHECK (genre_source IN ('manual')),
   synopsis TEXT, -- backfilled alongside genre, same enrichment pass, null until enriched
   narrator TEXT, -- audiobooks only; read from the composer/writer tag at ingestion, editable on Book Detail
+  -- Same convention as title_source — NULL means a rescan keeps refreshing
+  -- this from the file's own composer/writer tag, 'manual' pins a Book
+  -- Detail correction against that.
+  narrator_source TEXT CHECK (narrator_source IN ('manual')),
   writer TEXT, -- comics only; from ComicInfo.xml's <Writer>, refreshed on every scan like author (no manual-edit precedence column — not user-editable yet)
   penciller TEXT, -- comics only; from ComicInfo.xml's <Penciller>, shown as "Artist" on Book Detail
   publisher TEXT, -- comics only; from ComicInfo.xml's <Publisher>
   arc_name TEXT, -- comics only; folder-derived (see deriveComicArcFromSegments in ingestion/comic.ts) — the immediate parent folder when a comic is nested 2+ levels below its series folder, e.g. "Death of the Family" or "Batman Eternal". Groups Series Detail's items below the series level; null for a file sitting directly under its series folder
+  -- Same manual-pin convention as series_name_source — a rescan actively
+  -- re-derives arc_name from folder structure every time (unlike
+  -- genre/narrator's "only fill if empty" treatment), so without this a
+  -- manual correction would just get silently overwritten by the very
+  -- next scan. Same concept as a saga grouping several whole series, one
+  -- level down: an arc groups several issues within one series.
+  arc_name_source TEXT CHECK (arc_name_source IN ('manual')),
   -- Stamped on every enrichment attempt, hit or miss, so a backfill pass
   -- doesn't repeatedly re-query the same already-attempted book — a
   -- future "retry failed lookups" action resets this to NULL.
@@ -117,6 +135,26 @@ CREATE TABLE IF NOT EXISTS chapters (
 
 CREATE INDEX IF NOT EXISTS idx_books_source ON books(source_id);
 CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
+
+-- Overarching multi-series collections (e.g. Feist's Midkemia saga,
+-- Sanderson's Cosmere), where several whole series each have their own
+-- internal order plus a position within the saga's wider reading order.
+-- Keys off series_name, not a book_id — a saga is a property of a whole
+-- series, not any one book, so this stays a small standalone table rather
+-- than adding columns to every book row (series_name itself has no
+-- dedicated table; this is deliberately the first case where one did
+-- seem worth it, since "which saga, and where" needs to be set once per
+-- series, not once per book). series_name is the primary key: a series
+-- belongs to at most one saga. position is REAL, same reasoning as
+-- books.series_number — inserting a series between two existing ones
+-- later shouldn't require renumbering the rest of the saga.
+CREATE TABLE IF NOT EXISTS series_sagas (
+  series_name TEXT PRIMARY KEY,
+  saga_name TEXT NOT NULL,
+  position REAL NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_series_sagas_saga ON series_sagas(saga_name, position);
 
 -- Singleton (id always 1) — app-wide preferences that don't belong on any
 -- one source. Row is seeded below on every startup (idempotent), so

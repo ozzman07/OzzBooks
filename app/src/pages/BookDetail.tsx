@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { fetchBook, updateBook } from '../api/client'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import {
+  fetchBook,
+  updateBook,
+  fetchSagas,
+  addSeriesToSaga,
+  ApiError,
+  type ApiBookDetail,
+  type ApiSagaSummary,
+} from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { reconcileProgress, removeFromContinueListening } from '../offline/reconcile'
 import { getCachedBookDetail, putCachedBookDetail } from '../offline/bookDetailCacheStore'
@@ -12,6 +20,7 @@ import { useComicDownload } from '../hooks/useComicDownload'
 import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
+import { MetadataLookupDialog } from '../components/MetadataLookupDialog'
 import { usePlayer } from '../player/PlayerContext'
 import { logPlayerEvent } from '../player/playerDebugLog'
 import { formatClock, formatDuration } from '../lib/format'
@@ -97,6 +106,428 @@ function AddToPlaylist({ bookId }: { bookId: string }) {
 
       {feedback && <p className="mt-1 text-center text-xs text-emerald-400">{feedback}</p>}
       {error && <p className="mt-1 text-center text-xs text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+/**
+ * Quick one-way entry point for tagging this book's *series* into a saga —
+ * same split as AddToPlaylist above: a lightweight "add" action lives
+ * here, but reordering/renaming/removing a series from a saga stays
+ * Saga Detail's job exclusively (see the saga design conversation this
+ * was built from). Only shown when the book has a series to tag (saga
+ * membership is keyed by series_name, not by book) and isn't already in
+ * one — once it is, the read-only "Part of [saga] →" link covers it;
+ * changing sagas happens on Saga Detail, not by re-adding here.
+ *
+ * Adding one book's series already puts every other book sharing that
+ * series_name in the saga too — series_sagas is keyed by series_name, not
+ * per book, so there's no separate "apply to the whole series" step
+ * needed.
+ */
+function AddToSaga({ seriesName, onAdded }: { seriesName: string; onAdded: (sagaName: string, position: number) => void }) {
+  const [sagas, setSagas] = useState<ApiSagaSummary[] | null>(null)
+  const [showPicker, setShowPicker] = useState(false)
+  const [newSagaName, setNewSagaName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function ensureSagasLoaded(): Promise<ApiSagaSummary[] | null> {
+    if (sagas) return sagas
+    try {
+      const loaded = await fetchSagas()
+      setSagas(loaded)
+      return loaded
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server')
+      return null
+    }
+  }
+
+  async function addTo(sagaName: string) {
+    const trimmed = sagaName.trim()
+    if (!trimmed) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      const updated = await addSeriesToSaga(trimmed, seriesName)
+      const entry = updated.series.find((s) => s.series_name === seriesName)
+      onAdded(updated.saga_name, entry?.position ?? 0)
+      setShowPicker(false)
+      setNewSagaName('')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not reach the server')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function togglePicker() {
+    if (!showPicker) await ensureSagasLoaded()
+    setShowPicker((v) => !v)
+  }
+
+  return (
+    <div className="text-xs text-subtle">
+      <button onClick={() => void togglePicker()} className="underline">
+        + Add "{seriesName}" to a saga
+      </button>
+
+      {showPicker && (
+        <div className="mt-2 rounded-lg border border-border-strong bg-background p-2">
+          {sagas && sagas.length > 0 && (
+            <div className="mb-2 space-y-1">
+              {sagas.map((s) => (
+                <button
+                  key={s.saga_name}
+                  onClick={() => void addTo(s.saga_name)}
+                  disabled={submitting}
+                  className="block w-full rounded px-2 py-1.5 text-left text-sm text-primary hover:bg-border disabled:opacity-50"
+                >
+                  {s.saga_name}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newSagaName}
+              onChange={(e) => setNewSagaName(e.target.value)}
+              placeholder="New saga name"
+              className="flex-1 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-primary placeholder:text-subtle"
+            />
+            <button
+              onClick={() => void addTo(newSagaName)}
+              disabled={submitting || !newSagaName.trim()}
+              className="shrink-0 rounded border border-border-strong px-2 py-1 text-xs text-secondary disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
+          {error && <p className="mt-1 text-red-400">{error}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface MetadataPatch {
+  title?: string
+  titleSource?: null
+  author?: string | null
+  seriesName?: string | null
+  seriesNumber?: number | null
+  genre?: string | null
+  narrator?: string | null
+  arcName?: string | null
+}
+
+type MetadataField = 'title' | 'author' | 'seriesName' | 'seriesNumber' | 'genre' | 'narrator' | 'arcName'
+
+const RESET_PATCH: Record<MetadataField, MetadataPatch> = {
+  // title has no null/auto form of its own (the column can't be blank) —
+  // titleSource: null un-pins it without touching the text, see
+  // updateBook's own comment.
+  title: { titleSource: null },
+  author: { author: null },
+  seriesName: { seriesName: null },
+  seriesNumber: { seriesNumber: null },
+  genre: { genre: null },
+  narrator: { narrator: null },
+  arcName: { arcName: null },
+}
+
+/**
+ * Single unified editor for every per-book metadata field, replacing what
+ * used to be three separate scattered inline editors (series, genre,
+ * narrator — each with its own toggle-to-edit state) plus no way at all
+ * to fix title/author despite the server already supporting it. One
+ * dialog, one Save, one PATCH request. Modeled on FilterSheet.tsx's
+ * bottom-sheet pattern (the one modal convention already in this app)
+ * rather than inventing a new one.
+ *
+ * Every field shows a "Manual · Reset to auto" indicator whenever it's
+ * currently pinned against future rescans — real feedback caught live:
+ * without this, a field could get silently stuck on manual with no way
+ * to tell, or (title specifically, before titleSource existed) no way
+ * back to auto at all. Reset is an instant, separate action per field
+ * (its own PATCH call) rather than something staged into the main Save,
+ * since it's a distinct "undo the pin" intent, not a new value — the
+ * dialog stays open afterward so several fields can be reset in one
+ * sitting, or combined with editing others before a final Save.
+ *
+ * Deliberately does NOT include saga — saga membership/order is only
+ * ever managed from the saga's own page (see the saga design
+ * conversation this was built from), never edited from a book.
+ */
+function EditMetadataDialog({
+  book,
+  onClose,
+  onSaved,
+  onSagaAdded,
+}: {
+  book: Book
+  onClose: () => void
+  onSaved: (updated: ApiBookDetail) => void
+  onSagaAdded: (sagaName: string, position: number) => void
+}) {
+  const [titleDraft, setTitleDraft] = useState(book.title)
+  const [authorDraft, setAuthorDraft] = useState(book.author ?? '')
+  const [seriesNameDraft, setSeriesNameDraft] = useState(book.seriesName ?? '')
+  const [seriesNumberDraft, setSeriesNumberDraft] = useState(
+    book.seriesNumber !== undefined ? String(book.seriesNumber) : '',
+  )
+  const [genreDraft, setGenreDraft] = useState(book.genre ?? '')
+  const [narratorDraft, setNarratorDraft] = useState(book.narrator ?? '')
+  const [arcNameDraft, setArcNameDraft] = useState(book.arcName ?? '')
+  // Mirrors each field's current *Source — re-synced from the server's
+  // response after every save/reset (see syncFromResponse) rather than
+  // inferred client-side, so this can never drift from what's actually
+  // persisted.
+  const [manual, setManual] = useState<Record<MetadataField, boolean>>({
+    title: book.titleSource === 'manual',
+    author: book.authorSource === 'manual',
+    seriesName: book.seriesNameSource === 'manual',
+    seriesNumber: book.seriesNumberSource === 'manual',
+    genre: book.genreSource === 'manual',
+    narrator: book.narratorSource === 'manual',
+    arcName: book.arcNameSource === 'manual',
+  })
+  const [saving, setSaving] = useState(false)
+  const [resettingField, setResettingField] = useState<MetadataField | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Narrator is an audiobook-only field — same guard the old inline
+  // editor used.
+  const isAudio = book.format !== 'epub' && book.format !== 'cbz'
+  const isComic = book.format === 'cbz'
+
+  function syncFromResponse(updated: ApiBookDetail) {
+    setManual({
+      title: updated.title_source === 'manual',
+      author: updated.author_source === 'manual',
+      seriesName: updated.series_name_source === 'manual',
+      seriesNumber: updated.series_number_source === 'manual',
+      genre: updated.genre_source === 'manual',
+      narrator: updated.narrator_source === 'manual',
+      arcName: updated.arc_name_source === 'manual',
+    })
+    onSaved(updated)
+  }
+
+  async function handleReset(field: MetadataField) {
+    setError(null)
+    setResettingField(field)
+    try {
+      const updated = await updateBook(book.id, RESET_PATCH[field])
+      syncFromResponse(updated)
+      // Reflect the now-cleared value locally too — title is the one
+      // exception, since resetting it never touches the text itself.
+      if (field === 'author') setAuthorDraft('')
+      if (field === 'seriesName') setSeriesNameDraft('')
+      if (field === 'seriesNumber') setSeriesNumberDraft('')
+      if (field === 'genre') setGenreDraft('')
+      if (field === 'narrator') setNarratorDraft('')
+      if (field === 'arcName') setArcNameDraft('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setResettingField(null)
+    }
+  }
+
+  async function handleSave() {
+    setError(null)
+    const trimmedTitle = titleDraft.trim()
+    if (!trimmedTitle) {
+      setError('Title cannot be empty')
+      return
+    }
+    const parsedSeriesNumber = seriesNumberDraft.trim() === '' ? null : Number(seriesNumberDraft)
+    if (parsedSeriesNumber !== null && Number.isNaN(parsedSeriesNumber)) {
+      setError('Series number must be a number')
+      return
+    }
+    const trimmedAuthor = authorDraft.trim()
+    const trimmedSeriesName = seriesNameDraft.trim()
+    const trimmedNarrator = narratorDraft.trim()
+    const trimmedArcName = arcNameDraft.trim()
+
+    // Only a field that actually changed goes in the patch — matches the
+    // server's manual-pin convention (a field's _source column only
+    // flips to 'manual' when it's genuinely present in the PATCH body),
+    // so leaving a field untouched here can't accidentally pin it.
+    const patch: MetadataPatch = {}
+    if (trimmedTitle !== book.title) patch.title = trimmedTitle
+    if (trimmedAuthor !== (book.author ?? '')) patch.author = trimmedAuthor === '' ? null : trimmedAuthor
+    if (trimmedSeriesName !== (book.seriesName ?? '')) patch.seriesName = trimmedSeriesName === '' ? null : trimmedSeriesName
+    if (parsedSeriesNumber !== (book.seriesNumber ?? null)) patch.seriesNumber = parsedSeriesNumber
+    if (genreDraft !== (book.genre ?? '')) patch.genre = genreDraft === '' ? null : genreDraft
+    if (isAudio && trimmedNarrator !== (book.narrator ?? '')) patch.narrator = trimmedNarrator === '' ? null : trimmedNarrator
+    if (isComic && trimmedArcName !== (book.arcName ?? '')) patch.arcName = trimmedArcName === '' ? null : trimmedArcName
+
+    if (Object.keys(patch).length === 0) {
+      onClose()
+      return
+    }
+
+    setSaving(true)
+    try {
+      const updated = await updateBook(book.id, patch)
+      syncFromResponse(updated)
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function FieldLabel({ field, children }: { field: MetadataField; children: string }) {
+    return (
+      <span className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted">{children}</span>
+        {manual[field] && (
+          <button
+            type="button"
+            onClick={() => void handleReset(field)}
+            disabled={resettingField === field}
+            className="shrink-0 whitespace-nowrap text-[10px] text-amber-400 underline disabled:opacity-50"
+          >
+            {resettingField === field ? 'Resetting…' : 'Manual · Reset to auto'}
+          </button>
+        )}
+      </span>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 sm:items-center" onClick={onClose}>
+      <div
+        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-t-2xl bg-surface sm:rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border-strong px-4 py-3">
+          <h2 className="text-sm font-semibold text-primary">Edit metadata</h2>
+          <button onClick={onClose} className="text-xs text-subtle underline">
+            Cancel
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+          <label className="block">
+            <FieldLabel field="title">Title</FieldLabel>
+            <input
+              type="text"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+            />
+          </label>
+          <label className="block">
+            <FieldLabel field="author">Author</FieldLabel>
+            <input
+              type="text"
+              value={authorDraft}
+              onChange={(e) => setAuthorDraft(e.target.value)}
+              className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+            />
+          </label>
+          <div className="flex gap-2">
+            <label className="block flex-1">
+              <FieldLabel field="seriesName">Series name</FieldLabel>
+              <input
+                type="text"
+                value={seriesNameDraft}
+                onChange={(e) => setSeriesNameDraft(e.target.value)}
+                className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+              />
+            </label>
+            <label className="block w-20">
+              <FieldLabel field="seriesNumber">#</FieldLabel>
+              <input
+                type="number"
+                value={seriesNumberDraft}
+                onChange={(e) => setSeriesNumberDraft(e.target.value)}
+                className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+              />
+            </label>
+          </div>
+          {/* Saga membership/order is only ever managed from the saga's
+              own page (see the saga design conversation this was built
+              from) — already in one, this is just a read-only link.
+              Not in one yet, a quick "add" picker lives right here
+              instead, same one-way-add-here/full-management-there split
+              as AddToPlaylist elsewhere on this page. Based on the
+              already-saved series name, not the draft above — add/save a
+              series name first if it doesn't have one yet. */}
+          <div className="block">
+            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">Saga</span>
+            {book.sagaName ? (
+              <p className="text-sm text-primary">
+                <Link to={`/sagas/${encodeURIComponent(book.sagaName)}`} className="underline" onClick={onClose}>
+                  Part of the {book.sagaName}
+                  {book.sagaPosition !== undefined && `, #${book.sagaPosition + 1}`} →
+                </Link>
+              </p>
+            ) : book.seriesName ? (
+              <AddToSaga seriesName={book.seriesName} onAdded={onSagaAdded} />
+            ) : (
+              <p className="text-xs text-subtle">Add a series name above first, then save, to add it to a saga.</p>
+            )}
+          </div>
+          <label className="block">
+            <FieldLabel field="genre">Genre</FieldLabel>
+            <select
+              value={genreDraft}
+              onChange={(e) => setGenreDraft(e.target.value)}
+              className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+            >
+              <option value="">No genre</option>
+              {GENRE_OPTIONS.map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+          </label>
+          {isAudio && (
+            <label className="block">
+              <FieldLabel field="narrator">Narrator</FieldLabel>
+              <input
+                type="text"
+                value={narratorDraft}
+                onChange={(e) => setNarratorDraft(e.target.value)}
+                className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary"
+              />
+            </label>
+          )}
+          {isComic && (
+            <label className="block">
+              <FieldLabel field="arcName">Arc / collection</FieldLabel>
+              <input
+                type="text"
+                value={arcNameDraft}
+                onChange={(e) => setArcNameDraft(e.target.value)}
+                placeholder="e.g. Death of the Family"
+                className="w-full rounded-lg border border-border-strong bg-background px-3 py-2 text-sm text-primary placeholder:text-subtle"
+              />
+            </label>
+          )}
+          {error && <p className="text-xs text-red-400">{error}</p>}
+        </div>
+
+        <div className="border-t border-border-strong px-4 py-3">
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="w-full rounded-lg bg-amber-400 px-4 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -227,16 +658,8 @@ export function BookDetail() {
   // when cleared — this local flag is what actually drives the UI after a
   // removal, independent of that object identity.
   const [progressCleared, setProgressCleared] = useState(false)
-  const [editingSeries, setEditingSeries] = useState(false)
-  const [seriesNameDraft, setSeriesNameDraft] = useState('')
-  const [seriesNumberDraft, setSeriesNumberDraft] = useState('')
-  const [seriesError, setSeriesError] = useState<string | null>(null)
-  const [editingGenre, setEditingGenre] = useState(false)
-  const [genreDraft, setGenreDraft] = useState('')
-  const [genreError, setGenreError] = useState<string | null>(null)
-  const [editingNarrator, setEditingNarrator] = useState(false)
-  const [narratorDraft, setNarratorDraft] = useState('')
-  const [narratorError, setNarratorError] = useState<string | null>(null)
+  const [showEditDialog, setShowEditDialog] = useState(false)
+  const [showLookupDialog, setShowLookupDialog] = useState(false)
   const result = useAsync(async () => {
     const [book, progress] = await Promise.all([
       fetchBook(bookId!).then(adaptBookDetail),
@@ -367,79 +790,50 @@ export function BookDetail() {
     }
   }
 
-  function startEditingSeries() {
-    setSeriesError(null)
-    setSeriesNameDraft(book.seriesName ?? '')
-    setSeriesNumberDraft(book.seriesNumber !== undefined ? String(book.seriesNumber) : '')
-    setEditingSeries(true)
+  // Applies EditMetadataDialog's save/reset result — reads every relevant
+  // field straight from the server's own fresh response rather than
+  // tracking "what did the dialog just patch" here too, so this can never
+  // drift from what's actually persisted (a reset, in particular, touches
+  // columns — a cleared value, an un-pinned source — the dialog's own
+  // patch object doesn't fully describe on its own). Mutated in place on
+  // `book`, same as book.progress above (book is the useAsync-cached
+  // object for this bookId, not re-fetched on every render, so this is
+  // what makes an edit show up immediately here), plus the same update to
+  // AppDataContext's own copy so Library/Store (reading from the shared
+  // cache, not this page's local book) show it too, without a full
+  // re-fetch. Only reachable once isFullyLoaded (see the Edit button
+  // below), so `book` is always result.data at this point, never the
+  // shared cached list item.
+  function applyUpdatedBook(updated: ApiBookDetail) {
+    // Re-derive via the same adapter the initial load uses, instead of
+    // hand-picking fields here — a hand-picked list silently drifts out of
+    // sync whenever a new field (e.g. cover art) is added elsewhere, which
+    // is exactly what happened: the metadata-lookup flow can change
+    // artwork_thumb_path/full_path, but this function never copied those
+    // over, so a freshly-fetched cover never appeared until a full reload.
+    const fields = adaptBookDetail(updated)
+    Object.assign(book, fields)
+    data.updateCachedBook(book.id, fields)
   }
 
-  async function saveSeries() {
-    setSeriesError(null)
-    const trimmedName = seriesNameDraft.trim()
-    const parsedNumber = seriesNumberDraft.trim() === '' ? null : Number(seriesNumberDraft)
-    if (parsedNumber !== null && Number.isNaN(parsedNumber)) {
-      setSeriesError('Series number must be a number')
-      return
-    }
-    try {
-      await updateBook(book.id, { seriesName: trimmedName === '' ? null : trimmedName, seriesNumber: parsedNumber })
-      const patch = { seriesName: trimmedName === '' ? undefined : trimmedName, seriesNumber: parsedNumber ?? undefined }
-      // Mutated in place, same as book.progress above — book is the
-      // useAsync-cached object for this bookId, not re-fetched on every
-      // render, so this is what makes the edit show up immediately here.
-      // Only reachable once isFullyLoaded (see the Edit button above), so
-      // `book` is always result.data at this point, never the shared
-      // cached list item.
-      book.seriesName = patch.seriesName
-      book.seriesNumber = patch.seriesNumber
-      // AppDataContext's own copy needs the same update so Library/Store
-      // (reading from the shared cache, not this page's local book) show
-      // the edit too, without a full re-fetch.
-      data.updateCachedBook(book.id, patch)
-      setEditingSeries(false)
-    } catch (err) {
-      setSeriesError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  function startEditingGenre() {
-    setGenreError(null)
-    setGenreDraft(book.genre ?? '')
-    setEditingGenre(true)
-  }
-
-  async function saveGenre() {
-    setGenreError(null)
-    try {
-      await updateBook(book.id, { genre: genreDraft === '' ? null : genreDraft })
-      const patch = { genre: genreDraft === '' ? undefined : genreDraft }
-      book.genre = patch.genre
-      data.updateCachedBook(book.id, patch)
-      setEditingGenre(false)
-    } catch (err) {
-      setGenreError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  function startEditingNarrator() {
-    setNarratorError(null)
-    setNarratorDraft(book.narrator ?? '')
-    setEditingNarrator(true)
-  }
-
-  async function saveNarrator() {
-    setNarratorError(null)
-    const trimmed = narratorDraft.trim()
-    try {
-      await updateBook(book.id, { narrator: trimmed === '' ? null : trimmed })
-      const patch = { narrator: trimmed === '' ? undefined : trimmed }
-      book.narrator = patch.narrator
-      data.updateCachedBook(book.id, patch)
-      setEditingNarrator(false)
-    } catch (err) {
-      setNarratorError(err instanceof Error ? err.message : String(err))
-    }
+  // AddToSaga's callback — same immediate-local-update pattern as
+  // applyUpdatedBook above. Every other book sharing this series is now
+  // in the saga too (series_sagas is keyed by series_name, not per book —
+  // see AddToSaga's own comment), but only this page's own copy is
+  // patched here; a sibling book's cached list entry picks up the badge
+  // on the next natural data refresh rather than being hunted down and
+  // patched individually.
+  function applySagaAdd(sagaName: string, position: number) {
+    const fields: Partial<Book> = { sagaName, sagaPosition: position }
+    Object.assign(book, fields)
+    data.updateCachedBook(book.id, fields)
+    // Real bug caught live on SagaDetail.tsx's own reorder/remove/rename/
+    // delete actions: sagaName/sagaPosition only get patched for *this*
+    // book above, but every other book sharing the series is in the saga
+    // too — their cached copies would otherwise show stale saga info
+    // everywhere else (Library, Series Detail) until some unrelated
+    // refresh happened to reload the catalog.
+    data.invalidate()
   }
 
   return (
@@ -454,123 +848,56 @@ export function BookDetail() {
         <div className="min-w-0 text-center sm:flex-1 sm:text-left">
           <h1 className="text-xl font-semibold text-primary">{book.title}</h1>
           <p className="text-sm text-muted">{book.author}</p>
-          {book.format !== 'epub' &&
-            book.format !== 'cbz' &&
-            (editingNarrator ? (
-              <div className="mt-1 flex items-center justify-center gap-2 sm:justify-start">
-                <input
-                  type="text"
-                  value={narratorDraft}
-                  onChange={(e) => setNarratorDraft(e.target.value)}
-                  placeholder="Narrator"
-                  className="w-40 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
-                />
-                <button onClick={() => void saveNarrator()} className="text-xs text-amber-400 underline">
-                  Save
-                </button>
-                <button onClick={() => setEditingNarrator(false)} className="text-xs text-subtle underline">
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <p className="text-xs text-subtle">
-                {book.narrator && <>Narrated by {book.narrator} </>}
-                {isFullyLoaded && (
-                  <button onClick={startEditingNarrator} className="underline">
-                    {book.narrator ? 'Edit' : '+ Add narrator'}
-                  </button>
-                )}
-              </p>
-            ))}
-          {narratorError && <p className="mt-1 text-xs text-red-400">{narratorError}</p>}
-          {editingSeries ? (
-            <div className="mt-2 flex items-center justify-center gap-2 sm:justify-start">
-              <input
-                type="text"
-                value={seriesNameDraft}
-                onChange={(e) => setSeriesNameDraft(e.target.value)}
-                placeholder="Series name"
-                className="w-32 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
-              />
-              <input
-                type="number"
-                value={seriesNumberDraft}
-                onChange={(e) => setSeriesNumberDraft(e.target.value)}
-                placeholder="#"
-                className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary placeholder:text-subtle sm:text-left"
-              />
-              <button onClick={() => void saveSeries()} className="text-xs text-amber-400 underline">
-                Save
-              </button>
-              <button onClick={() => setEditingSeries(false)} className="text-xs text-subtle underline">
-                Cancel
-              </button>
-            </div>
-          ) : (
+          {book.format !== 'epub' && book.format !== 'cbz' && book.narrator && (
+            <p className="mt-1 text-xs text-subtle">Narrated by {book.narrator}</p>
+          )}
+          {book.seriesName && (
             <p className="mt-1 text-xs text-subtle">
-              {book.seriesName && (
-                <>
-                  {book.seriesName}
-                  {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
-                  {book.seriesName && isFullyLoaded && ' · '}
-                </>
-              )}
-              {/* Editing needs the real fetched `book` object (saveSeries
-                  mutates it in place) — held back until the full fetch lands
-                  so a fast tap can't ever mutate the shared cached list item
-                  AppDataContext owns instead. */}
-              {isFullyLoaded && (
-                <button onClick={startEditingSeries} className="underline">
-                  {book.seriesName ? 'Edit' : '+ Add series info'}
-                </button>
-              )}
+              {book.seriesName}
+              {book.seriesNumber !== undefined && ` #${book.seriesNumber}`}
             </p>
           )}
-          {seriesError && <p className="mt-1 text-xs text-red-400">{seriesError}</p>}
+          {/* Read-only — saga membership/order is only ever managed from
+              the saga's own page (see the saga design conversation this
+              was built from). Not in one yet, "+ Add to a saga" lives in
+              the "Edit metadata" dialog instead of as a separate control
+              here, per Jim's own call. */}
+          {book.sagaName && (
+            <p className="mt-1 text-xs text-subtle">
+              <Link to={`/sagas/${encodeURIComponent(book.sagaName)}`} className="underline">
+                Part of the {book.sagaName}
+                {book.sagaPosition !== undefined && `, #${book.sagaPosition + 1}`} →
+              </Link>
+            </p>
+          )}
           {/* Comics only — the folder-derived arc/collection one level below
               seriesName (e.g. "No Man's Land" under "Batman"), same value
-              Series Detail groups by. Derived from folder structure at scan
-              time, not user-editable like series name/number above. */}
+              Series Detail groups by. Editable via "Edit metadata" above,
+              same manual-pin convention as title/author/series. */}
           {book.arcName && <p className="mt-1 text-xs text-subtle">{book.arcName}</p>}
-          <div className="mt-2 flex items-center justify-center gap-2 sm:justify-start">
-            {editingGenre ? (
-              <>
-                <select
-                  value={genreDraft}
-                  onChange={(e) => setGenreDraft(e.target.value)}
-                  className="rounded border border-border-strong bg-surface px-2 py-1 text-center text-xs text-primary sm:text-left"
-                >
-                  <option value="">No genre</option>
-                  {GENRE_OPTIONS.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={() => void saveGenre()} className="text-xs text-amber-400 underline">
-                  Save
-                </button>
-                <button onClick={() => setEditingGenre(false)} className="text-xs text-subtle underline">
-                  Cancel
-                </button>
-              </>
-            ) : book.genre ? (
-              <button
-                onClick={() => isFullyLoaded && startEditingGenre()}
-                className="rounded-full border border-border-strong bg-surface px-2.5 py-0.5 text-xs text-secondary"
-              >
+          {book.genre && (
+            <div className="mt-2 flex items-center justify-center gap-2 sm:justify-start">
+              <span className="rounded-full border border-border-strong bg-surface px-2.5 py-0.5 text-xs text-secondary">
                 {book.genre}
-              </button>
-            ) : (
-              isFullyLoaded && (
-                <button onClick={startEditingGenre} className="text-xs text-subtle underline">
-                  + Add genre
-                </button>
-              )
-            )}
-          </div>
-          {genreError && <p className="mt-1 text-xs text-red-400">{genreError}</p>}
+              </span>
+            </div>
+          )}
           {book.sourceLabel && <p className="text-xs text-subtle">{book.sourceLabel}</p>}
+          {/* Held back until the full fetch lands (isFullyLoaded) — editing
+              needs the real fetched `book` object, since applyMetadataPatch
+              mutates it in place, and a fast tap before that lands could
+              otherwise mutate the shared cached list item AppDataContext
+              owns instead. */}
+          {isFullyLoaded && (
+            <div className="mt-2 flex items-center justify-center gap-3 sm:justify-start">
+              <button onClick={() => setShowEditDialog(true)} className="text-xs text-amber-400 underline">
+                Edit metadata
+              </button>
+              <button onClick={() => setShowLookupDialog(true)} className="text-xs text-amber-400 underline">
+                Look up metadata online
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {book.status === 'missing' && (
@@ -735,6 +1062,18 @@ export function BookDetail() {
           </li>
         ))}
       </ul>
+
+      {showEditDialog && (
+        <EditMetadataDialog
+          book={book}
+          onClose={() => setShowEditDialog(false)}
+          onSaved={applyUpdatedBook}
+          onSagaAdded={applySagaAdd}
+        />
+      )}
+      {showLookupDialog && (
+        <MetadataLookupDialog book={book} onClose={() => setShowLookupDialog(false)} onApplied={applyUpdatedBook} />
+      )}
     </div>
   )
 }
