@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Epub from 'epubjs'
 import type Rendition from 'epubjs/types/rendition'
+import type { NavItem } from 'epubjs'
 import { fetchBook, fetchEpubBytes } from '../api/client'
 import { adaptBookDetail } from '../api/adapter'
 import { reconcileProgress } from '../offline/reconcile'
@@ -193,6 +194,70 @@ function ReaderSettingsPanel({
   )
 }
 
+// A right-sliding overlay, not an inline panel like ReaderSettingsPanel —
+// deliberately: the epub container's actual DOM size must stay untouched
+// while this opens/closes (see the resize effect's own comment further
+// down for why epub.js needs an explicit resize() call whenever the
+// container's real size changes). An overlay never changes that size, so
+// toggling it needs no such call. The backdrop additionally blocks the
+// prev/next tap zones underneath (large invisible full-height buttons)
+// from catching a tap meant for the panel.
+function TocPanel({
+  items,
+  onSelect,
+  onClose,
+  fg,
+  bg,
+}: {
+  items: NavItem[]
+  onSelect: (href: string) => void
+  onClose: () => void
+  fg: string
+  bg: string
+}) {
+  function renderItems(list: NavItem[], depth: number) {
+    return list.map((item) => (
+      <div key={item.id}>
+        <button
+          onClick={() => onSelect(item.href)}
+          className="block w-full truncate py-2 text-left text-sm"
+          style={{ paddingLeft: `${1 + depth}rem`, paddingRight: '1rem', color: fg }}
+        >
+          {item.label.trim()}
+        </button>
+        {item.subitems && item.subitems.length > 0 && renderItems(item.subitems, depth + 1)}
+      </div>
+    ))
+  }
+
+  return (
+    <div className="absolute inset-0 z-10" onClick={onClose}>
+      <div className="absolute inset-0" style={{ background: '#00000066' }} />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="absolute inset-y-0 right-0 flex w-4/5 max-w-sm flex-col overflow-y-auto border-l"
+        style={{ background: bg, borderColor: `${fg}33` }}
+      >
+        <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: `${fg}33` }}>
+          <span className="text-sm font-medium" style={{ color: fg }}>
+            Contents
+          </span>
+          <button onClick={onClose} aria-label="Close contents" className="text-sm underline" style={{ color: fg }}>
+            Close
+          </button>
+        </div>
+        {items.length === 0 ? (
+          <p className="px-4 py-3 text-sm opacity-70" style={{ color: fg }}>
+            No table of contents available for this book.
+          </p>
+        ) : (
+          <div className="py-2">{renderItems(items, 0)}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // No page-turn animation, minimal chrome — epub.js's default paginated
 // flow doesn't animate transitions on its own, so simply not adding any
 // custom transition/animation CSS already satisfies that part of the spec.
@@ -279,6 +344,8 @@ export function EbookReader() {
   const [title, setTitle] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [showSettings, setShowSettings] = useState(false)
+  const [showToc, setShowToc] = useState(false)
+  const [tocItems, setTocItems] = useState<NavItem[]>([])
   const [prefs, setPrefs] = useState<ReaderPrefs>(loadReaderPrefs)
   // Page N of M within the current chapter — epub.js's paginated layout
   // computes this for free on every relocate, no locations index needed.
@@ -292,6 +359,8 @@ export function EbookReader() {
     skipNextPrefsApplyRef.current = true
     skipNextResizeRef.current = true
     hasNavigatedSinceLoadRef.current = false
+    setShowToc(false)
+    setTocItems([])
     let cancelled = false
     let rendition: Rendition | null = null
     let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -330,6 +399,19 @@ export function EbookReader() {
         setTitle(detail.title)
 
         const epub = Epub(bytes)
+        // Fire-and-forget, same pattern as the locations index further
+        // below — parsing the nav/NCX document is fast (not a full-book
+        // walk like locations.generate()), but there's no reason to make
+        // the reader's first page wait on it either.
+        epub.loaded.navigation
+          .then((nav) => {
+            if (!cancelled) setTocItems(nav.toc)
+          })
+          .catch(() => {
+            // A malformed/missing nav document just means the Contents
+            // button shows "no table of contents" — not worth surfacing
+            // as a reader error when the book itself still opens fine.
+          })
         const newRendition = epub.renderTo(containerRef.current!, { width: '100%', height: '100%' })
         if (cancelled) {
           // The effect was already cleaned up while renderTo (synchronous,
@@ -682,6 +764,18 @@ export function EbookReader() {
     setPrefs((p) => ({ ...p, ...partial }))
   }
 
+  // Mutually exclusive, not because they conflict technically (the TOC
+  // overlay doesn't touch layout the way the settings panel does — see
+  // TocPanel's own comment), just to keep only one open at a time.
+  function toggleToc() {
+    setShowSettings(false)
+    setShowToc((s) => !s)
+  }
+  function toggleSettings() {
+    setShowToc(false)
+    setShowSettings((s) => !s)
+  }
+
   const { bg, fg } = READER_THEMES[prefs.theme]
 
   return (
@@ -704,8 +798,18 @@ export function EbookReader() {
               Start over
             </button>
           )}
+          {status === 'ready' && (
+            <button
+              onClick={toggleToc}
+              aria-label="Table of contents"
+              aria-pressed={showToc}
+              className="text-sm font-medium underline"
+            >
+              ☰
+            </button>
+          )}
           <button
-            onClick={() => setShowSettings((s) => !s)}
+            onClick={toggleSettings}
             aria-label="Reading settings"
             aria-pressed={showSettings}
             className="text-sm font-medium underline"
@@ -757,6 +861,18 @@ export function EbookReader() {
                 Page {pageInfo.page} of {pageInfo.total}
                 {percent !== null && ` · ${percent}%`}
               </p>
+            )}
+            {showToc && (
+              <TocPanel
+                items={tocItems}
+                onSelect={(href) => {
+                  setShowToc(false)
+                  void renditionRef.current?.display(href)
+                }}
+                onClose={() => setShowToc(false)}
+                fg={fg}
+                bg={bg}
+              />
             )}
           </>
         )}

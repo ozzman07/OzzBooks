@@ -501,11 +501,31 @@ Don't remove them for being "unused."
 - **Phase 3d — Streaming bandwidth handling:** evaluate whether ingestion
   should transcode large/lossless sources for reasonable cellular
   streaming
-- **Phase 4 — Full e-reader UX:** themes (including an e-ink-style theme:
-  warm off-white background e.g. `#F2F0E9`, soft charcoal text e.g.
-  `#1A1A1A`, serif font default, flat/no-gloss rendering, minimal/no page
-  transition animation), highlights, notes, TOC navigation, reading
-  preferences
+- **Phase 4 — Full e-reader UX:** mostly shipped already, not all at once
+  under this heading — themes (`eink`/`dark`/`sepia`, including the
+  exact e-ink spec: `#F2F0E9` background, `#1A1A1A` text, serif font,
+  flat/no-gloss rendering, no page-turn animation), font size, and line
+  spacing all live in `app/src/reader/readerPrefs.ts` +
+  `EbookReader.tsx`'s `ReaderSettingsPanel`. **TOC navigation shipped
+  2026-10-04:** a right-sliding overlay (`TocPanel` in `EbookReader.tsx`)
+  listing the EPUB's own nav document (`epub.loaded.navigation`, fetched
+  fire-and-forget alongside the first page so it doesn't block opening),
+  nested sub-chapters indented, tapping an entry calls
+  `rendition.display(href)` same as a real page turn (saves progress
+  normally, no suppression). Deliberately an absolute overlay rather than
+  an inline panel like the settings one — doesn't change the epub
+  container's real DOM size, so (unlike the settings panel) it needs no
+  explicit `rendition.resize()` call when it opens/closes.
+
+  **Remaining, deferred (not started):** highlights + notes. Bigger than
+  TOC was — needs real text-selection capture (epub.js's
+  `rendition.on('selected', (cfiRange) => ...)`), a new synced table
+  (same precedent as the existing bookmarks table — own table,
+  user-labeled, not folded into continuous position), and render/edit/
+  delete UI (re-applying stored highlights via
+  `rendition.annotations.add()` on reopen). Notes could likely reuse the
+  same CFI-range storage as highlights with an added text field once
+  highlights exist, rather than being a fully separate feature.
 - **Phase 5 — Recap generation:** "story so far" recaps per book and per
   series, built on the Phase 3b transcription infrastructure and series
   metadata. Exact approach TBD — pending input from a related project a
