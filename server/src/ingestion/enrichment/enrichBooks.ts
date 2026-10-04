@@ -4,6 +4,7 @@ import { saveArtworkBuffer } from '../artwork.js'
 import type { BookRow } from '../../types.js'
 import { searchWork, fetchCover, OpenLibraryUnavailableError } from './openLibrary.js'
 import { MAX_PLAUSIBLE_SERIES_NUMBER } from '../seriesNumber.js'
+import { propagateToCompanionIfMissing } from '../companionSync.js'
 
 // Server-side equivalent of app/src/pages/Library.tsx's titleSortKey(),
 // extended further since this feeds a search query rather than a sort
@@ -168,6 +169,21 @@ export async function enrichBooks(): Promise<EnrichmentResult> {
 
       if (changedFields.length > 0) {
         logActivity(book.id, book.title, book.author, 'metadata_updated', `Backfilled from Open Library: ${changedFields.join(', ')}`)
+
+        // An audio/ebook companion enriches independently (its own search,
+        // its own match), so without this the two can silently settle on
+        // different genres/synopses/covers for what is really one book —
+        // fill-if-missing only, same as this pass already treats its own
+        // row, never overwriting something the companion already has.
+        const companionPatch: Parameters<typeof propagateToCompanionIfMissing>[1] = {}
+        if (changedFields.includes('genre')) companionPatch.genre = genre
+        if (changedFields.includes('synopsis')) companionPatch.synopsis = synopsis
+        if (changedFields.includes('series')) companionPatch.series_name = seriesName
+        if (changedFields.includes('cover')) {
+          companionPatch.artwork_thumb_path = artworkThumbPath
+          companionPatch.artwork_full_path = artworkFullPath
+        }
+        propagateToCompanionIfMissing(book.id, companionPatch)
       }
 
       result.attempted++

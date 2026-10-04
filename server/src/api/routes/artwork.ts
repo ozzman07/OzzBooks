@@ -18,6 +18,19 @@ artworkRouter.get('/:id/artwork/:size', (req, res) => {
     return
   }
 
+  // Real bug caught live: a replaced cover (enrichment, the "Look up
+  // metadata online" flow, or a manual relink) writes to this exact same
+  // path every time — the filename is just `{bookId}-thumb/full.png`,
+  // never versioned — so with no header here, a browser that already
+  // fetched this URL once has no reason to ask again, and keeps showing
+  // the old image indefinitely even though the file on disk changed.
+  // `no-cache` (not `no-store`) is the right fix, not a cache-busting
+  // query param threaded through every <img> across the app: it still
+  // lets the browser cache the bytes, just requires a conditional
+  // revalidation (If-Modified-Since, using sendFile's own Last-Modified
+  // header below) on every request — a cheap 304 when the file is
+  // unchanged, a fresh 200 the moment it actually is.
+  res.set('Cache-Control', 'no-cache')
   res.sendFile(filePath, (err) => {
     if (err && !res.headersSent) {
       res.status(404).json({ error: 'artwork file not found on disk' })

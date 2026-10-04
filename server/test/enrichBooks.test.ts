@@ -430,4 +430,61 @@ describe('enrichBooks', () => {
     expect((db.prepare('SELECT * FROM books WHERE id = ?').get(unreachedBook1) as any).metadata_enrichment_attempted_at).toBeNull()
     expect((db.prepare('SELECT * FROM books WHERE id = ?').get(unreachedBook2) as any).metadata_enrichment_attempted_at).toBeNull()
   })
+
+  it('fills a linked companion\'s matching empty fields too — an audio/ebook pair search independently and could otherwise settle on different genres/synopses/covers for the same work', async () => {
+    const { searchWork, fetchCover } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: 'A wizard for hire.', series: null })
+
+    const sourceId = await insertSource()
+    const bookId = await insertBook(sourceId, { genre: null, synopsis: null, artworkThumbPath: '/x', artworkFullPath: '/x' })
+    const companionId = await insertBook(sourceId, {
+      format: 'epub',
+      genre: null,
+      synopsis: null,
+      artworkThumbPath: '/x',
+      artworkFullPath: '/x',
+      // This companion would itself be a candidate (null genre/synopsis) —
+      // stamp it already-attempted so only bookId's own enrichment pass
+      // runs, isolating what's being tested here (the propagation, not a
+      // second independent search).
+      attemptedAt: '2026-01-01T00:00:00Z',
+    })
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    db.prepare('UPDATE books SET companion_book_id = ? WHERE id = ?').run(companionId, bookId)
+    db.prepare('UPDATE books SET companion_book_id = ? WHERE id = ?').run(bookId, companionId)
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    await enrichBooks()
+
+    expect(fetchCover).not.toHaveBeenCalled() // neither row was missing a cover
+    const companion = db.prepare('SELECT * FROM books WHERE id = ?').get(companionId) as any
+    expect(companion.genre).toBe('Fantasy fiction')
+    expect(companion.synopsis).toBe('A wizard for hire.')
+  })
+
+  it("never overwrites a linked companion's own already-set field, even when this row's enrichment found a different value", async () => {
+    const { searchWork } = await import('../src/ingestion/enrichment/openLibrary.js')
+    vi.mocked(searchWork).mockResolvedValue({ genre: 'Fantasy fiction', coverId: null, synopsis: null, series: null })
+
+    const sourceId = await insertSource()
+    const bookId = await insertBook(sourceId, { genre: null, artworkThumbPath: '/x', artworkFullPath: '/x' })
+    const companionId = await insertBook(sourceId, {
+      format: 'epub',
+      genre: 'Already Set On Companion',
+      artworkThumbPath: '/x',
+      artworkFullPath: '/x',
+      attemptedAt: '2026-01-01T00:00:00Z',
+    })
+    const { getDb } = await import('../src/db/index.js')
+    const db = getDb()
+    db.prepare('UPDATE books SET companion_book_id = ? WHERE id = ?').run(companionId, bookId)
+    db.prepare('UPDATE books SET companion_book_id = ? WHERE id = ?').run(bookId, companionId)
+
+    const { enrichBooks } = await import('../src/ingestion/enrichment/enrichBooks.js')
+    await enrichBooks()
+
+    const companion = db.prepare('SELECT * FROM books WHERE id = ?').get(companionId) as any
+    expect(companion.genre).toBe('Already Set On Companion')
+  })
 })

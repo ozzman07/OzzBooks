@@ -547,6 +547,44 @@ Don't remove them for being "unused."
   CBR→CBZ conversion at ingestion mirroring the existing mobi→epub
   precedent), scoped for the whole 3,440-file library rather than just
   the handful of stray files. Not started.
+- **Split book metadata into a shared "work" record + per-format rows —
+  deferred, not started (scoped 2026-10-04):** surfaced debugging a real
+  bug where "Look up metadata online" applied a bad Open Library cover
+  (a scan of the back-matter "Also by" page, not the jacket) to only one
+  side of a Mistress of the Empire audio/ebook companion pair — the two
+  rows are, and always have been, fully independent `books` rows that
+  happen to cross-reference each other via `companion_book_id`, so title/
+  author/series/genre/synopsis/cover can silently drift apart whenever
+  only one side gets written (a manual edit, a lookup apply, or
+  `enrichBooks.ts`'s automatic backfill, which runs its own independent
+  Open Library search per row). Shipped the cheap fix for that same day:
+  `server/src/ingestion/companionSync.ts`'s `propagateToCompanion`/
+  `propagateToCompanionIfMissing`, called from PATCH `/api/books/:id`,
+  `POST /:id/metadata-lookup/apply`, and `enrichBooks.ts` to mirror those
+  shared fields onto `companion_book_id` right after every write (hard
+  overwrite for a human-reviewed action, fill-if-missing for the
+  automatic backfill) — this closes the actual drift bug with no schema
+  change or data migration, but the two rows are still two independent
+  copies that *could* diverge again if some future write path forgets to
+  call it.
+
+  The structurally cleaner fix, deferred rather than built now: a shared
+  `works` table holding only the fields that are genuinely the same
+  regardless of format (title, author, series_name, series_number,
+  genre, synopsis, arc_name, cover, saga membership), with `books` rows
+  pointing at it via a `work_id` and keeping only true per-format fields
+  (narrator — audio only; writer/penciller/publisher/page_count — comics
+  only). Not done now because it's a real migration, not a quick win:
+  merging ~8,000 existing books' worth of already-duplicated (and in
+  cases like this one, already-diverged) data into shared records, plus
+  rewriting every read/write path that currently assumes a flat `book`
+  row — scan ingestion's UPSERT, PATCH `/:id`, the metadata-lookup apply
+  route, `enrichBooks.ts`, the manual-pin `*_source` columns, `adapter.ts`,
+  and every display component. Worth doing eventually since it removes
+  the "could diverge again" risk structurally instead of just mitigating
+  it, but the propagation fix above is good enough for a personal
+  library and buys time to do the real migration carefully rather than
+  rushed.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
