@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { getDb } from '../../db/index.js'
 import { logActivity } from '../../db/activityLog.js'
-import type { BookRow, ChapterRow, SourceRow } from '../../types.js'
+import type { BookRow, ChapterRow, SeriesSagaRow, SourceRow } from '../../types.js'
 import { findRelinkCandidates, previewRelinkTarget, confirmRelink } from '../../ingestion/relink.js'
 import { deleteBookAndArtwork } from '../../ingestion/scan.js'
 import { backfillSeriesNumbers } from '../../ingestion/seriesNumberBackfill.js'
@@ -10,6 +10,15 @@ import { companionMatchScore, linkCompanions, unlinkCompanions } from '../../ing
 import { isOrphanedConversion } from '../../ingestion/mobiConvert.js'
 import { GENRE_OPTIONS } from '../../ingestion/enrichment/genreOptions.js'
 import { getComicPage } from '../../ingestion/comicArchiveCache.js'
+import { cleanTitleForSearch } from '../../ingestion/enrichment/enrichBooks.js'
+import {
+  searchCandidates,
+  fetchCandidateSynopsis,
+  fetchCover,
+  OpenLibraryUnavailableError,
+} from '../../ingestion/enrichment/openLibrary.js'
+import { saveArtworkBuffer } from '../../ingestion/artwork.js'
+import { propagateToCompanion } from '../../ingestion/companionSync.js'
 
 export const booksRouter = Router()
 
@@ -30,10 +39,12 @@ booksRouter.get('/', (req, res) => {
   const rows = getDb()
     .prepare(
       `SELECT books.*, sources.label AS source_label, sources.type AS source_type, COALESCE(SUM(chapters.duration), 0) AS total_duration,
-         (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id
+         (SELECT id FROM chapters WHERE chapters.book_id = books.id ORDER BY idx DESC LIMIT 1) AS last_chapter_id,
+         series_sagas.saga_name AS saga_name, series_sagas.position AS saga_position
        FROM books
        LEFT JOIN chapters ON chapters.book_id = books.id
        LEFT JOIN sources ON sources.id = books.source_id
+       LEFT JOIN series_sagas ON series_sagas.series_name = books.series_name
        ${status ? 'WHERE books.status = ?' : ''}
        GROUP BY books.id
        ORDER BY books.title`,
@@ -43,6 +54,8 @@ booksRouter.get('/', (req, res) => {
     source_type: SourceRow['type']
     total_duration: number
     last_chapter_id: string | null
+    saga_name: string | null
+    saga_position: number | null
   })[]
   res.json(rows.map((row) => ({ ...row, is_orphaned_conversion: isOrphanedConversion(row) })))
 })
@@ -81,6 +94,11 @@ booksRouter.patch('/:id', (req, res) => {
   // silently overwritten by the very next rescan).
   const seriesNameSource = 'seriesName' in body ? (seriesName === null ? null : 'manual') : existing.series_name_source
 
+  // Comics only — same lock/unlock convention one level down: a saga
+  // groups whole series, an arc groups issues within one series.
+  const arcName = 'arcName' in body ? body.arcName : existing.arc_name
+  const arcNameSource = 'arcName' in body ? (arcName === null ? null : 'manual') : existing.arc_name_source
+
   // Malformed types (an object/array instead of a string/number) would
   // otherwise reach the raw SQL bind below and throw there instead —
   // caught here so a bad request gets a clean 400, not an opaque 500.
@@ -92,20 +110,32 @@ booksRouter.patch('/:id', (req, res) => {
     res.status(400).json({ error: 'seriesNumber must be a number or null' })
     return
   }
+  if (arcName !== null && typeof arcName !== 'string') {
+    res.status(400).json({ error: 'arcName must be a string or null' })
+    return
+  }
 
   // title/author: same manual-pin convention as series_name/series_number
   // above — this is what makes a correction stick against a source whose
   // own embedded metadata is wrong and, for a read-only source like
   // Google Drive, can never be fixed at the source itself. title has no
-  // "clear it back to auto" null form (the column is NOT NULL) — an
-  // empty/whitespace-only string is rejected rather than silently
-  // becoming the book's title.
+  // "clear it back to auto" null form the way the others do (the column
+  // is NOT NULL, so an empty/whitespace-only string is rejected rather
+  // than silently becoming the book's title) — `titleSource: null` is the
+  // dedicated escape hatch instead: resets the pin without touching the
+  // title text itself, so the next rescan picks the file back up again.
+  // Ignored when `title` is also present in the same request — setting a
+  // real value always means manual, same as every other field.
   if ('title' in body && (typeof body.title !== 'string' || body.title.trim() === '')) {
     res.status(400).json({ error: 'title must be a non-empty string' })
     return
   }
   const title = 'title' in body ? body.title.trim() : existing.title
-  const titleSource = 'title' in body ? 'manual' : existing.title_source
+  const titleSource = 'title' in body
+    ? 'manual'
+    : 'titleSource' in body && body.titleSource === null
+      ? null
+      : existing.title_source
 
   if ('author' in body && body.author !== null && typeof body.author !== 'string') {
     res.status(400).json({ error: 'author must be a string or null' })
@@ -119,14 +149,28 @@ booksRouter.patch('/:id', (req, res) => {
     return
   }
   const genre = 'genre' in body ? body.genre : existing.genre
+  // Same manual-pin convention as author above — previously genre had no
+  // source tracking at all, just an implicit "never touched again once
+  // non-null" from enrichBooks.ts/scan.ts's own fill-if-empty guards (see
+  // fillIfMissing in ingestion/scan.ts). That meant an enrichment guess
+  // and a deliberate correction were indistinguishable, and neither could
+  // ever be handed back to those guards to reconsider. Explicitly nulling
+  // genre here (same as the already-existing author/series null-to-unpin
+  // behavior) still naturally lets fillIfMissing's own "only fill when
+  // null" rule refill it later — no scan.ts/enrichBooks.ts changes needed.
+  const genreSource = 'genre' in body ? (genre === null ? null : 'manual') : existing.genre_source
+
   const narrator = 'narrator' in body ? (typeof body.narrator === 'string' ? body.narrator.trim() || null : null) : existing.narrator
+  // Same reasoning as genre immediately above.
+  const narratorSource = 'narrator' in body ? (narrator === null ? null : 'manual') : existing.narrator_source
 
   getDb()
     .prepare(
       `UPDATE books SET
          title = ?, title_source = ?, author = ?, author_source = ?,
          series_name = ?, series_name_source = ?, series_number = ?, series_number_source = ?,
-         genre = ?, narrator = ?
+         genre = ?, genre_source = ?, narrator = ?, narrator_source = ?,
+         arc_name = ?, arc_name_source = ?
        WHERE id = ?`,
     )
     .run(
@@ -139,7 +183,11 @@ booksRouter.patch('/:id', (req, res) => {
       seriesNumber,
       seriesNumberSource,
       genre,
+      genreSource,
       narrator,
+      narratorSource,
+      arcName,
+      arcNameSource,
       existing.id,
     )
 
@@ -168,7 +216,172 @@ booksRouter.patch('/:id', (req, res) => {
     logActivity(existing.id, title, author, 'metadata_updated', `Manually edited: ${changed.join(', ')}`)
   }
 
+  // Mirror whichever fields the caller actually touched onto an
+  // audio/ebook companion (if one exists) — narrator/arcName are
+  // deliberately excluded, see companionSync.ts.
+  const companionPatch: Parameters<typeof propagateToCompanion>[1] = {}
+  if ('title' in body) {
+    companionPatch.title = title
+    companionPatch.title_source = 'manual'
+  } else if ('titleSource' in body && body.titleSource === null) {
+    companionPatch.title_source = null
+  }
+  if ('author' in body) {
+    companionPatch.author = author
+    companionPatch.author_source = authorSource
+  }
+  if ('seriesName' in body) {
+    companionPatch.series_name = seriesName
+    companionPatch.series_name_source = seriesNameSource
+  }
+  if ('seriesNumber' in body) {
+    companionPatch.series_number = seriesNumber
+    companionPatch.series_number_source = seriesNumberSource
+  }
+  if ('genre' in body) {
+    companionPatch.genre = genre
+    companionPatch.genre_source = genreSource
+  }
+  propagateToCompanion(existing.id, companionPatch)
+
   res.json(getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id))
+})
+
+// Step 1 of the per-book "Look up metadata online" flow on Book Detail —
+// distinct from Settings' whole-library genre/cover backfill
+// (enrichBooks.ts), which has to be conservative since nothing reviews
+// its single auto-picked match. Here a human picks, so this returns
+// every candidate Open Library's search turned up, not just the best
+// one. Defaults the query to the book's own (cleaned) title/author, but
+// accepts an override in the body for when that doesn't find the right
+// book — e.g. a mangled filename-derived title.
+booksRouter.post('/:id/metadata-lookup', async (req, res) => {
+  const book = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
+  if (!book) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const body = req.body ?? {}
+  const title =
+    typeof body.title === 'string' && body.title.trim() ? body.title.trim() : cleanTitleForSearch(book.title)
+  const author = typeof body.author === 'string' && body.author.trim() ? body.author.trim() : book.author
+
+  try {
+    const candidates = await searchCandidates(title, author)
+    res.json({ candidates })
+  } catch (err) {
+    if (err instanceof OpenLibraryUnavailableError) {
+      res.status(502).json({ error: "Open Library isn't reachable right now — try again in a bit", detail: String(err) })
+      return
+    }
+    throw err
+  }
+})
+
+// Step 2 — applies only the fields the user actually chose to keep from
+// one candidate, same manual-pin convention as PATCH /:id above for
+// title/author/genre/seriesName (a deliberate, human-reviewed correction
+// is exactly what that convention exists for). synopsis/cover have no
+// pin of their own (see schema.sql) — same as an automatic enrichment
+// backfill, they're simply only ever filled when currently empty, so
+// setting a real value here already protects it from being silently
+// re-filled later without needing one.
+booksRouter.post('/:id/metadata-lookup/apply', async (req, res) => {
+  const existing = getDb().prepare('SELECT * FROM books WHERE id = ?').get(req.params.id) as BookRow | undefined
+  if (!existing) {
+    res.status(404).json({ error: 'book not found' })
+    return
+  }
+  const body = req.body ?? {}
+
+  if ('genre' in body && body.genre !== null && !GENRE_OPTIONS.includes(body.genre)) {
+    res.status(400).json({ error: 'invalid genre' })
+    return
+  }
+
+  const title = 'title' in body && typeof body.title === 'string' && body.title.trim() ? body.title.trim() : existing.title
+  const titleSource = 'title' in body ? 'manual' : existing.title_source
+  const author = 'author' in body ? body.author : existing.author
+  const authorSource = 'author' in body ? (author === null ? null : 'manual') : existing.author_source
+  const genre = 'genre' in body ? body.genre : existing.genre
+  const genreSource = 'genre' in body ? (genre === null ? null : 'manual') : existing.genre_source
+  const seriesName = 'seriesName' in body ? body.seriesName : existing.series_name
+  const seriesNameSource = 'seriesName' in body ? (seriesName === null ? null : 'manual') : existing.series_name_source
+
+  let synopsis = existing.synopsis
+  if (body.synopsis === true && typeof body.key === 'string') {
+    synopsis = await fetchCandidateSynopsis(body.key)
+  }
+
+  let artworkThumbPath = existing.artwork_thumb_path
+  let artworkFullPath = existing.artwork_full_path
+  let coverFetchFailed = false
+  if (typeof body.coverId === 'number') {
+    try {
+      const buffer = await fetchCover(body.coverId)
+      if (buffer) {
+        const saved = await saveArtworkBuffer(existing.id, buffer)
+        if (saved) {
+          artworkThumbPath = saved.thumbPath
+          artworkFullPath = saved.fullPath
+        } else {
+          coverFetchFailed = true
+        }
+      } else {
+        coverFetchFailed = true
+      }
+    } catch {
+      // Best-effort, same as enrichBooks.ts's own cover handling — a
+      // failed cover fetch shouldn't block title/author/genre/series/
+      // synopsis from still being applied.
+      coverFetchFailed = true
+    }
+  }
+
+  getDb()
+    .prepare(
+      `UPDATE books SET
+         title = ?, title_source = ?, author = ?, author_source = ?,
+         genre = ?, genre_source = ?, series_name = ?, series_name_source = ?,
+         synopsis = ?, artwork_thumb_path = ?, artwork_full_path = ?
+       WHERE id = ?`,
+    )
+    .run(title, titleSource, author, authorSource, genre, genreSource, seriesName, seriesNameSource, synopsis, artworkThumbPath, artworkFullPath, existing.id)
+
+  logActivity(existing.id, title, author, 'metadata_updated', 'Applied a match from an online metadata lookup')
+
+  // Same mirroring as PATCH /:id above — this is in fact the flow that
+  // surfaced the bug: applying a looked-up cover (or title/author/genre/
+  // series/synopsis) only ever wrote the row being viewed, so a companion
+  // ebook/audiobook kept its old cover/placeholder indefinitely.
+  const companionPatch: Parameters<typeof propagateToCompanion>[1] = {}
+  if ('title' in body) {
+    companionPatch.title = title
+    companionPatch.title_source = titleSource
+  }
+  if ('author' in body) {
+    companionPatch.author = author
+    companionPatch.author_source = authorSource
+  }
+  if ('genre' in body) {
+    companionPatch.genre = genre
+    companionPatch.genre_source = genreSource
+  }
+  if ('seriesName' in body) {
+    companionPatch.series_name = seriesName
+    companionPatch.series_name_source = seriesNameSource
+  }
+  if (body.synopsis === true) {
+    companionPatch.synopsis = synopsis
+  }
+  if (typeof body.coverId === 'number' && !coverFetchFailed) {
+    companionPatch.artwork_thumb_path = artworkThumbPath
+    companionPatch.artwork_full_path = artworkFullPath
+  }
+  propagateToCompanion(existing.id, companionPatch)
+
+  const updated = getDb().prepare('SELECT * FROM books WHERE id = ?').get(existing.id) as BookRow
+  res.json({ ...updated, is_orphaned_conversion: isOrphanedConversion(updated), cover_fetch_failed: coverFetchFailed })
 })
 
 // Only ever offered from the Needs Attention page, and only ever for a
@@ -201,6 +414,11 @@ booksRouter.get('/:id', (req, res) => {
   const chapters = getDb()
     .prepare('SELECT * FROM chapters WHERE book_id = ? ORDER BY idx')
     .all(book.id) as ChapterRow[]
+  const saga = book.series_name
+    ? (getDb()
+        .prepare('SELECT saga_name, position FROM series_sagas WHERE series_name = ?')
+        .get(book.series_name) as Pick<SeriesSagaRow, 'saga_name' | 'position'> | undefined)
+    : undefined
 
   res.json({
     ...book,
@@ -208,6 +426,8 @@ booksRouter.get('/:id', (req, res) => {
     source_label: source.label,
     source_type: source.type,
     is_orphaned_conversion: isOrphanedConversion(book),
+    saga_name: saga?.saga_name ?? null,
+    saga_position: saga?.position ?? null,
   })
 })
 

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { searchWork, fetchCover, lookupSeriesNumber, OpenLibraryUnavailableError } from '../src/ingestion/enrichment/openLibrary.js'
+import {
+  searchWork,
+  searchCandidates,
+  fetchCandidateSynopsis,
+  fetchCover,
+  lookupSeriesNumber,
+  OpenLibraryUnavailableError,
+} from '../src/ingestion/enrichment/openLibrary.js'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -327,6 +334,72 @@ describe('searchWork', () => {
       }),
     )
     const pending = expect(searchWork('Mistborn', 'Brandon Sanderson')).rejects.toBeInstanceOf(OpenLibraryUnavailableError)
+    await vi.runAllTimersAsync()
+    await pending
+  })
+})
+
+describe('searchCandidates', () => {
+  it('returns every candidate the search turned up, not just the best-scoring one', async () => {
+    // Unlike searchWork, nothing here should get filtered by
+    // MIN_MATCH_SCORE — a human reviews these, so a weak/wrong candidate
+    // should still show up for them to reject, not vanish silently.
+    const fetchMock = vi.fn(async () =>
+      searchResponse([
+        { key: '/works/OL1W', title: 'Mistborn: The Final Empire', author_name: ['Brandon Sanderson'], subject: ['Fantasy fiction'], cover_i: 1 },
+        { key: '/works/OL2W', title: 'Completely Unrelated Book', author_name: ['Someone Else'], subject: ['Cooking'], cover_i: 2 },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const candidates = await searchCandidates('Mistborn', 'Brandon Sanderson')
+    expect(candidates).toEqual([
+      { key: '/works/OL1W', title: 'Mistborn: The Final Empire', author: 'Brandon Sanderson', genre: 'Fantasy', series: null, coverId: 1 },
+      { key: '/works/OL2W', title: 'Completely Unrelated Book', author: 'Someone Else', genre: null, series: null, coverId: 2 },
+    ])
+  })
+
+  it('drops a candidate with no work key, since there would be nothing to fetch a synopsis for later', async () => {
+    const fetchMock = vi.fn(async () => searchResponse([{ title: 'No Key Here', author_name: ['Nobody'] }]))
+    vi.stubGlobal('fetch', fetchMock)
+    const candidates = await searchCandidates('No Key Here', null)
+    expect(candidates).toEqual([])
+  })
+
+  it('retries title-only when an author-filtered search finds nothing, same as searchWork', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const parsed = new URL(url)
+      if (parsed.searchParams.has('author')) return searchResponse([])
+      return searchResponse([{ key: '/works/OL3W', title: 'Found It', author_name: ['Real Author'] }])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const candidates = await searchCandidates('Found It', 'Wrong Author')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].title).toBe('Found It')
+  })
+})
+
+describe('fetchCandidateSynopsis', () => {
+  it('fetches and normalizes a work description by key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => ({ description: '  A great book.  ' }) })),
+    )
+    expect(await fetchCandidateSynopsis('/works/OL1W')).toBe('A great book.')
+  })
+
+  it('returns null rather than throwing on a failed fetch', async () => {
+    // Real retry backoff delays, same as the "exhausting retries" test
+    // for searchWork above — fake timers needed or this blows the test
+    // timeout waiting out real setTimeout sleeps across 3 attempts.
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('network error')
+      }),
+    )
+    const pending = expect(fetchCandidateSynopsis('/works/OL1W')).resolves.toBeNull()
     await vi.runAllTimersAsync()
     await pending
   })

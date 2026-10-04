@@ -86,12 +86,30 @@ export interface ApiBook {
   format: 'm4b' | 'mp3_folder' | 'epub' | 'cbz'
   companion_book_id: string | null
   title: string
+  /** 'manual' once a Book Detail edit has pinned it against future
+   * rescans — see EditMetadataDialog's "Manual" indicator. title has no
+   * null/auto form of its own the way the other five fields do (the
+   * column can't be blank); it's un-pinned via a dedicated
+   * `titleSource: null` PATCH instead of clearing the value. */
+  title_source: 'manual' | null
   author: string | null
+  author_source: 'manual' | null
   series_name: string | null
+  series_name_source: 'manual' | null
   series_number: number | null
+  series_number_source: 'tag' | 'folder' | 'manual' | null
+  /** Set only when series_name is a member of a saga (see series_sagas.sql
+   * and sagas.ts) — null for the vast majority of books. Present on both
+   * list and detail responses (books.ts LEFT JOINs series_sagas on both
+   * routes), so a "Part of [saga] →" link can render without a separate
+   * per-book fetch. */
+  saga_name: string | null
+  saga_position: number | null
   synopsis: string | null
   genre: string | null
+  genre_source: 'manual' | null
   narrator: string | null
+  narrator_source: 'manual' | null
   /** Comics only ('cbz'); null for every other format. */
   writer: string | null
   penciller: string | null
@@ -99,6 +117,7 @@ export interface ApiBook {
   /** Comics only ('cbz'); null for every other format, and for a comic
    * sitting directly under its series folder with no arc subfolder. */
   arc_name: string | null
+  arc_name_source: 'manual' | null
   status: 'active' | 'missing'
   artwork_thumb_path: string | null
   artwork_full_path: string | null
@@ -357,9 +376,68 @@ export async function fetchEpubBytes(bookId: string): Promise<ArrayBuffer> {
 
 export function updateBook(
   id: string,
-  patch: { seriesName?: string | null; seriesNumber?: number | null; genre?: string | null; narrator?: string | null },
+  patch: {
+    title?: string
+    /** The only way to un-pin title back to auto — title can't be
+     * cleared to null like the other five fields, so this is a dedicated
+     * "reset the pin, don't touch the text" signal. Ignored if `title`
+     * is also present in the same patch (setting a real value always
+     * wins). The only meaningful value is `null`; omit the key entirely
+     * to leave title_source as-is. */
+    titleSource?: null
+    author?: string | null
+    seriesName?: string | null
+    seriesNumber?: number | null
+    genre?: string | null
+    narrator?: string | null
+    /** Comics only. */
+    arcName?: string | null
+  },
 ): Promise<ApiBookDetail> {
   return apiFetch<ApiBookDetail>(`/api/books/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+
+export interface ApiOpenLibraryCandidate {
+  key: string
+  title: string
+  author: string | null
+  genre: string | null
+  series: string | null
+  coverId: number | null
+}
+
+// Step 1 of "Look up metadata online" (Book Detail) — every candidate
+// Open Library's search turned up for a human to review, not an
+// auto-picked single match (that's the separate, fully-automatic
+// Settings backfill). Defaults the query to the book's own title/author
+// server-side; pass an override here when that doesn't find the right
+// book (a mangled filename-derived title, for instance).
+export function lookupMetadata(
+  bookId: string,
+  query?: { title?: string; author?: string },
+): Promise<{ candidates: ApiOpenLibraryCandidate[] }> {
+  return apiFetch(`/api/books/${bookId}/metadata-lookup`, { method: 'POST', body: JSON.stringify(query ?? {}) })
+}
+
+// Step 2 — applies only whichever fields the caller includes, same
+// manual-pin convention as updateBook above for title/author/genre/
+// seriesName. `key` is only needed when `synopsis` is requested (the
+// per-work description needs its own fetch); `coverId` triggers a
+// download+save of that cover. cover_fetch_failed lets the UI say so
+// without failing the rest of the apply — see the route's own comment.
+export function applyMetadataLookup(
+  bookId: string,
+  patch: {
+    key?: string
+    title?: string
+    author?: string | null
+    genre?: string | null
+    seriesName?: string | null
+    synopsis?: boolean
+    coverId?: number
+  },
+): Promise<ApiBookDetail & { cover_fetch_failed: boolean }> {
+  return apiFetch(`/api/books/${bookId}/metadata-lookup/apply`, { method: 'POST', body: JSON.stringify(patch) })
 }
 
 // Only valid for a book already flagged missing — see the route's own
@@ -378,6 +456,69 @@ export interface ApiSeriesNumberBackfillResult {
 // against the whole library.
 export function backfillSeriesNumbers(): Promise<ApiSeriesNumberBackfillResult> {
   return apiFetch<ApiSeriesNumberBackfillResult>('/api/books/backfill-series-numbers', { method: 'POST' })
+}
+
+export interface ApiSagaSummary {
+  saga_name: string
+  series_count: number
+}
+
+export interface ApiSagaSeries {
+  series_name: string
+  position: number
+}
+
+export interface ApiSagaDetail {
+  saga_name: string
+  series: ApiSagaSeries[]
+}
+
+export function fetchSagas(): Promise<ApiSagaSummary[]> {
+  return apiFetch<ApiSagaSummary[]>('/api/sagas')
+}
+
+// Never 404s, even for a saga name with zero series yet — see sagas.ts's
+// own comment. The Settings "+ New saga" flow navigates straight here for
+// a brand new name; the page just renders an empty list until the first
+// series is added.
+export function fetchSaga(sagaName: string): Promise<ApiSagaDetail> {
+  return apiFetch<ApiSagaDetail>(`/api/sagas/${encodeURIComponent(sagaName)}`)
+}
+
+export function renameSaga(sagaName: string, newName: string): Promise<ApiSagaDetail> {
+  return apiFetch<ApiSagaDetail>(`/api/sagas/${encodeURIComponent(sagaName)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sagaName: newName }),
+  })
+}
+
+export function deleteSaga(sagaName: string): Promise<void> {
+  return apiFetch<void>(`/api/sagas/${encodeURIComponent(sagaName)}`, { method: 'DELETE' })
+}
+
+// A series belongs to at most one saga — adding one already in a
+// different saga moves it here rather than erroring.
+export function addSeriesToSaga(sagaName: string, seriesName: string): Promise<ApiSagaDetail> {
+  return apiFetch<ApiSagaDetail>(`/api/sagas/${encodeURIComponent(sagaName)}/series`, {
+    method: 'POST',
+    body: JSON.stringify({ seriesName }),
+  })
+}
+
+// Full-list replace, same convention as reorderPlaylist in cloudClient.ts —
+// seriesNames must be exactly the saga's current series, just reordered.
+export function reorderSagaSeries(sagaName: string, seriesNames: string[]): Promise<ApiSagaDetail> {
+  return apiFetch<ApiSagaDetail>(`/api/sagas/${encodeURIComponent(sagaName)}/series`, {
+    method: 'PUT',
+    body: JSON.stringify({ seriesNames }),
+  })
+}
+
+export function removeSeriesFromSaga(sagaName: string, seriesName: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/sagas/${encodeURIComponent(sagaName)}/series/${encodeURIComponent(seriesName)}`,
+    { method: 'DELETE' },
+  )
 }
 
 // Relinking a missing book: ranked suggestions first, manual folder browse

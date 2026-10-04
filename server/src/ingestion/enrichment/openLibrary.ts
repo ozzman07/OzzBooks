@@ -291,6 +291,51 @@ export async function searchWork(title: string, author: string | null): Promise<
   }
 }
 
+export interface OpenLibraryCandidate {
+  key: string
+  title: string
+  author: string | null
+  genre: string | null
+  series: string | null
+  coverId: number | null
+}
+
+/**
+ * Like searchWork above, but returns every candidate Open Library's
+ * search turned up (not just the single auto-picked best match,
+ * deliberately not even MIN_MATCH_SCORE-filtered) — used by the per-book
+ * "Look up metadata online" flow on Book Detail, where a human reviews
+ * and picks, as opposed to the fully-automatic whole-library enrichment
+ * pass above, which can't ask and so has to be conservative. Title/
+ * author/genre/series come straight from the search response; synopsis
+ * isn't included here, since it needs its own separate per-work request
+ * (see fetchWorkDescription) — only fetched once the user actually picks
+ * one of these candidates, not for all of them up front.
+ */
+export async function searchCandidates(title: string, author: string | null): Promise<OpenLibraryCandidate[]> {
+  let docs = await runSearch(title, author)
+  if (docs.length === 0 && author) {
+    docs = await runSearch(title, null)
+  }
+  return docs
+    .filter((d): d is OpenLibrarySearchDoc & { key: string } => Boolean(d.key))
+    .map((d) => ({
+      key: d.key,
+      title: d.title ?? '(untitled)',
+      author: d.author_name?.[0] ?? null,
+      genre: mapToControlledGenre(d.subject),
+      series: extractSeries(d.subject),
+      coverId: d.cover_i ?? null,
+    }))
+}
+
+/** The synopsis half of a chosen candidate — deliberately split from
+ * searchCandidates above (see its own comment: fetched lazily, only for
+ * whichever one candidate the user actually picks). */
+export async function fetchCandidateSynopsis(key: string): Promise<string | null> {
+  return fetchWorkDescription(key)
+}
+
 interface OpenLibraryEditionsResponse {
   entries?: { series?: string[] }[]
 }

@@ -1,9 +1,9 @@
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import request from 'supertest'
-import { buildTestLibrary, type TestLibrary } from './fixtures.js'
+import { buildTestLibrary, type TestLibrary, TINY_JPEG_BASE64 } from './fixtures.js'
 
 const TEST_TOKEN = 'test-token-123'
 let app: import('express').Express
@@ -671,6 +671,79 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
     expect(res.body.author_source).toBeNull()
   })
 
+  it('resets title to auto via titleSource: null, without changing the title text itself', async () => {
+    await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'Still Corrected Title' })
+
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ titleSource: null })
+    expect(res.status).toBe(200)
+    expect(res.body.title).toBe('Still Corrected Title')
+    expect(res.body.title_source).toBeNull()
+  })
+
+  it('setting title alongside titleSource: null still locks it manual — a real value always wins', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'Both At Once', titleSource: null })
+    expect(res.status).toBe(200)
+    expect(res.body.title).toBe('Both At Once')
+    expect(res.body.title_source).toBe('manual')
+  })
+
+  it('sets genre/narrator and locks their source to manual, un-locked the same way as author', async () => {
+    const set = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ genre: 'Fantasy', narrator: 'Some Narrator' })
+    expect(set.status).toBe(200)
+    expect(set.body.genre).toBe('Fantasy')
+    expect(set.body.genre_source).toBe('manual')
+    expect(set.body.narrator).toBe('Some Narrator')
+    expect(set.body.narrator_source).toBe('manual')
+
+    const cleared = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ genre: null, narrator: null })
+    expect(cleared.status).toBe(200)
+    expect(cleared.body.genre).toBeNull()
+    expect(cleared.body.genre_source).toBeNull()
+    expect(cleared.body.narrator).toBeNull()
+    expect(cleared.body.narrator_source).toBeNull()
+  })
+
+  it('sets arcName and locks its source to manual, un-locked the same way as seriesName', async () => {
+    const set = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ arcName: 'Death of the Family' })
+    expect(set.status).toBe(200)
+    expect(set.body.arc_name).toBe('Death of the Family')
+    expect(set.body.arc_name_source).toBe('manual')
+
+    const cleared = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ arcName: null })
+    expect(cleared.status).toBe(200)
+    expect(cleared.body.arc_name).toBeNull()
+    expect(cleared.body.arc_name_source).toBeNull()
+  })
+
+  it('400s for a malformed arcName', async () => {
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ arcName: 42 })
+    expect(res.status).toBe(400)
+  })
+
   it('400s for an empty/whitespace-only title instead of writing a blank title', async () => {
     const res = await request(app)
       .patch(`/api/books/${bookId}`)
@@ -783,5 +856,222 @@ describe('PATCH /api/books/:id and series-number backfill', () => {
     const alreadyNumbered = db.prepare('SELECT * FROM books WHERE id = ?').get(alreadyNumberedId) as any
     expect(alreadyNumbered.series_number).toBe(42) // untouched
     expect(alreadyNumbered.series_number_source).toBe('tag')
+  })
+
+  it('mirrors title/author/series/genre onto a linked companion, but never narrator or arcName', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { randomUUID } = await import('node:crypto')
+    const db = getDb()
+    const companionId = randomUUID()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+       VALUES (?, ?, '/companion-sync/Companion.epub', 'epub', 'Companion-derived Title', 'Companion Author', 'active')`,
+    ).run(companionId, sourceId)
+    db.prepare("UPDATE books SET companion_book_id = ?, updated_at = datetime('now') WHERE id = ?").run(companionId, bookId)
+    db.prepare("UPDATE books SET companion_book_id = ?, updated_at = datetime('now') WHERE id = ?").run(bookId, companionId)
+
+    const res = await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({
+        title: 'Shared Title',
+        author: 'Shared Author',
+        seriesName: 'Shared Series',
+        seriesNumber: 3,
+        genre: 'Fantasy',
+        narrator: 'Audio-only, should not propagate',
+      })
+    expect(res.status).toBe(200)
+
+    const companion = db.prepare('SELECT * FROM books WHERE id = ?').get(companionId) as any
+    expect(companion.title).toBe('Shared Title')
+    expect(companion.title_source).toBe('manual')
+    expect(companion.author).toBe('Shared Author')
+    expect(companion.author_source).toBe('manual')
+    expect(companion.series_name).toBe('Shared Series')
+    expect(companion.series_number).toBe(3)
+    expect(companion.series_number_source).toBe('manual')
+    expect(companion.genre).toBe('Fantasy')
+    expect(companion.genre_source).toBe('manual')
+    expect(companion.narrator).toBeNull()
+
+    db.prepare('UPDATE books SET companion_book_id = NULL WHERE id IN (?, ?)').run(bookId, companionId)
+  })
+})
+
+// Real-shaped response fixture, same as openLibrary.test.ts's own helper
+// — these routes call straight through to the real searchCandidates/
+// fetchCandidateSynopsis/fetchCover, so mocking global.fetch at this
+// level is what actually exercises the route handlers end to end.
+function searchResponse(docs: Array<Record<string, unknown>>) {
+  return { ok: true, status: 200, statusText: 'OK', json: async () => ({ docs }) }
+}
+
+describe('POST /api/books/:id/metadata-lookup (and /apply)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('404s for an unknown book', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => searchResponse([])))
+    const res = await request(app)
+      .post('/api/books/does-not-exist/metadata-lookup')
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+    expect(res.status).toBe(404)
+  })
+
+  it('searches using the book\'s own (cleaned) title/author by default, returning every candidate unfiltered', async () => {
+    const fetchMock = vi.fn(async () =>
+      searchResponse([
+        { key: '/works/OL1W', title: 'Mistborn: The Final Empire', author_name: ['Brandon Sanderson'], subject: ['Fantasy fiction'], cover_i: 1 },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({})
+    expect(res.status).toBe(200)
+    expect(res.body.candidates).toEqual([
+      { key: '/works/OL1W', title: 'Mistborn: The Final Empire', author: 'Brandon Sanderson', genre: 'Fantasy', series: null, coverId: 1 },
+    ])
+  })
+
+  it('accepts a title/author override in the body, for when the derived query finds the wrong book', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(new URL(url).searchParams.get('q')).toBe('A Deliberately Different Query')
+      return searchResponse([])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'A Deliberately Different Query' })
+    expect(res.status).toBe(200)
+    expect(res.body.candidates).toEqual([])
+  })
+
+  it(
+    '502s with a clear message when Open Library is unreachable, rather than a bare 500',
+    async () => {
+      // Real retry backoff delays, not faked — this goes through the real
+      // HTTP layer (supertest -> Express), and fake timers here stalled
+      // the request indefinitely rather than letting it resolve (unlike
+      // openLibrary.test.ts's own unit-level retry tests, which call
+      // straight into the function with no real server/transport in the
+      // way). A generous per-test timeout instead.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          throw new TypeError('network error')
+        }),
+      )
+      const res = await request(app)
+        .post(`/api/books/${bookId}/metadata-lookup`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+        .send({})
+      expect(res.status).toBe(502)
+      expect(res.body.error).toContain('Open Library')
+    },
+    20_000,
+  )
+
+  it('applies only the chosen fields and locks them manual, same convention as PATCH /:id', async () => {
+    // Known starting value, set directly rather than assumed from
+    // whatever an earlier test in this file happened to leave behind —
+    // the point being tested is that *this* request leaves it alone.
+    await request(app)
+      .patch(`/api/books/${bookId}`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ author: 'Known Starting Author' })
+
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup/apply`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'A Better Title', genre: 'Fantasy' }) // author/seriesName deliberately omitted
+    expect(res.status).toBe(200)
+    expect(res.body.title).toBe('A Better Title')
+    expect(res.body.title_source).toBe('manual')
+    expect(res.body.genre).toBe('Fantasy')
+    expect(res.body.genre_source).toBe('manual')
+    // Untouched field keeps its value and its source unchanged — not
+    // nulled out, and not force-pinned manual, just because this request
+    // didn't mention it.
+    expect(res.body.author).toBe('Known Starting Author')
+    expect(res.body.author_source).toBe('manual') // from the PATCH just above, unchanged by apply
+  })
+
+  it('fetches and applies the synopsis for the chosen candidate\'s key when asked', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, statusText: 'OK', json: async () => ({ description: 'A fetched synopsis.' }) })),
+    )
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup/apply`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ key: '/works/OL1W', synopsis: true })
+    expect(res.status).toBe(200)
+    expect(res.body.synopsis).toBe('A fetched synopsis.')
+  })
+
+  it('reports cover_fetch_failed rather than failing the whole apply when the cover download fails', async () => {
+    // Non-image bytes — saveArtworkBuffer degrades gracefully on genuinely
+    // corrupt/undecodable data (same real-world case this codebase already
+    // handles for scan-time cover extraction), which is exactly the path
+    // this exercises without needing a real image fixture.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer })),
+    )
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup/apply`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ coverId: 12345, genre: 'Science Fiction' })
+    expect(res.status).toBe(200)
+    expect(res.body.cover_fetch_failed).toBe(true)
+    // The rest of the apply still went through despite the cover failing.
+    expect(res.body.genre).toBe('Science Fiction')
+  })
+
+  it('400s for an invalid genre, same as PATCH /:id', async () => {
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup/apply`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ genre: 'Not A Real Genre' })
+    expect(res.status).toBe(400)
+  })
+
+  it('mirrors an applied cover/title/genre onto a linked companion — the bug this was built to fix', async () => {
+    const { getDb } = await import('../src/db/index.js')
+    const { randomUUID } = await import('node:crypto')
+    const db = getDb()
+    const companionId = randomUUID()
+    db.prepare(
+      `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+       VALUES (?, ?, '/companion-sync/Lookup-Companion.epub', 'epub', 'Old Title', 'Old Author', 'active')`,
+    ).run(companionId, sourceId)
+    db.prepare("UPDATE books SET companion_book_id = ?, updated_at = datetime('now') WHERE id = ?").run(companionId, bookId)
+    db.prepare("UPDATE books SET companion_book_id = ?, updated_at = datetime('now') WHERE id = ?").run(bookId, companionId)
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, arrayBuffer: async () => Buffer.from(TINY_JPEG_BASE64, 'base64') })),
+    )
+    const res = await request(app)
+      .post(`/api/books/${bookId}/metadata-lookup/apply`)
+      .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      .send({ title: 'Looked-Up Title', genre: 'Fantasy', coverId: 999 })
+    expect(res.status).toBe(200)
+    expect(res.body.cover_fetch_failed).toBe(false)
+
+    const companion = db.prepare('SELECT * FROM books WHERE id = ?').get(companionId) as any
+    expect(companion.title).toBe('Looked-Up Title')
+    expect(companion.title_source).toBe('manual')
+    expect(companion.genre).toBe('Fantasy')
+    expect(companion.artwork_thumb_path).toBeTruthy()
+    expect(companion.artwork_full_path).toBeTruthy()
+
+    db.prepare('UPDATE books SET companion_book_id = NULL WHERE id IN (?, ?)').run(bookId, companionId)
   })
 })

@@ -54,8 +54,10 @@ export async function makeTone(outPath: string, durationSeconds: number, extraAr
 
 // A real, tiny, valid 1x1 JPEG — small enough to inline, but real enough
 // for sharp (saveArtworkBuffer) to actually decode it, unlike arbitrary
-// placeholder bytes.
-const TINY_JPEG_BASE64 =
+// placeholder bytes. Exported for tests elsewhere (e.g. api.test.ts's
+// metadata-lookup/apply cover tests) that need a fetch() response sharp
+// will actually accept, not just any bytes.
+export const TINY_JPEG_BASE64 =
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k='
 
 /**
