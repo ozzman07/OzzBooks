@@ -7,6 +7,7 @@ import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { BookGrid } from '../components/BookGrid'
+import { AddBooksToPlaylist } from '../components/AddBooksToPlaylist'
 import { bookInLibrary } from '../library/companion'
 import {
   isAudioFormat,
@@ -21,6 +22,7 @@ import {
   groupBySeries,
   groupByAuthor,
   groupSeriesByAuthor,
+  orderedSeriesBooks,
 } from '../library/bookOrganize'
 import type { Book } from '../types'
 import type { LocalProgressEntry } from '../offline/db'
@@ -877,9 +879,22 @@ export function Library() {
                 return (
                   <div key={group.seriesName}>
                     <div className="mb-2 flex items-center justify-between gap-2">
-                      <h3 className="text-sm font-medium text-secondary">
-                        {group.seriesName} · {group.books.length}
-                      </h3>
+                      <div>
+                        <h3 className="text-sm font-medium text-secondary">
+                          {group.seriesName} · {group.books.length}
+                        </h3>
+                        {/* Read-only, same as Book Detail's own saga link —
+                            see SeriesDetail.tsx's identical comment. */}
+                        {group.books[0]?.sagaName && (
+                          <Link
+                            to={`/sagas/${encodeURIComponent(group.books[0].sagaName)}`}
+                            className="text-xs text-subtle underline"
+                          >
+                            Part of the {group.books[0].sagaName}
+                            {group.books[0].sagaPosition !== undefined && `, #${group.books[0].sagaPosition + 1}`} →
+                          </Link>
+                        )}
+                      </div>
                       {libraryViewMode === 'store' && (
                         <button
                           onClick={() => void handleAddAllToLibrary(group.books)}
@@ -889,6 +904,13 @@ export function Library() {
                         </button>
                       )}
                     </div>
+                    {/* Same reasoning as "+ Add series to My Library" above
+                        being store-only — in Store mode a series isn't
+                        necessarily owned yet, so queuing it for playback
+                        doesn't make sense there. */}
+                    {libraryViewMode === 'mine' && (
+                      <AddBooksToPlaylist books={orderedSeriesBooks(group.books)} label="this series" />
+                    )}
                     {authorGroups ? (
                       <div className="space-y-4">
                         {authorGroups.map((authorGroup) => (

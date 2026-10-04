@@ -1,10 +1,11 @@
 import { useMemo } from 'react'
-import { Link, useLocation, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAppData } from '../data/AppDataContext'
 import { BookGrid } from '../components/BookGrid'
 import { LibraryError } from '../components/LibraryError'
+import { AddBooksToPlaylist } from '../components/AddBooksToPlaylist'
 import { bookInLibrary } from '../library/companion'
-import { dedupeCompanionPairs, groupComicsByArc, groupSeriesByAuthor } from '../library/bookOrganize'
+import { dedupeCompanionPairs, groupComicsByArc, groupSeriesByAuthor, orderedSeriesBooks } from '../library/bookOrganize'
 import { useLibraryView, type LibraryViewMode } from '../library/LibraryViewContext'
 import type { Book } from '../types'
 
@@ -28,14 +29,16 @@ import type { Book } from '../types'
 export function SeriesDetail() {
   const { seriesName: encodedSeriesName } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const data = useAppData()
   const { displayMode, setDisplayMode } = useLibraryView()
 
   const seriesName = decodeURIComponent(encodedSeriesName ?? '')
   // Same route-derives-mode pattern as Library.tsx — /store/series/:name
-  // vs /library/series/:name.
+  // vs /library/series/:name. Still needed below (seriesBooks filtering,
+  // storeToggleProps) even though "← Back" itself no longer uses it — see
+  // that button's own comment.
   const libraryViewMode: LibraryViewMode = location.pathname.startsWith('/store') ? 'store' : 'mine'
-  const backHref = libraryViewMode === 'store' ? '/store' : '/library'
 
   const seriesBooks = useMemo(() => {
     const active = dedupeCompanionPairs(data.books.filter((b) => b.status === 'active' && b.seriesName === seriesName))
@@ -45,6 +48,10 @@ export function SeriesDetail() {
   // Ordering happens per-bucket inside groupComicsByArc (compareWithinSeries
   // within each arc and within standalone), not on seriesBooks itself.
   const { arcs, standalone } = useMemo(() => groupComicsByArc(seriesBooks), [seriesBooks])
+
+  // For AddBooksToPlaylist — seriesBooks again through compareWithinSeries,
+  // since arc-grouping above sorts per-bucket, not as one flat sequence.
+  const playlistOrderedBooks = useMemo(() => orderedSeriesBooks(seriesBooks), [seriesBooks])
 
   // Bulk "+ Add ... to My Library" — skips anything already shelved rather
   // than re-adding it, so it's safe to tap again after adding part of an
@@ -69,9 +76,14 @@ export function SeriesDetail() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-24 pt-6">
-      <Link to={backHref} className="mb-4 inline-block text-sm text-muted underline">
+      {/* Real browser-history back, not a fixed /library-or-/store Link —
+          real bug caught live: this page is now also reached from Saga
+          Detail (see SagaDetail.tsx), and a fixed destination always sent
+          that visit back to Library instead of back to the saga it came
+          from. Same pattern BookDetail.tsx's own "← Back" already uses. */}
+      <button onClick={() => navigate(-1)} className="mb-4 inline-block text-sm text-muted underline">
         ← Back
-      </Link>
+      </button>
 
       {data.status === 'error' && <LibraryError onRetry={data.refresh} error={data.error} />}
 
@@ -98,6 +110,23 @@ export function SeriesDetail() {
               </div>
             )}
           </div>
+          {/* Read-only, same as Book Detail's own saga link — saga
+              membership/order is only ever managed from the saga's own
+              page. Every book sharing this series_name has the same saga
+              fields (it's a series-wide property), so the first book's
+              values stand in for the whole series. */}
+          {seriesBooks[0]?.sagaName && (
+            <Link to={`/sagas/${encodeURIComponent(seriesBooks[0].sagaName)}`} className="mb-4 -mt-2 block text-xs text-subtle underline">
+              Part of the {seriesBooks[0].sagaName}
+              {seriesBooks[0].sagaPosition !== undefined && `, #${seriesBooks[0].sagaPosition + 1}`} →
+            </Link>
+          )}
+          {/* Store mode doesn't necessarily mean the books are owned yet —
+              same reasoning as Library.tsx's inline By Series view gating
+              this the same way. */}
+          {libraryViewMode === 'mine' && seriesBooks.length > 0 && (
+            <AddBooksToPlaylist books={playlistOrderedBooks} label="this series" />
+          )}
           {seriesBooks.length === 0 ? (
             <p className="px-2 text-center text-muted">
               {libraryViewMode === 'mine'
