@@ -1,11 +1,21 @@
-// TEMPORARY diagnostic — remove once the CarPlay stutter bug (plays a
-// few words, goes silent, repeats — only when routed through CarPlay,
-// never through the phone's own speaker) is understood. Nobody can watch
-// devtools while driving, so this persists a capped ring buffer of
-// player events to localStorage instead of just logging to the console —
-// survives the drive, checked afterward from Settings.
+// TEMPORARY diagnostic — remove once both bugs it's currently tracking
+// are understood and fixed for good:
+//  - the CarPlay stutter (plays a few words, goes silent, repeats — only
+//    when routed through CarPlay, never through the phone's own speaker)
+//  - stale local-storage reads/writes after the app sits backgrounded a
+//    long time (events prefixed "progress:"/"db:" — see progressStore.ts,
+//    reconcile.ts, db.ts, PlayerContext.tsx)
+// Nobody can watch devtools while driving, or leave their phone plugged
+// into devtools for hours of background listening, so this persists a
+// capped ring buffer of events to localStorage instead of just logging to
+// the console — survives both, checked afterward from Settings, which
+// also offers filter presets to isolate one investigation from the other.
 const STORAGE_KEY = 'ozzbooks_player_debug_log'
-const MAX_ENTRIES = 400
+// Two concerns now share this one ring buffer (see above) — bumped up
+// from the original 400 so a long background-listening session invest-
+// igating the progress/db bug doesn't push every CarPlay entry out
+// before anyone gets a chance to look, and vice versa.
+const MAX_ENTRIES = 1000
 
 export function logPlayerEvent(label: string, extra?: Record<string, unknown>): void {
   try {

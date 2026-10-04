@@ -525,22 +525,45 @@ function StillListeningCard() {
   )
 }
 
-// TEMPORARY diagnostic — remove once the CarPlay stutter bug (plays a few
-// words, goes silent, repeats — only over CarPlay, not the phone speaker)
-// is understood. Nobody can watch devtools while driving, so PlayerContext
-// persists events to localStorage instead (see playerDebugLog.ts) — this
-// is just a viewer for it, checked after the drive rather than during.
+// TEMPORARY diagnostic — remove once both bugs this is currently tracking
+// are understood: the CarPlay stutter (plays a few words, goes silent,
+// repeats — only over CarPlay, not the phone speaker), and stale
+// progress/library reads after the app sits backgrounded a long time.
+// Nobody can watch devtools while driving or while leaving the phone
+// backgrounded for hours, so events are persisted to localStorage instead
+// (see playerDebugLog.ts) — this is just a viewer for it, checked
+// afterward rather than live. Two unrelated investigations now share one
+// log, so the filter presets below exist specifically to let whoever's
+// reading this pull out just the lines that matter for the one they're
+// chasing, instead of scrolling past the other one's noise.
+const LOG_FILTER_PRESETS: { label: string; terms: string[] }[] = [
+  { label: 'All', terms: [] },
+  { label: 'Progress / background sync', terms: ['progress:', 'db:'] },
+  { label: 'CarPlay / playback', terms: ['audio:', 'watchdog:', 'load:', 'mediasession:'] },
+]
+
 function PlayerDebugLogCard() {
   const [log, setLog] = useState('')
+  const [filterTerms, setFilterTerms] = useState<string[]>([])
   const refresh = useCallback(() => setLog(readPlayerDebugLog()), [])
 
   useEffect(() => {
     refresh()
   }, [refresh])
 
+  const lines = log ? log.split('\n') : []
+  const visibleLines =
+    filterTerms.length === 0
+      ? lines
+      : lines.filter((line) => filterTerms.some((term) => line.toLowerCase().includes(term)))
+  const visibleLog = visibleLines.join('\n')
+
   async function copy() {
     try {
-      await navigator.clipboard.writeText(log)
+      // Copies whatever's currently filtered into view, not the whole
+      // log — the point of the presets is to hand over just the relevant
+      // slice.
+      await navigator.clipboard.writeText(visibleLog)
     } catch {
       // Clipboard API can be unavailable/denied — the visible text below is the fallback.
     }
@@ -551,14 +574,17 @@ function PlayerDebugLogCard() {
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="text-sm font-medium text-primary">Player diagnostic log (temporary)</h2>
-          <p className="text-xs text-subtle">Recent audio-player events, for tracking down the CarPlay stutter.</p>
+          <p className="text-xs text-subtle">
+            Recent audio-player and background-sync events — pick a filter below before copying, so you only share
+            what's relevant.
+          </p>
         </div>
         <div className="flex shrink-0 gap-2">
           <button onClick={refresh} className="rounded border border-border-strong px-2 py-1 text-xs text-secondary">
             Refresh
           </button>
           <button onClick={() => void copy()} className="rounded border border-border-strong px-2 py-1 text-xs text-secondary">
-            Copy
+            Copy {filterTerms.length > 0 ? 'filtered' : 'all'}
           </button>
           <button
             onClick={() => {
@@ -571,9 +597,29 @@ function PlayerDebugLogCard() {
           </button>
         </div>
       </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {LOG_FILTER_PRESETS.map((preset) => {
+          const active =
+            preset.terms.length === filterTerms.length && preset.terms.every((t) => filterTerms.includes(t))
+          return (
+            <button
+              key={preset.label}
+              onClick={() => setFilterTerms(preset.terms)}
+              className={`rounded-full border px-2.5 py-1 text-xs ${
+                active ? 'border-border-strong bg-success-soft text-success-soft-text' : 'border-border-strong text-secondary'
+              }`}
+            >
+              {preset.label}
+            </button>
+          )
+        })}
+      </div>
       <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-surface p-2 text-[10px] text-subtle">
-        {log || 'No events logged yet.'}
+        {visibleLog || (lines.length === 0 ? 'No events logged yet.' : 'No events match this filter.')}
       </pre>
+      <p className="mt-1 text-[10px] text-subtle">
+        Showing {visibleLines.length} of {lines.length} lines.
+      </p>
     </section>
   )
 }

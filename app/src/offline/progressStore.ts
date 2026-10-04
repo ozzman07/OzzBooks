@@ -1,19 +1,43 @@
 import { getDb, type LocalProgressEntry } from './db'
+import { logPlayerEvent } from '../player/playerDebugLog'
+
+// TEMPORARY diagnostic wrapper (see playerDebugLog.ts) — every read/write
+// against the IndexedDB 'progress' store logs its own duration and
+// success/failure. Specifically watching for the long-background IDB
+// zombie-connection theory: a call that takes unusually long (the
+// connection stalling before ultimately resolving) or throws here is the
+// smoking gun; a normal call should log single-digit-to-low-double-digit
+// `ms`.
+async function timedProgressCall<T>(label: string, extra: Record<string, unknown>, fn: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now()
+  try {
+    const result = await fn()
+    logPlayerEvent(`progress:${label}`, { ...extra, ms: Date.now() - startedAt })
+    return result
+  } catch (err) {
+    logPlayerEvent(`progress:${label} FAILED`, { ...extra, ms: Date.now() - startedAt, err: String(err) })
+    throw err
+  }
+}
 
 export async function getLocalProgress(bookId: string): Promise<LocalProgressEntry | undefined> {
-  return (await getDb()).get('progress', bookId)
+  return timedProgressCall('get-local', { bookId }, async () => (await getDb()).get('progress', bookId))
 }
 
 export async function getAllLocalProgress(): Promise<LocalProgressEntry[]> {
-  return (await getDb()).getAll('progress')
+  return timedProgressCall('get-all-local', {}, async () => (await getDb()).getAll('progress'))
 }
 
 export async function putLocalProgress(entry: LocalProgressEntry): Promise<void> {
-  await (await getDb()).put('progress', entry)
+  await timedProgressCall(
+    'put-local',
+    { bookId: entry.bookId, chapterId: entry.chapterId, updatedAt: entry.updatedAt },
+    async () => (await getDb()).put('progress', entry),
+  )
 }
 
 export async function deleteLocalProgress(bookId: string): Promise<void> {
-  await (await getDb()).delete('progress', bookId)
+  await timedProgressCall('delete-local', { bookId }, async () => (await getDb()).delete('progress', bookId))
 }
 
 export async function getUnsyncedProgress(): Promise<LocalProgressEntry[]> {

@@ -13,6 +13,7 @@ import { useAppData } from '../data/AppDataContext'
 import { CoverArt } from '../components/CoverArt'
 import { LibraryError } from '../components/LibraryError'
 import { usePlayer } from '../player/PlayerContext'
+import { logPlayerEvent } from '../player/playerDebugLog'
 import { formatClock, formatDuration } from '../lib/format'
 import { bookInLibrary } from '../library/companion'
 import { GENRE_OPTIONS } from '../library/genreOptions'
@@ -339,6 +340,17 @@ export function BookDetail() {
   const hasProgress = !!book.progress && !progressCleared
 
   function playResume() {
+    // TEMPORARY diagnostic (see playerDebugLog.ts) — this is the exact
+    // moment a user-visible position regression would show up: whatever
+    // this logs as `position` is what the player is about to resume from,
+    // sourced from the reconcileProgress call in this page's own useAsync
+    // fetcher above.
+    logPlayerEvent('progress:resume', {
+      bookId: book.id,
+      hasProgress,
+      chapterId: hasProgress ? book.progress?.chapterId : book.chapters[0]?.id,
+      position: hasProgress && book.progress?.position.type === 'timestamp' ? Math.round(book.progress.position.value) : 0,
+    })
     if (hasProgress && book.progress && book.progress.position.type === 'timestamp') {
       playFrom(book.progress.chapterId, book.progress.position.value)
     } else {

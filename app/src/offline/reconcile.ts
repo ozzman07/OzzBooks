@@ -2,6 +2,7 @@ import * as cloud from '../api/cloudClient'
 import { getAllLocalProgress, getLocalProgress, putLocalProgress, deleteLocalProgress } from './progressStore'
 import { trySync } from './syncEngine'
 import type { LocalProgressEntry } from './db'
+import { logPlayerEvent } from '../player/playerDebugLog'
 
 function isNewer(a: { updatedAt: string }, b: { updatedAt: string } | undefined): boolean {
   return !b || a.updatedAt > b.updatedAt
@@ -13,7 +14,21 @@ function isNewer(a: { updatedAt: string }, b: { updatedAt: string } | undefined)
  * local-only if the cloud is unreachable) and self-heals a stuck pending
  * local write by re-triggering a sync attempt. */
 export async function reconcileProgress(token: string | null, bookId: string): Promise<LocalProgressEntry | null> {
-  const local = await getLocalProgress(bookId)
+  // TEMPORARY diagnostic (see playerDebugLog.ts) — getLocalProgress was
+  // previously unguarded here, so a hang/throw on the local read (the
+  // long-background IDB zombie-connection theory) would just propagate
+  // silently out of the whole function with nothing logged. Caught,
+  // logged, and rethrown so this specific failure point is visible
+  // without changing the actual fallback behavior below (there isn't a
+  // safe fallback for a failed local read the way there is for a failed
+  // cloud one — this book's progress genuinely can't be resolved).
+  let local: LocalProgressEntry | undefined
+  try {
+    local = await getLocalProgress(bookId)
+  } catch (err) {
+    logPlayerEvent('progress:reconcile local-read FAILED', { bookId, err: String(err) })
+    throw err
+  }
   const cloudEntry = token ? await cloud.fetchBookProgress(token, bookId).catch(() => null) : null
 
   const cloudAsLocal: LocalProgressEntry | null = cloudEntry
@@ -27,23 +42,39 @@ export async function reconcileProgress(token: string | null, bookId: string): P
     : null
 
   if (local && (!cloudAsLocal || isNewer(local, cloudAsLocal))) {
+    logPlayerEvent('progress:reconcile', { bookId, source: 'local', updatedAt: local.updatedAt })
     if (!local.synced) void trySync(token)
     return local
   }
   if (cloudAsLocal) {
+    logPlayerEvent('progress:reconcile', { bookId, source: 'cloud', updatedAt: cloudAsLocal.updatedAt })
     await putLocalProgress(cloudAsLocal)
     return cloudAsLocal
   }
+  logPlayerEvent('progress:reconcile', { bookId, source: 'none' })
   return null
 }
 
 /** Same idea as reconcileProgress, but for every book at once — used by
  * the Library's Continue Listening shelf. */
 export async function reconcileAllProgress(token: string | null): Promise<LocalProgressEntry[]> {
-  const [localAll, cloudAll] = await Promise.all([
-    getAllLocalProgress(),
-    token ? cloud.fetchAllProgress(token).catch(() => []) : Promise.resolve([]),
-  ])
+  // TEMPORARY diagnostic (see playerDebugLog.ts) — same reasoning as
+  // reconcileProgress above: getAllLocalProgress was unguarded here, so a
+  // failure on it (this is what feeds the Library's In Progress shelf)
+  // would reject this whole function with nothing logged to say why the
+  // shelf went blank.
+  // Cloud fetch kicked off immediately (not awaited yet) so it still runs
+  // concurrently with the local read below, same as the Promise.all this
+  // replaced — only the local read gets its own try/catch for logging.
+  const cloudAllPromise = token ? cloud.fetchAllProgress(token).catch(() => []) : Promise.resolve([])
+  let localAll: LocalProgressEntry[]
+  try {
+    localAll = await getAllLocalProgress()
+  } catch (err) {
+    logPlayerEvent('progress:reconcile-all local-read FAILED', { err: String(err) })
+    throw err
+  }
+  const cloudAll = await cloudAllPromise
 
   const byBookId = new Map<string, LocalProgressEntry>()
   for (const local of localAll) byBookId.set(local.bookId, local)
@@ -74,6 +105,12 @@ export async function reconcileAllProgress(token: string | null): Promise<LocalP
 
   if (hadUnsynced) void trySync(token)
 
+  logPlayerEvent('progress:reconcile-all', {
+    localCount: localAll.length,
+    cloudCount: cloudAll.length,
+    mergedCount: byBookId.size,
+    hadUnsynced,
+  })
   return [...byBookId.values()]
 }
 

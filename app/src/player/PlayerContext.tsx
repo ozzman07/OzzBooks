@@ -203,6 +203,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     latestRef.current = { book, chapter, fileTime, token: auth.token }
   })
+  // Drives the periodic progress save below off `timeupdate` rather than a
+  // plain setInterval — see that effect's own comment for why. 0 so the
+  // very first timeupdate after a chapter loads saves right away instead
+  // of waiting a full interval.
+  const lastProgressPushAtRef = useRef(0)
 
   const chapterIndex = useMemo(() => {
     if (!book || !chapter) return -1
@@ -635,6 +640,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // and silently reload the page under memory pressure before either
       // of those would otherwise catch up — without this, that crash loses
       // the scrub entirely instead of resuming from it.
+      logPlayerEvent('progress:push', { reason: 'seek', bookId: book.id, chapterId: chapter.id, position: Math.round(clamped) })
       void recordProgress(auth.token, book.id, chapter.id, { type: 'timestamp', value: clamped }, new Date().toISOString())
     },
     [book, chapter, isPlaying, seekWithinLoadedStream, resolveStillListeningPrompt, auth.token],
@@ -713,49 +719,39 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // Writes to the local IndexedDB outbox immediately (always succeeds,
   // no network dependency) and kicks off a best-effort sync — see
-  // src/offline/syncEngine.ts for the retry/backoff queue.
-  const pushProgress = useCallback(() => {
+  // src/offline/syncEngine.ts for the retry/backoff queue. `reason` is
+  // TEMPORARY diagnostic context (see playerDebugLog.ts) tagging which of
+  // this function's several call sites actually fired, so the log can
+  // show whether a save was ever even attempted during a long background
+  // stretch, not just whether the underlying write succeeded (that part's
+  // logged separately, down in progressStore.ts).
+  const pushProgress = useCallback((reason: string) => {
     const { book, chapter, fileTime, token } = latestRef.current
     if (!book || !chapter) return
-    void recordProgress(
-      token,
-      book.id,
-      chapter.id,
-      { type: 'timestamp', value: Math.max(0, fileTime - chapter.startTime) },
-      new Date().toISOString(),
-    )
+    const position = Math.max(0, fileTime - chapter.startTime)
+    logPlayerEvent('progress:push', { reason, bookId: book.id, chapterId: chapter.id, position: Math.round(position) })
+    void recordProgress(token, book.id, chapter.id, { type: 'timestamp', value: position }, new Date().toISOString())
   }, [])
 
-  // Push periodically while playing, matching "every N seconds during
-  // playback" from Claude.md's position-sync design.
-  useEffect(() => {
-    if (!isPlaying) return
-    const id = setInterval(pushProgress, 20_000)
-    return () => clearInterval(id)
-  }, [isPlaying, pushProgress])
-
-  // Flushes progress immediately when the app backgrounds or the page is
-  // about to be discarded — same class of bug as the ebook reader's
-  // debounced-save flush (see EbookReader.tsx). Background audio keeps
-  // playing after the tab is hidden, but iOS throttles/suspends plain JS
-  // timers for a hidden page regardless, so the 20s interval above can sit
-  // starved for far longer than 20s while the user is off in another app.
-  // Switching apps (or the OS later reclaiming the suspended page and
-  // reloading it from scratch under memory pressure) then restored
-  // whatever position that last periodic push happened to land on —
-  // several minutes behind where playback actually was by the time the
-  // user came back. pagehide additionally covers iOS discarding the page
-  // outright while backgrounded, which visibilitychange isn't guaranteed
-  // to fire for.
+  // Flushes progress the instant the app backgrounds or the page is about
+  // to be discarded — belt-and-suspenders alongside the timeupdate-driven
+  // periodic save below (see onTimeUpdate), covering the gap between
+  // backgrounding and that save's own next ~20s tick, and the final
+  // instant before pagehide where no further timeupdate will fire at all.
+  // Same class of fix as the ebook reader's debounced-save flush (see
+  // EbookReader.tsx). pagehide additionally covers iOS discarding the
+  // page outright while backgrounded, which visibilitychange isn't
+  // guaranteed to fire for.
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') pushProgress()
+      if (document.visibilityState === 'hidden') pushProgress('hidden')
     }
+    const onPageHide = () => pushProgress('pagehide')
     document.addEventListener('visibilitychange', onVisibilityChange)
-    window.addEventListener('pagehide', pushProgress)
+    window.addEventListener('pagehide', onPageHide)
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
-      window.removeEventListener('pagehide', pushProgress)
+      window.removeEventListener('pagehide', onPageHide)
     }
   }, [pushProgress])
 
@@ -803,7 +799,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const onPause = () => {
       logPlayerEvent('audio:pause', audioSnapshot(audio))
       setIsPlaying(false)
-      pushProgress()
+      pushProgress('pause')
     }
     // `seeked` only means the browser accepted the target time — it does
     // NOT mean there's enough data buffered to actually resume producing
@@ -898,6 +894,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     const onTimeUpdate = () => {
       setFileTime(audio.currentTime)
+      // Periodic progress save, matching "every N seconds during playback"
+      // from Claude.md's position-sync design — driven by `timeupdate`
+      // rather than a plain setInterval, same reasoning as the
+      // still-listening backstop just below: a backgrounded tab/PWA
+      // throttles or fully suspends ordinary JS timers, but background
+      // audio keeps `timeupdate` firing since it's tied to the actual
+      // media pipeline, not the JS timer queue. A setInterval-only save
+      // left a long stretch of background listening with no save at all
+      // past whatever position was captured right as the app backgrounded
+      // (see the visibilitychange/pagehide flush below) — reopening after
+      // a long time away then restored that stale snapshot, several
+      // minutes behind where playback had actually gotten to by then.
+      if (Date.now() - lastProgressPushAtRef.current >= 20_000) {
+        lastProgressPushAtRef.current = Date.now()
+        pushProgress('timeupdate-interval')
+      }
       // Backstop for the still-listening poll below: `timeupdate` is fired
       // natively by the browser's audio pipeline as long as sound is
       // genuinely still playing, not scheduled independently like
@@ -949,7 +961,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
     audio.addEventListener('timeupdate', onTimeUpdate)
     return () => audio.removeEventListener('timeupdate', onTimeUpdate)
-  }, [book, chapter, chapterIndex, clearSeekWatchdog, stillListeningPrefs, streamError, triggerStillListeningPrompt])
+  }, [book, chapter, chapterIndex, clearSeekWatchdog, stillListeningPrefs, streamError, triggerStillListeningPrompt, pushProgress])
 
   // Media Session API integration
   useEffect(() => {

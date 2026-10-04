@@ -1,5 +1,6 @@
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { Book, Position } from '../types'
+import { logPlayerEvent } from '../player/playerDebugLog'
 
 export interface LocalProgressEntry {
   bookId: string
@@ -184,8 +185,47 @@ interface OzzBooksDB extends DBSchema {
 
 let dbPromise: Promise<IDBPDatabase<OzzBooksDB>> | null = null
 
+// Real bug, reported live: after the PWA sat backgrounded for a long
+// time (long background audio session, or just left open), the IndexedDB
+// connection above can come back unusable — WebKit is known to zombie a
+// background tab's IndexedDB connection, where reads/writes against it
+// either reject or simply hang forever with no error at all. Every
+// getDb() call before this reused the one cached `dbPromise` for the
+// entire page lifetime, so once that happened every local-storage read
+// (Library's Continue Listening shelf, keyed off getAllLocalProgress)
+// and write (the player's own progress saves) silently stopped working —
+// matching exactly what was reported: the In Progress shelf not
+// repopulating, and a resumed book coming back several minutes behind,
+// both only fixed by fully restarting the app (a fresh page load gets a
+// fresh connection). Discarding the cached promise whenever the page
+// regains visibility — rather than only on an explicit 'close' event,
+// which the hung-forever case never fires — means the next getDb() call
+// always opens a brand-new connection instead of risking reuse of a dead
+// one. The old connection (if genuinely zombied) is simply abandoned, not
+// explicitly closed: IndexedDB supports multiple simultaneous connections
+// to the same database, and calling close() on a connection that's
+// already stuck could itself hang.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (!dbPromise) {
+      logPlayerEvent('db:visible (no connection held)')
+      return
+    }
+    logPlayerEvent('db:reconnect (discarding on visible)')
+    // Fire-and-forget: close() itself never hangs (it just schedules the
+    // connection to close once any of its own pending transactions settle,
+    // per spec), so this is safe even against a connection that's
+    // otherwise stuck. Not awaited — the reset below must happen
+    // synchronously regardless of whether/when this resolves.
+    dbPromise.then((db) => db.close()).catch(() => {})
+    dbPromise = null
+  })
+}
+
 export function getDb(): Promise<IDBPDatabase<OzzBooksDB>> {
   if (!dbPromise) {
+    logPlayerEvent('db:open')
     dbPromise = openDB<OzzBooksDB>('ozzbooks', 6, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('progress')) {
