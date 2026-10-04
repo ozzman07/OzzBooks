@@ -8,7 +8,7 @@ This project is intentionally not distributed through the App Store; it is meant
 
 - Audiobooks
 - Ebooks
-- Comics / graphic novels / CBR-CBZ content
+- Comics / graphic novels (CBZ; CBR requires a manual conversion first)
 - Home-hosted library sources (Synology NAS, local storage, cloud-synced folders)
 - Offline playback and chapter-level cache for short network outages
 - Cross-device sync of progress, bookmarks, and settings
@@ -28,7 +28,7 @@ This project is intentionally not distributed through the App Store; it is meant
 | File-serving API | Mac mini exposed via Tailscale + Tailscale Serve |
 | Sync/auth layer | Cloud-hosted Postgres + API, independent of home network uptime |
 | Frontend | PWA installed via Add to Home Screen |
-| Playback | HTML5 audio for audiobooks; future EPUB and comic readers for text and image content |
+| Playback | HTML5 audio for audiobooks; epub.js-based EPUB reader; page-image comic reader for CBZ |
 
 ## Key features
 
@@ -43,15 +43,19 @@ This project is intentionally not distributed through the App Store; it is meant
 - Download management and storage budgeting
 
 ### Ebook support
-- EPUB and book-position tracking
-- CFI-based position synchronization
-- Planned enhancement for richer ebook reading UX and fine-grained sync
+- Full EPUB reader (epub.js) with CFI-based position tracking and sync
+- Reading themes (e-ink, dark, sepia), font size, and line spacing
+- Table of contents navigation
+- Planned: highlights/notes, and fine-grained CFI-level sync with the
+  matching audiobook edition's position
 
 ### Comics and graphic novels
-- Planned/active support for comic and graphic novel libraries
-- Handles CBR/CBZ-style content as a first-class library category
-- Separate reading flow from audiobook and ebook playback
-- Supports page-image browsing for comics and graphic novels
+- CBZ is a first-class library format, with its own page-image reader
+  separate from audiobook/ebook playback
+- CBR is detected but not auto-converted — flagged as a scan issue
+  asking for a manual CBZ conversion, not yet ingested automatically
+- Comic-specific metadata (writer, penciller, publisher, story arc) read
+  from ComicInfo.xml
 
 ### Library management
 - Ingestion from multiple sources
@@ -59,13 +63,22 @@ This project is intentionally not distributed through the App Store; it is meant
 - Duplicate detection across sources
 - Cover artwork extraction and caching
 - Search, sorting, series grouping, and filters
-- Genre and narrator metadata management
+- Genre and narrator metadata management, with a manual-pin system so a
+  correction survives future rescans instead of being silently
+  overwritten
+- Per-book online metadata lookup (Open Library) with a human-reviewed
+  candidate picker
+- Sagas: multi-series reading-order collections (e.g. an author's whole
+  shared universe) layered on top of per-series ordering
+- Audio/ebook companion linking, with shared metadata (title, author,
+  series, genre, synopsis, cover) kept in sync between the two
 
 ### Sync and progress
 - Position sync across devices
-- Bookmarks and user annotations
+- Bookmarks (own table, user-labeled, separate from continuous position)
 - Cloud-backed state, even if the home library is temporarily unavailable
 - Self-healing re-fetch of missing cached content
+- Highlights/notes are planned but not yet built (see Roadmap)
 
 ## Platform constraints and design decisions
 
@@ -87,14 +100,16 @@ OzzBooks is built around real-world constraints on iPhone and iPad:
 
 ## Roadmap
 
-The project is currently focused on the core listening experience, but the design already anticipates future expansion:
+Core listening, reading, and comics browsing are built. What's left:
 
-- Multi-user support
-- Better metadata cleanup and enrichment
-- EPUB integration and sync with audio position
-- Comics reader and page-based navigation
-- Transcription and recap generation
+- Multi-user support (real per-user permissions/ownership)
+- Highlights and notes in the ebook reader
+- Fine-grained, CFI-level sync between an audiobook and its matching
+  ebook edition's position (today's audio↔ebook linking is companion-row
+  level, not position level)
+- Local transcription pipeline and recap generation, built on it
 - Remote wake automation for home infrastructure
+- Automatic CBR→CBZ conversion at ingestion (currently manual)
 
 ## Validation approach
 
@@ -102,7 +117,7 @@ This project emphasizes practical validation over broad test automation:
 
 - Verify audiobook downloads and storage behavior on real iOS hardware
 - Test background playback and lock-screen controls on actual devices
-- Validate comics storage and reading behavior once those flows are in place
+- Validate comics storage and reading behavior on real iOS hardware — a different storage shape than audio/ebook (many small page-image blobs instead of one or two large ones), not yet verified separately
 - Keep automated tests focused on tricky ingestion and parsing logic
 
 ## Notes
@@ -111,4 +126,4 @@ This repository is a personal/family project, not a general-purpose commercial a
 
 ## License
 
-See the repository license file for usage details.
+No license file is currently included in this repository — it's a private, personal/family project, not published for reuse.
