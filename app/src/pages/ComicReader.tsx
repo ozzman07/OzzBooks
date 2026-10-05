@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { comicPageUrl } from '../api/client'
-import { fetchBookProgress, putProgress } from '../api/cloudClient'
 import { useAuth } from '../auth/AuthContext'
 import { useAppData } from '../data/AppDataContext'
+import { reconcileProgress } from '../offline/reconcile'
+import { recordProgress } from '../offline/syncEngine'
 import { loadReadingDirection, saveReadingDirection, type ReadingDirection } from '../reader/comicReaderPrefs'
 import { getCachedComicPage, touchComicLastRead } from '../offline/comicPageStore'
 import { downloadComicPage } from '../offline/downloadManager'
@@ -110,10 +111,19 @@ export function ComicReader() {
   // keep the reader stuck on "Loading…"; it only ever adjusts the current
   // page if it resolves, applied exactly once on the initial load rather
   // than re-applying (and yanking the reader backward) on every re-render.
+  //
+  // reconcileProgress, not a raw cloud fetch — same reasoning as
+  // EbookReader's own use of it: a plain cloud fetch can race ahead of
+  // this exact book's own still-in-flight background sync from a session
+  // that just closed (close the comic, reopen it right away), silently
+  // restoring a stale page a moment behind where the reader actually
+  // left off. reconcileProgress checks local IndexedDB first, which a
+  // same-device reopen already wrote to synchronously, so it never has
+  // to win that race against the network at all.
   useEffect(() => {
-    if (status !== 'ready' || !auth.token || !bookId || progressAppliedRef.current) return
+    if (status !== 'ready' || !bookId || progressAppliedRef.current) return
     let cancelled = false
-    fetchBookProgress(auth.token, bookId)
+    reconcileProgress(auth.token, bookId)
       .then((progress) => {
         if (cancelled || progressAppliedRef.current) return
         progressAppliedRef.current = true
@@ -202,17 +212,21 @@ export function ComicReader() {
   }, [bookId, currentPage, pageCount])
 
   // Debounced position sync — same 2s debounce EbookReader uses for CFIs,
-  // just with a page index instead.
+  // just with a page index instead. recordProgress, not a raw putProgress
+  // call — real bug found live: a direct putProgress here had no local
+  // queue and no retry, so a transient network failure during this exact
+  // debounce window silently dropped that page position for good (and,
+  // independently, every call was rejected outright until the server's
+  // position-type validator learned to accept 'page' — see progress.ts).
+  // recordProgress writes locally first (always succeeds, no network
+  // dependency) and hands off to syncEngine's own backoff-retry queue,
+  // same durability EbookReader's CFI saves already have.
   useEffect(() => {
-    if (status !== 'ready' || !auth.token || !bookId) return
+    if (status !== 'ready' || !bookId) return
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     const token = auth.token
     saveTimerRef.current = setTimeout(() => {
-      void putProgress(token, bookId, {
-        position: { type: 'page', value: currentPage },
-        chapterId: null,
-        updatedAt: new Date().toISOString(),
-      })
+      void recordProgress(token, bookId, '', { type: 'page', value: currentPage }, new Date().toISOString())
     }, 2000)
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
