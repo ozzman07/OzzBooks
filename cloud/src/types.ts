@@ -9,6 +9,13 @@ export type Position =
   | { type: 'timestamp'; value: number }
   | { type: 'cfi'; value: string }
   | { type: 'page'; value: number }
+  // KOReader's CREngine position format for EPUB (e.g.
+  // "/body/DocFragment[13]/body/div/p[35]/text().0") — structurally
+  // unrelated to epub.js's CFI syntax, no cheap translation between them.
+  // A reader that only understands 'cfi' (the PWA's EbookReader) safely
+  // ignores a position of this type rather than erroring, same as it
+  // already does for any other type it doesn't handle.
+  | { type: 'koreader-xpointer'; value: string }
 
 export interface ProgressRow {
   user_id: string

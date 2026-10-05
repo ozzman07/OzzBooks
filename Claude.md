@@ -606,6 +606,28 @@ Don't remove them for being "unused."
   library and buys time to do the real migration carefully rather than
   rushed.
 
+- **KOReader (Kindle) client — scaffolded, not yet device-tested
+  (2026-10-04):** `koreader/ozzbooks.koplugin/` — a Lua plugin turning a
+  jailbroken Kindle into a dedicated EPUB reader for OzzBooks: browses
+  the library via the existing `GET /api/books` (filtered to
+  `format === 'epub'`), downloads via the existing
+  `GET /api/books/:id/epub`, and syncs position/bookmarks via the
+  existing cloud `/sync/progress` and `/sync/bookmarks` routes. No new
+  routes were needed — only `Position`'s type union (`cloud/`, `app/`)
+  was widened with a new `koreader-xpointer` variant, since KOReader's
+  EPUB engine tracks position in its own internal xpointer format, not
+  an EPUB CFI — see `koreader/README.md`'s own section on this for why
+  that means Kindle↔PWA position resume doesn't actually work yet
+  (last-write-wins still works at the row level, just not cross-format
+  resume). Every KOReader API call in the plugin was cross-checked
+  against real koreader core source rather than guessed, and all 7 Lua
+  files pass `luac -p`, but two widget APIs
+  (`Menu`/`MultiInputDialog`) couldn't be verified without a real
+  device/emulator — see the README's own "what's verified" section
+  before relying on those two specifically. Deferred: two-way bookmark
+  sync (push-only today), cover thumbnails in the library browser,
+  automatic cache eviction, and real xpointer↔CFI translation.
+
 ## Open / accepted decisions (don't relitigate without new information)
 
 - Cross-device simultaneous playback: last-write-wins on position sync —

@@ -20,6 +20,12 @@ export type Position =
   | { type: 'timestamp'; value: number }
   | { type: 'cfi'; value: string }
   | { type: 'page'; value: number }
+  // Written by the KOReader (Kindle) plugin, never by this app — KOReader's
+  // CREngine position format, structurally unrelated to epub.js's CFI
+  // syntax. Declared here only so a fetched progress row of this type
+  // doesn't need an `as any` cast; nothing in this app renders or resumes
+  // from it (EbookReader only acts on type === 'cfi').
+  | { type: 'koreader-xpointer'; value: string }
 
 export interface Book {
   id: string

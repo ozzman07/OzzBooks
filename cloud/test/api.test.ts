@@ -206,6 +206,28 @@ describe('progress sync (last-write-wins)', () => {
     const res = await request(app).delete('/sync/progress/never-existed').set('Authorization', `Bearer ${token}`)
     expect(res.status).toBe(204)
   })
+
+  it('accepts a koreader-xpointer position, written by the KOReader (Kindle) plugin', async () => {
+    const res = await request(app)
+      .put('/sync/progress/koreader-book')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        position: { type: 'koreader-xpointer', value: '/body/DocFragment[13]/body/div/p[35]/text().0' },
+        chapterId: '',
+        updatedAt: '2026-01-01T00:00:00Z',
+      })
+    expect(res.status).toBe(200)
+    expect(res.body.position).toEqual({ type: 'koreader-xpointer', value: '/body/DocFragment[13]/body/div/p[35]/text().0' })
+  })
+
+  it('accepts a page position, written by the comic reader (real bug: was previously rejected with a 400, silently dropped client-side)', async () => {
+    const res = await request(app)
+      .put('/sync/progress/comic-book')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ position: { type: 'page', value: 12 }, chapterId: null, updatedAt: '2026-01-01T00:00:00Z' })
+    expect(res.status).toBe(200)
+    expect(res.body.position).toEqual({ type: 'page', value: 12 })
+  })
 })
 
 describe('bookmarks', () => {

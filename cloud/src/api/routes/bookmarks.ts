@@ -11,6 +11,8 @@ function isPosition(value: unknown): value is Position {
   const v = value as Record<string, unknown>
   if (v.type === 'timestamp') return typeof v.value === 'number'
   if (v.type === 'cfi') return typeof v.value === 'string'
+  if (v.type === 'koreader-xpointer') return typeof v.value === 'string'
+  if (v.type === 'page') return typeof v.value === 'number'
   return false
 }
 

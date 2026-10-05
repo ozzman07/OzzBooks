@@ -11,6 +11,14 @@ function isPosition(value: unknown): value is Position {
   const v = value as Record<string, unknown>
   if (v.type === 'timestamp') return typeof v.value === 'number'
   if (v.type === 'cfi') return typeof v.value === 'string'
+  if (v.type === 'koreader-xpointer') return typeof v.value === 'string'
+  // Comic reading position (ComicReader.tsx) — real bug found live: this
+  // type has been declared in the Position union since comics shipped,
+  // but was never accepted here, so every debounced progress PUT from
+  // the comic reader has silently 400'd (fire-and-forget, no .catch() at
+  // the call site) since comics launched. Comic position has never
+  // actually reached the cloud.
+  if (v.type === 'page') return typeof v.value === 'number'
   return false
 }
 
