@@ -1,2 +1,13 @@
 node_modules/
 *.tsbuildinfo
+.DS_Store
+
+# Real secrets (DB connection strings, JWT signing secrets, API tokens)
+# live in these, never committed — only the *.example templates are
+# meant to be tracked. Added after noticing this had no .env coverage at
+# all beyond node_modules/*.tsbuildinfo, which was only not a problem so
+# far by luck (nothing but the .example files had ever been `git add`ed).
+.env
+.env.local
+.env.*.local
+!.env.example

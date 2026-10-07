@@ -606,27 +606,45 @@ Don't remove them for being "unused."
   library and buys time to do the real migration carefully rather than
   rushed.
 
-- **KOReader (Kindle) client — scaffolded, not yet device-tested
-  (2026-10-04):** `koreader/ozzbooks.koplugin/` — a Lua plugin turning a
-  jailbroken Kindle into a dedicated EPUB reader for OzzBooks: browses
-  the library via the existing `GET /api/books` (filtered to
-  `format === 'epub'`), downloads via the existing
-  `GET /api/books/:id/epub`, and syncs position/bookmarks via the
-  existing cloud `/sync/progress` and `/sync/bookmarks` routes. No new
-  routes were needed — only `Position`'s type union (`cloud/`, `app/`)
-  was widened with a new `koreader-xpointer` variant, since KOReader's
-  EPUB engine tracks position in its own internal xpointer format, not
-  an EPUB CFI — see `koreader/README.md`'s own section on this for why
-  that means Kindle↔PWA position resume doesn't actually work yet
-  (last-write-wins still works at the row level, just not cross-format
-  resume). Every KOReader API call in the plugin was cross-checked
-  against real koreader core source rather than guessed, and all 7 Lua
-  files pass `luac -p`, but two widget APIs
-  (`Menu`/`MultiInputDialog`) couldn't be verified without a real
-  device/emulator — see the README's own "what's verified" section
-  before relying on those two specifically. Deferred: two-way bookmark
-  sync (push-only today), cover thumbnails in the library browser,
-  automatic cache eviction, and real xpointer↔CFI translation.
+- **KOReader (Kindle) client — built and device-tested on a real Kindle 4
+  (2026-10-04 to 2026-10-06):** `koreader/ozzbooks.koplugin/` — a Lua
+  plugin turning a jailbroken Kindle into a dedicated EPUB reader for
+  OzzBooks: browses the signed-in user's own "My Books" shelf (cloud
+  `/sync/library` ids, cross-referenced against the new
+  `GET /api/books/epub-summary?ids=` endpoint — never the full shared
+  catalog), downloads via the existing `GET /api/books/:id/epub`, and
+  syncs position/bookmarks via the existing cloud `/sync/progress` and
+  `/sync/bookmarks` routes. `Position`'s type union (`cloud/`, `app/`)
+  gained `koreader-xpointer` (KOReader's own internal position format,
+  structurally unrelated to the PWA's EPUB CFI — no exact translation
+  exists) and an optional `percent` field on both `cfi` and
+  `koreader-xpointer`, which both platforms now send and consume for
+  *approximate* cross-device resume (`GotoPercent`/
+  `epub.locations.cfiFromPercentage`) — exact position parity isn't
+  possible, but landing within a page or so beats always starting over.
+  On the Kindle, the percent restore only applies the *first* time a
+  book is opened on that device, so it can never regress an
+  already-ongoing Kindle session — see `koreader/README.md`'s own
+  section for the full design.
+
+  Real bugs found only by actually running this on hardware (not
+  catchable by cross-checking source alone): a `require()` path using
+  dots as directory separators instead of KOReader's flat bare-module-
+  name convention; LuaSocket's `http.request` returning the literal
+  number `1` as its *first* return value on success with the real HTTP
+  status as a *second*, separately-captured value — the original code
+  only captured one value from `pcall`, silently reading every request
+  (success or failure alike) as status `1`; and fetching the *entire*
+  shared catalog (13.8 MB / 8,023 rows on this real library) and
+  filtering client-side, which outright crashed KOReader on a Kindle
+  4's limited RAM — fixed by the dedicated, server-side-filtered
+  `epub-summary` endpoint above. Lesson for anything added to this
+  plugin later: prefer a narrow, server-filtered fetch over "fetch
+  everything, filter here," and verify multi-return-value third-party
+  APIs (LuaSocket, KOReader core) against real source rather than
+  memory. Still deferred: two-way bookmark sync (push-only today), cover
+  thumbnails in the library browser, automatic cache eviction, and
+  exact (not approximate) xpointer↔CFI translation.
 
 ## Open / accepted decisions (don't relitigate without new information)
 
