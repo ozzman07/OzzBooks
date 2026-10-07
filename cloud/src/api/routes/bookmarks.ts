@@ -6,12 +6,16 @@ import { requireAuth } from '../authMiddleware.js'
 export const bookmarksRouter = Router()
 bookmarksRouter.use(requireAuth)
 
+function isPlausiblePercent(v: Record<string, unknown>): boolean {
+  return v.percent === undefined || (typeof v.percent === 'number' && v.percent >= 0 && v.percent <= 1)
+}
+
 function isPosition(value: unknown): value is Position {
   if (!value || typeof value !== 'object') return false
   const v = value as Record<string, unknown>
   if (v.type === 'timestamp') return typeof v.value === 'number'
-  if (v.type === 'cfi') return typeof v.value === 'string'
-  if (v.type === 'koreader-xpointer') return typeof v.value === 'string'
+  if (v.type === 'cfi') return typeof v.value === 'string' && isPlausiblePercent(v)
+  if (v.type === 'koreader-xpointer') return typeof v.value === 'string' && isPlausiblePercent(v)
   if (v.type === 'page') return typeof v.value === 'number'
   return false
 }

@@ -18,14 +18,20 @@ export interface Chapter {
 
 export type Position =
   | { type: 'timestamp'; value: number }
-  | { type: 'cfi'; value: string }
+  // percent (0-1, through the whole book) is an optional best-effort
+  // cross-device sync hint — see EbookReader.tsx's save/restore logic.
+  // Exact CFI only resumes within this same app; percent lets a
+  // KOReader-written position land roughly in the right place instead of
+  // always starting over.
+  | { type: 'cfi'; value: string; percent?: number }
   | { type: 'page'; value: number }
   // Written by the KOReader (Kindle) plugin, never by this app — KOReader's
   // CREngine position format, structurally unrelated to epub.js's CFI
-  // syntax. Declared here only so a fetched progress row of this type
-  // doesn't need an `as any` cast; nothing in this app renders or resumes
-  // from it (EbookReader only acts on type === 'cfi').
-  | { type: 'koreader-xpointer'; value: string }
+  // syntax, so this app never tries to resume from `value` directly
+  // (EbookReader only acts on type === 'cfi' for that). `percent`, when
+  // present, IS used — see EbookReader.tsx's restore logic — as an
+  // approximate cross-device fallback via epub.locations.cfiFromPercentage.
+  | { type: 'koreader-xpointer'; value: string; percent?: number }
 
 export interface Book {
   id: string

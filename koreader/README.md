@@ -19,19 +19,23 @@ KOReader's EPUB engine (CREngine) tracks position as its own internal
 "xpointer" string (e.g.
 `/body/DocFragment[13]/body/div/p[35]/text().0`) — not an EPUB CFI, the
 format OzzBooks' PWA reader (epub.js) uses. These are two different,
-incompatible coordinate systems with no cheap translation between them.
+incompatible coordinate systems with no cheap translation between them —
+exact, pixel-perfect cross-device resume isn't attempted.
 
-This plugin sends positions as a new `koreader-xpointer` position type
-(`cloud/src/types.ts`'s `Position` union, already extensible by design —
-there's a previously-unused `'page'` variant sitting right next to it).
-The PWA's `EbookReader.tsx` only ever tries to resume from
-`type === 'cfi'`, so a position written by this plugin is safely
-ignored there, not mishandled — **but that also means it genuinely
-won't resume you to the right spot**. Open the same book on your iPhone
-after reading on the Kindle and it'll fall back to wherever the PWA
-itself last left off, not the Kindle's position. Real bidirectional
-position translation (xpointer ↔ CFI) would be a substantial project of
-its own — logged as a future enhancement, not attempted here.
+What's built instead (2026-10-06): both sides also send an optional
+`percent` (0-1 through the whole book) alongside their native position —
+`ReaderRolling:getLastPercent()` here, `epub.locations.percentageFromCfi`
+on the PWA. Each side can use the other's percent to land roughly in the
+right spot via `GotoPercent`/`epub.locations.cfiFromPercentage` even
+though it can't resolve the other's native format directly — approximate
+(could be off by a page or so), not exact, but real cross-device
+continuity rather than always starting over.
+
+On the Kindle specifically, this only applies **the first time a book is
+opened on this device** — every later open trusts KOReader's own native
+per-device resume instead (see `OzzBooksLibrary:openBook`'s
+`is_first_open_on_this_device` guard), so a cloud snapshot can never
+regress an already-ongoing Kindle reading session.
 
 Last-write-wins still works correctly at the *row* level (whichever
 device synced most recently is what `GET /progress/:bookId` returns) —
@@ -123,4 +127,6 @@ for a personal device, not a distributed-systems retry policy).
 - **Automatic cache eviction** — EPUBs are cached forever until a
   manual clear; see `OzzBooksCache.lua`'s own comment for why that's a
   deliberate simplification, not an oversight.
-- **xpointer ↔ CFI translation** — see the limitation above.
+- **Exact xpointer ↔ CFI translation** — see the limitation above; the
+  percent-based *approximate* cross-device sync is built, exact
+  position-for-position resume is not.

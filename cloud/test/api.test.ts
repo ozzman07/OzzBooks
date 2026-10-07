@@ -220,6 +220,98 @@ describe('progress sync (last-write-wins)', () => {
     expect(res.body.position).toEqual({ type: 'koreader-xpointer', value: '/body/DocFragment[13]/body/div/p[35]/text().0' })
   })
 
+  it('accepts an optional percent alongside cfi/koreader-xpointer, the cross-device approximate-sync hint', async () => {
+    const withPercent = await request(app)
+      .put('/sync/progress/percent-book')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ position: { type: 'cfi', value: 'epubcfi(/6/4!/4/2/1:0)', percent: 0.42 }, chapterId: '', updatedAt: '2026-01-01T00:00:00Z' })
+    expect(withPercent.status).toBe(200)
+    expect(withPercent.body.position).toEqual({ type: 'cfi', value: 'epubcfi(/6/4!/4/2/1:0)', percent: 0.42 })
+  })
+
+  it('rejects an out-of-range percent rather than silently storing nonsense', async () => {
+    const res = await request(app)
+      .put('/sync/progress/percent-book-2')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ position: { type: 'cfi', value: 'epubcfi(/6/4!/4/2/1:0)', percent: 1.5 }, chapterId: '', updatedAt: '2026-01-01T00:00:00Z' })
+    expect(res.status).toBe(400)
+  })
+
+  describe('percent-aware regression guard (real bug: a stale device could win a sync purely on a newer timestamp, silently regressing real reading progress)', () => {
+    const bookId = 'regression-guard-book'
+
+    it('establishes a baseline position well into the book', async () => {
+      const res = await request(app)
+        .put(`/sync/progress/${bookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          position: { type: 'cfi', value: 'epubcfi(/6/20!/4/2/1:0)', percent: 0.5 },
+          chapterId: '',
+          updatedAt: '2026-01-01T00:00:00Z',
+        })
+      expect(res.status).toBe(200)
+    })
+
+    it('rejects a later-timestamped write that meaningfully regresses percent, even though it is newer', async () => {
+      const res = await request(app)
+        .put(`/sync/progress/${bookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          position: { type: 'koreader-xpointer', value: '/body/DocFragment[1]/body/p[1]/text().0', percent: 0.05 },
+          chapterId: '',
+          updatedAt: '2026-01-02T00:00:00Z', // later than the baseline
+        })
+      expect(res.status).toBe(409)
+      expect(res.body.position.percent).toBe(0.5) // the real progress survived
+
+      const current = await request(app).get(`/sync/progress/${bookId}`).set('Authorization', `Bearer ${token}`)
+      expect(current.body.position.percent).toBe(0.5)
+    })
+
+    it('still accepts a later write that is only slightly behind, within tolerance', async () => {
+      const res = await request(app)
+        .put(`/sync/progress/${bookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          position: { type: 'cfi', value: 'epubcfi(/6/19!/4/2/1:0)', percent: 0.49 }, // within the 0.02 tolerance
+          chapterId: '',
+          updatedAt: '2026-01-03T00:00:00Z',
+        })
+      expect(res.status).toBe(200)
+      expect(res.body.position.percent).toBe(0.49)
+    })
+
+    it('accepts a later write that genuinely advances', async () => {
+      const res = await request(app)
+        .put(`/sync/progress/${bookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          position: { type: 'koreader-xpointer', value: '/body/DocFragment[30]/body/p[1]/text().0', percent: 0.75 },
+          chapterId: '',
+          updatedAt: '2026-01-04T00:00:00Z',
+        })
+      expect(res.status).toBe(200)
+      expect(res.body.position.percent).toBe(0.75)
+    })
+
+    it('still falls back to pure timestamp ordering when the existing or incoming position has no percent at all', async () => {
+      const audioBookId = 'regression-guard-audio-book'
+      await request(app)
+        .put(`/sync/progress/${audioBookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ position: { type: 'timestamp', value: 500 }, chapterId: 'ch1', updatedAt: '2026-01-01T00:00:00Z' })
+
+      // A later, lower timestamp value with no percent to compare — must
+      // still win on pure recency, exactly like before this guard existed.
+      const res = await request(app)
+        .put(`/sync/progress/${audioBookId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ position: { type: 'timestamp', value: 10 }, chapterId: 'ch1', updatedAt: '2026-01-02T00:00:00Z' })
+      expect(res.status).toBe(200)
+      expect(res.body.position.value).toBe(10)
+    })
+  })
+
   it('accepts a page position, written by the comic reader (real bug: was previously rejected with a 400, silently dropped client-side)', async () => {
     const res = await request(app)
       .put('/sync/progress/comic-book')

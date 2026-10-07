@@ -341,6 +341,14 @@ export function EbookReader() {
   // for why this, not a raw CFI comparison, is what that correction needs
   // to check.
   const hasNavigatedSinceLoadRef = useRef(false)
+  // Set when the restored progress has no exact cfi this app can resolve
+  // (e.g. written by the KOReader plugin) but does carry a cross-device
+  // percent hint — book.locations isn't loaded yet at the point the
+  // initial display() call happens, so the approximate seek is deferred
+  // until locations become ready (see that effect further down). Reset
+  // at the top of every load(); cleared back to null once consumed (or
+  // once locations become ready and it's acted on, successful or not).
+  const pendingPercentRestoreRef = useRef<number | null>(null)
   const [title, setTitle] = useState('')
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [showSettings, setShowSettings] = useState(false)
@@ -359,6 +367,7 @@ export function EbookReader() {
     skipNextPrefsApplyRef.current = true
     skipNextResizeRef.current = true
     hasNavigatedSinceLoadRef.current = false
+    pendingPercentRestoreRef.current = null
     setShowToc(false)
     setTocItems([])
     let cancelled = false
@@ -485,10 +494,19 @@ export function EbookReader() {
             // (syncing every page turn would spam the cloud API for no
             // benefit) stays debounced, further down.
             const capturedAt = currentCfiCapturedAtRef.current
+            // percent, when locations are ready, is the cross-device
+            // approximate-sync hint (see Position's own comment) — a
+            // reader on a different engine (today, the KOReader plugin)
+            // can't resolve this cfi directly, but can land roughly in
+            // the right place via this instead of always starting over.
+            // Omitted (not 0) when locations aren't ready yet, same
+            // "best effort, not always available" treatment as the
+            // on-screen percent display a few lines up.
+            const percentForSave = locationsReadyRef.current ? epub.locations.percentageFromCfi(cfi) : undefined
             const flushPromise: Promise<void> = putLocalProgress({
               bookId: bookId!,
               chapterId: '',
-              position: { type: 'cfi', value: cfi },
+              position: { type: 'cfi', value: cfi, percent: percentForSave },
               updatedAt: capturedAt,
               synced: false,
             }).finally(() => {
@@ -547,6 +565,20 @@ export function EbookReader() {
         }
 
         const startCfi = progress?.position.type === 'cfi' ? progress.position.value : undefined
+        // Cross-device approximate fallback — a position written by a
+        // different engine (today, only the KOReader plugin) has no cfi
+        // this app can resolve, but may carry a percent hint. Can't
+        // convert it yet (book.locations isn't loaded at this point in
+        // the flow); stashed here and acted on once locations become
+        // ready, further down. Never overrides a real startCfi — those
+        // are exact and always win.
+        if (
+          !startCfi &&
+          (progress?.position.type === 'cfi' || progress?.position.type === 'koreader-xpointer') &&
+          typeof progress.position.percent === 'number'
+        ) {
+          pendingPercentRestoreRef.current = progress.position.percent
+        }
         if (startCfi) suppressNextSave()
         try {
           await rendition.display(startCfi)
@@ -644,6 +676,20 @@ export function EbookReader() {
             }
             if (cancelled) return
             locationsReadyRef.current = true
+            // Apply the deferred cross-device approximate seek now that
+            // book.locations can actually convert percent -> cfi. Guarded
+            // on the reader not having genuinely navigated in the
+            // meantime (locations.generate() can take several seconds on
+            // an uncached book — the user may well have already started
+            // reading from the beginning by the time this resolves),
+            // same "don't yank them back" reasoning as the 800ms reflow
+            // correction above.
+            if (pendingPercentRestoreRef.current !== null && !hasNavigatedSinceLoadRef.current && renditionRef.current) {
+              const approxCfi = epub.locations.cfiFromPercentage(pendingPercentRestoreRef.current)
+              suppressNextSave()
+              void renditionRef.current.display(approxCfi)
+            }
+            pendingPercentRestoreRef.current = null
             // Compute for the *current* position right away, rather than
             // waiting for the next page turn — generate() can finish
             // while the reader is sitting still, and relocated won't fire
