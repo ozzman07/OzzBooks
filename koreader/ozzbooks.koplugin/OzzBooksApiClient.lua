@@ -42,7 +42,16 @@ function OzzBooksApiClient.request(method, url, headers, body)
 
     local response_chunks = {}
     socketutil:set_timeout(REQUEST_TIMEOUT.block, REQUEST_TIMEOUT.total)
-    local ok, status_or_err = pcall(function()
+    -- Real bug found live: LuaSocket's http.request (generic/table form)
+    -- returns (ok, code, headers, status_line) — ok is the literal number
+    -- 1 on a successful connection, nil on a genuine connection failure
+    -- (DNS, refused, timeout), with the real HTTP status code as the
+    -- SECOND return value, not the first. pcall forwards every return
+    -- value of the wrapped function, so capturing only one of them here
+    -- (the old `local ok, status_or_err = pcall(...)`) silently threw
+    -- away the actual status and kept the useless "1" instead — every
+    -- request, success or failure alike, read back as status 1.
+    local pcall_ok, conn_ok, code_or_err = pcall(function()
         return http.request({
             url = url,
             method = method,
@@ -53,18 +62,23 @@ function OzzBooksApiClient.request(method, url, headers, body)
     end)
     socketutil:reset_timeout()
 
-    if not ok then
-        logger.warn("OzzBooks: request failed", url, status_or_err)
-        return false, tostring(status_or_err), nil
+    if not pcall_ok then
+        logger.warn("OzzBooks: request errored", url, conn_ok)
+        return false, tostring(conn_ok), nil
+    end
+    if not conn_ok then
+        -- A genuine connection-level failure — code_or_err is LuaSocket's
+        -- error string here (e.g. "connection refused"), not a status.
+        logger.warn("OzzBooks: connection failed", url, code_or_err)
+        return false, tostring(code_or_err), nil
     end
 
     local response_body = table.concat(response_chunks)
-    -- LuaSocket's http.request returns (code, status) on connection
-    -- success — status_or_err here is actually the HTTP status code (a
-    -- number) in that case, not an error. A 4xx/5xx is still a
-    -- "successful request, unsuccessful outcome" — callers decide what
-    -- counts as ok based on the status, not this function.
-    local status = status_or_err
+    -- code_or_err is the real HTTP status code now that conn_ok confirmed
+    -- the connection itself succeeded. A 4xx/5xx is still a "successful
+    -- request, unsuccessful outcome" — callers decide what counts as ok
+    -- based on the status, not this function.
+    local status = code_or_err
     local decoded = nil
     if #response_body > 0 then
         local decode_ok, result = pcall(json.decode, response_body)
@@ -84,7 +98,10 @@ function OzzBooksApiClient.download(url, headers, dest_path)
     end
 
     socketutil:set_timeout(DOWNLOAD_TIMEOT.block, DOWNLOAD_TIMEOT.total)
-    local ok, status_or_err = pcall(function()
+    -- Same fix as request() above — capture conn_ok/code_or_err
+    -- separately rather than losing the real status behind LuaSocket's
+    -- literal-1 success sentinel.
+    local pcall_ok, conn_ok, code_or_err = pcall(function()
         return http.request({
             url = url,
             method = "GET",
@@ -94,9 +111,9 @@ function OzzBooksApiClient.download(url, headers, dest_path)
     end)
     socketutil:reset_timeout()
 
-    if not ok or status_or_err ~= 200 then
+    if not pcall_ok or not conn_ok or code_or_err ~= 200 then
         os.remove(dest_path .. ".part")
-        return false, tostring(status_or_err)
+        return false, tostring(pcall_ok and code_or_err or conn_ok)
     end
 
     -- Rename only on full success — a partial/aborted download never

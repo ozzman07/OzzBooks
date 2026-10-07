@@ -60,6 +60,59 @@ booksRouter.get('/', (req, res) => {
   res.json(rows.map((row) => ({ ...row, is_orphaned_conversion: isOrphanedConversion(row) })))
 })
 
+// Purpose-built for the KOReader (Kindle) plugin's library browser, not a
+// general-purpose endpoint — real bug found live: the plugin was fetching
+// the full GET / response (every column, every format) and filtering to
+// epub client-side, which is fine on the PWA but was a 13.8 MB / 8,023-row
+// payload on this library, almost certainly what crashed KOReader on a
+// Kindle 4's very limited RAM. Even filtered to epub alone that's still
+// ~7.5 MB across ~3,900 books — most of each row (synopsis text, every
+// manual-pin source column, timestamps, artwork paths) is never used by
+// a plain title/author/series picker. This returns only the handful of
+// fields that picker actually needs, format-filtered server-side, cutting
+// the payload by roughly an order of magnitude.
+//
+// Optional ?ids=a,b,c narrows further to specific book ids — this local
+// (unauthenticated-per-user) server has no concept of "my library"
+// membership at all, that lives entirely in cloud/'s library_items table
+// (see cloud/src/api/routes/library.ts), so the plugin fetches that list
+// from the cloud first, then asks this endpoint for summaries of just
+// those ids, rather than this endpoint trying to know about per-user
+// state it was never designed to have.
+booksRouter.get('/epub-summary', (req, res) => {
+  const idsParam = typeof req.query.ids === 'string' ? req.query.ids : undefined
+  // Real bug caught by this route's own test: idsParam === '' (a present
+  // but empty ?ids=) is falsy in JS, so a plain `idsParam ? ... : undefined`
+  // here collapsed that case straight back to "no filter, return
+  // everything" — exactly the one case (an empty "My Books" list on the
+  // Kindle) this param exists to handle correctly. Comparing against
+  // undefined explicitly keeps an empty string on the "ids was present"
+  // path, where split+filter correctly reduces it to [].
+  const ids =
+    idsParam !== undefined
+      ? idsParam
+          .split(',')
+          .map((id) => id.trim())
+          .filter(Boolean)
+      : undefined
+
+  if (ids && ids.length === 0) {
+    res.json([])
+    return
+  }
+
+  const rows = getDb()
+    .prepare(
+      `SELECT id, title, author, series_name, series_number
+       FROM books
+       WHERE status = 'active' AND format = 'epub'
+       ${ids ? `AND id IN (${ids.map(() => '?').join(',')})` : ''}
+       ORDER BY title`,
+    )
+    .all(...(ids ?? []))
+  res.json(rows)
+})
+
 // Deliberately synchronous (200, not 202+poll) — pure local string
 // matching against data already in the DB, no external API/rate limit,
 // so it runs against the whole library in well under a second. See

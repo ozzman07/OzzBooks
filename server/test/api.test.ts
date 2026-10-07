@@ -246,6 +246,73 @@ describe('sources + ingestion via the API', () => {
     })
   })
 
+  describe('GET /api/books/epub-summary', () => {
+    it('returns only epub-format active books, with just the fields a title/author/series picker needs', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      const db = getDb()
+      const epubId = randomUUID()
+      const missingEpubId = randomUUID()
+      const comicId = randomUUID()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, series_name, series_number, synopsis, status)
+         VALUES (?, ?, '/epub-summary/Summary Book.epub', 'epub', 'Summary Book', 'Summary Author', 'Summary Series', 2, 'A long synopsis that should never be sent to a Kindle picker.', 'active')`,
+      ).run(epubId, sourceId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/epub-summary/Missing.epub', 'epub', 'Missing Epub', 'Someone', 'missing')`,
+      ).run(missingEpubId, sourceId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/epub-summary/Comic.cbz', 'cbz', 'A Comic', 'Someone', 'active')`,
+      ).run(comicId, sourceId)
+
+      const res = await request(app).get('/api/books/epub-summary').set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      const ids = res.body.map((b: any) => b.id)
+      expect(ids).toContain(epubId)
+      expect(ids).not.toContain(missingEpubId) // missing, excluded
+      expect(ids).not.toContain(comicId) // wrong format, excluded
+
+      const row = res.body.find((b: any) => b.id === epubId)
+      expect(row).toEqual({
+        id: epubId,
+        title: 'Summary Book',
+        author: 'Summary Author',
+        series_name: 'Summary Series',
+        series_number: 2,
+      })
+    })
+
+    it('?ids= narrows to just the given ids, for the Kindle plugin\'s "My Books" filter', async () => {
+      const { getDb } = await import('../src/db/index.js')
+      const { randomUUID } = await import('node:crypto')
+      const db = getDb()
+      const wantedId = randomUUID()
+      const unwantedId = randomUUID()
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/epub-summary/Wanted.epub', 'epub', 'Wanted Book', 'Someone', 'active')`,
+      ).run(wantedId, sourceId)
+      db.prepare(
+        `INSERT INTO books (id, source_id, file_path, format, title, author, status)
+         VALUES (?, ?, '/epub-summary/Unwanted.epub', 'epub', 'Unwanted Book', 'Someone', 'active')`,
+      ).run(unwantedId, sourceId)
+
+      const res = await request(app)
+        .get(`/api/books/epub-summary?ids=${wantedId}`)
+        .set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body.map((b: any) => b.id)).toEqual([wantedId])
+    })
+
+    it('?ids= with an empty value returns an empty list rather than falling back to everything', async () => {
+      const res = await request(app).get('/api/books/epub-summary?ids=').set('Authorization', `Bearer ${TEST_TOKEN}`)
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual([])
+    })
+  })
+
   describe('companion linking routes', () => {
     let audioBookId: string
     let epubBookId: string

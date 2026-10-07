@@ -22,11 +22,12 @@ didn't hand out itself.
 
 local UIManager = require("ui/uimanager")
 local NetworkMgr = require("ui/network/manager")
+local Event = require("ui/event")
 local logger = require("logger")
 
-local ApiClient = require("ozzbooks.koplugin/OzzBooksApiClient")
-local Settings = require("ozzbooks.koplugin/OzzBooksSettings")
-local Cache = require("ozzbooks.koplugin/OzzBooksCache")
+local ApiClient = require("OzzBooksApiClient")
+local Settings = require("OzzBooksSettings")
+local Cache = require("OzzBooksCache")
 
 local OzzBooksSync = {
     -- Debounce handle so rapid page turns collapse into one push instead
@@ -36,6 +37,11 @@ local OzzBooksSync = {
     -- Kindle has no local progress store of its own to mirror that with,
     -- so this debounces the whole thing).
     pending_push = nil,
+    -- {book_id=, percent=} set by prepareRestore (called from
+    -- OzzBooksLibrary:openBook, first-open-only — see its own comment),
+    -- consumed once by consumeRestoreForCurrentDocument when
+    -- onReaderReady fires for that same book. nil the rest of the time.
+    pending_restore = nil,
 }
 
 local DEBOUNCE_SECONDS = 3
@@ -128,11 +134,16 @@ function OzzBooksSync:pushBookmark(ui, label)
     if not book_id or not ui.rolling then return false, "not an OzzBooks book" end
     local xpointer = ui.rolling:getLastProgress()
     if not xpointer then return false, "no current position" end
+    local percent_ok, percent = pcall(function() return ui.rolling:getLastPercent() end)
 
     local url = Settings:get("cloud_url") .. "/sync/bookmarks"
     local ok, status = ApiClient.request("POST", url, cloudHeaders(), {
         bookId = book_id,
-        position = { type = "koreader-xpointer", value = xpointer },
+        position = {
+            type = "koreader-xpointer",
+            value = xpointer,
+            percent = (percent_ok and type(percent) == "number") and percent or nil,
+        },
         label = label,
     })
     return ok and status == 201, status
@@ -149,7 +160,21 @@ function OzzBooksSync:schedulePush(ui)
     local xpointer = ui.rolling:getLastProgress()
     if not xpointer then return end
 
-    local position = { type = "koreader-xpointer", value = xpointer }
+    -- percent (0-1, same scale OzzBooks' own epub.js-based reader
+    -- computes) is the cross-device approximate-sync hint — this app's
+    -- own xpointer only resumes within KOReader itself, but the PWA can
+    -- use percent to land roughly in the right place instead of always
+    -- starting over. pcall-guarded since getLastPercent's "scroll mode"
+    -- branch is explicitly marked @fixme/not fully accurate upstream —
+    -- a percent that's merely imprecise is fine (that's the nature of
+    -- this hint), but this must never let a percent-computation hiccup
+    -- break the actual position push itself.
+    local percent_ok, percent = pcall(function() return ui.rolling:getLastPercent() end)
+    local position = {
+        type = "koreader-xpointer",
+        value = xpointer,
+        percent = (percent_ok and type(percent) == "number") and percent or nil,
+    }
     local updated_at = os.date("!%Y-%m-%dT%H:%M:%SZ")
     savePending(book_id, position, updated_at)
 
@@ -166,6 +191,41 @@ function OzzBooksSync:schedulePush(ui)
         self:flushPending()
     end
     UIManager:scheduleIn(DEBOUNCE_SECONDS, self.pending_push)
+end
+
+-- Called from OzzBooksLibrary:openBook, before the document actually
+-- opens, only the first time a given book is opened on this device (see
+-- that call site's own comment on why: trusting KOReader's own native
+-- resume on every subsequent open, rather than risking a stale cloud
+-- snapshot regressing an already-ongoing Kindle reading session).
+-- Fetches this book's latest cloud progress and stashes its percent (if
+-- any) for consumeRestoreForCurrentDocument to apply once the document
+-- is actually ready.
+function OzzBooksSync:prepareRestore(book_id)
+    self.pending_restore = nil
+    if not Settings:isConfigured() then return end
+    local url = Settings:get("cloud_url") .. "/sync/progress/" .. book_id
+    local ok, status, body = ApiClient.request("GET", url, cloudHeaders())
+    if ok and status == 200 and body and body.position and type(body.position.percent) == "number" then
+        self.pending_restore = { book_id = book_id, percent = body.position.percent }
+    end
+end
+
+-- Called from main.lua's onReaderReady hook. Only acts if the document
+-- that just became ready is the same one prepareRestore fetched for —
+-- guards against a stale pending_restore applying to the wrong book if,
+-- somehow, a different book opened in between (shouldn't normally
+-- happen given the call sequence, but cheap to guard regardless).
+function OzzBooksSync:consumeRestoreForCurrentDocument(ui)
+    local pending = self.pending_restore
+    self.pending_restore = nil
+    if not pending then return end
+    if getCurrentBookId(ui) ~= pending.book_id then return end
+
+    -- GotoPercent expects 0-100, not the 0-1 fraction this plugin stores
+    -- and sends everywhere else (matching the PWA's own percent scale) —
+    -- see ReaderRolling:onGotoPercent in koreader core.
+    ui:handleEvent(Event:new("GotoPercent", pending.percent * 100))
 end
 
 -- Bypasses the debounce — called when the document is about to go away

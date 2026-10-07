@@ -20,10 +20,10 @@ local InfoMessage = require("ui/widget/infomessage")
 local MultiInputDialog = require("ui/widget/multiinputdialog")
 local _ = require("gettext")
 
-local ApiClient = require("ozzbooks.koplugin/OzzBooksApiClient")
-local Settings = require("ozzbooks.koplugin/OzzBooksSettings")
-local Library = require("ozzbooks.koplugin/OzzBooksLibrary")
-local Sync = require("ozzbooks.koplugin/OzzBooksSync")
+local ApiClient = require("OzzBooksApiClient")
+local Settings = require("OzzBooksSettings")
+local Library = require("OzzBooksLibrary")
+local Sync = require("OzzBooksSync")
 
 local OzzBooks = WidgetContainer:extend{
     name = "ozzbooks",
@@ -163,6 +163,17 @@ end
 
 -- ReaderUI-only hooks below — each is a no-op when the open document
 -- isn't one this plugin handed out (see OzzBooksSync's getCurrentBookId).
+
+-- Fires once the document has finished opening — koreader core's own
+-- kosync.koplugin uses this exact hook for the same purpose (applying a
+-- synced position once the reader is actually ready for it). Deferred a
+-- tick, same as kosync, rather than acted on immediately inline.
+function OzzBooks:onReaderReady()
+    if not self.ui or not self.ui.document then return end
+    UIManager:nextTick(function()
+        Sync:consumeRestoreForCurrentDocument(self.ui)
+    end)
+end
 
 function OzzBooks:onPageUpdate(page)
     if not self.ui or not self.ui.document then return end
